@@ -16,8 +16,9 @@ venv/
 results/
 OLD/
 
-# Config files that may contain API keys
+# Config files that may contain API keys or are user-specific
 config/global.yaml
+configs/*.yaml
 
 # Snakemake
 .snakemake/
