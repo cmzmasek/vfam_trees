@@ -1,0 +1,79 @@
+"""vfam_trees Snakemake workflow.
+
+This file is invoked by the vfam_trees CLI and should not be run directly.
+Required config keys (passed via --config):
+    families      : list of family names
+    global_config : path to global.yaml
+    configs_dir   : path to per-family configs directory
+    output_dir    : results directory
+    log_level     : DEBUG | INFO | WARNING
+    threads       : threads per family job
+"""
+from pathlib import Path
+import json
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+FAMILIES     = config["families"]
+GLOBAL_CFG   = config["global_config"]
+CONFIGS_DIR  = config["configs_dir"]
+OUTPUT_DIR   = config["output_dir"]
+LOG_LEVEL    = config.get("log_level", "INFO")
+THREADS      = config.get("threads", 1)
+
+
+def family_done(family):
+    status_file = Path(OUTPUT_DIR) / family / ".status.json"
+    if not status_file.exists():
+        return False
+    try:
+        state = json.loads(status_file.read_text())
+        return state.get("status") in ("done", "skipped")
+    except Exception:
+        return False
+
+
+def pending_families():
+    return [f for f in FAMILIES if not family_done(f)]
+
+
+PENDING = pending_families()
+
+if not PENDING:
+    print("All families already processed. Use --forcerun or delete .status.json to rerun.")
+
+
+# ---------------------------------------------------------------------------
+# Target rule
+# ---------------------------------------------------------------------------
+rule all:
+    input:
+        expand(
+            "{output_dir}/{family}/.status.json",
+            output_dir=OUTPUT_DIR,
+            family=PENDING,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Per-family rule: runs the full Python pipeline for one family
+# ---------------------------------------------------------------------------
+rule run_family:
+    output:
+        status = "{output_dir}/{family}/.status.json",
+    log:
+        "{output_dir}/{family}/{family}.log",
+    threads: THREADS
+    run:
+        from vfam_trees.pipeline import run_family
+        run_family(
+            family=wildcards.family,
+            global_config_path=Path(GLOBAL_CFG),
+            configs_dir=Path(CONFIGS_DIR),
+            output_dir=Path(OUTPUT_DIR),
+            threads=threads,
+            log_level=LOG_LEVEL,
+            summary_path=Path(OUTPUT_DIR) / "summary.tsv",
+        )

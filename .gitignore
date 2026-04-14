@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Pipeline outputs and working files
+results/
+OLD/
+
+# Config files that may contain API keys
+config/global.yaml
+
+# Snakemake
+.snakemake/
+*.smk.log
+
+# Editor / OS
+.DS_Store
+*.~
+*~
+.idea/
+.vscode/

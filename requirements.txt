@@ -1,0 +1,6 @@
+biopython>=1.81
+click>=8.1
+pyyaml>=6.0
+snakemake>=7.0
+requests>=2.31
+six>=1.16          # ete3 dependency
