@@ -112,6 +112,7 @@ def run_family(
                     seqlen_stats={},
                     tree_stats={},
                     n_species_relaxed=0,
+                    total_seqs_qc=0,
                 )
                 write_summary_row(summary_path, row)
             return
@@ -243,6 +244,7 @@ def run_family(
                 seqlen_stats=seqlen_stats,
                 tree_stats={},
                 n_species_relaxed=n_species_relaxed,
+                total_seqs_qc=total_seqs,
             )
             write_summary_row(summary_path, row)
         return
@@ -333,6 +335,7 @@ def run_family(
             seqlen_stats=seqlen_stats,
             tree_stats=tree_stats,
             n_species_relaxed=n_species_relaxed,
+            total_seqs_qc=total_seqs,
         )
         write_summary_row(summary_path, row)
 

@@ -20,6 +20,7 @@ COLUMNS = [
     "species_discovered",
     "species_with_seqs",
     "species_relaxed_threshold",
+    "seqs_passing_qc",
     # sequence length stats (post-QC)
     "seqlen_min",
     "seqlen_q1",
@@ -162,6 +163,7 @@ def build_summary_row(
     seqlen_stats: dict,
     tree_stats: dict[str, dict],
     n_species_relaxed: int = 0,
+    total_seqs_qc: int = 0,
 ) -> dict:
     """Assemble a summary row dict from collected pipeline stats.
 
@@ -178,6 +180,7 @@ def build_summary_row(
         "species_discovered":        n_species_discovered,
         "species_with_seqs":         n_species_with_seqs,
         "species_relaxed_threshold": n_species_relaxed,
+        "seqs_passing_qc":           total_seqs_qc,
         "seqlen_min":         seqlen_stats.get("min", ""),
         "seqlen_q1":          seqlen_stats.get("q1", ""),
         "seqlen_median":      seqlen_stats.get("median", ""),
