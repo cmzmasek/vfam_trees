@@ -49,6 +49,8 @@ def write_phyloxml(
     family: str,
     tree=None,
     phylogeny_name: str | None = None,
+    phylogeny_detail: str | None = None,
+    confidence_type: str = "SH_aLRT",
 ) -> None:
     """Generate a PhyloXML file from a Newick tree with vipr: metadata properties.
 
@@ -81,9 +83,10 @@ def write_phyloxml(
     desc_el.text = (
         f"vfam_trees v{__version__} phylogenetic tree for {family} "
         f"— generated {timestamp}"
+        + (f" | {phylogeny_detail}" if phylogeny_detail else "")
     )
 
-    _write_clade(phylogeny_el, tree.root, id_map, leaf_metadata)
+    _write_clade(phylogeny_el, tree.root, id_map, leaf_metadata, confidence_type)
 
     output_xml.parent.mkdir(parents=True, exist_ok=True)
     _write_pretty_xml(root, output_xml)
@@ -95,6 +98,7 @@ def _write_clade(
     clade,
     id_map: dict[str, str],
     leaf_metadata: dict[str, dict],
+    confidence_type: str = "SH_aLRT",
 ) -> ET.Element:
     clade_el = ET.SubElement(parent_el, "clade")
 
@@ -122,7 +126,7 @@ def _write_clade(
         bl_el.text = str(clade.branch_length)
 
     if clade.confidence is not None:
-        conf_el = ET.SubElement(clade_el, "confidence", type="bootstrap")
+        conf_el = ET.SubElement(clade_el, "confidence", type=confidence_type)
         conf_el.text = str(clade.confidence)
 
     # taxonomy + properties follow confidence
@@ -170,7 +174,7 @@ def _write_clade(
 
     # child clades must come last
     for child in clade.clades:
-        _write_clade(clade_el, child, id_map, leaf_metadata)
+        _write_clade(clade_el, child, id_map, leaf_metadata, confidence_type)
 
     return clade_el
 

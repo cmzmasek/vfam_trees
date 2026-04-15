@@ -13,8 +13,8 @@ from .logger import get_logger
 log = get_logger(__name__)
 
 FETCH_BATCH_SIZE = 200
-RETRY_DELAY = 5
-MAX_RETRIES = 3
+RETRY_DELAY = 10
+MAX_RETRIES = 5
 
 
 def configure_entrez(email: str, api_key: str | None = None) -> None:

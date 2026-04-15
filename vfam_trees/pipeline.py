@@ -99,6 +99,21 @@ def run_family(
         if not species_list:
             log.warning("No species found for %s — skipping.", family)
             _mark_skipped(family_dir, family, "no species found in NCBI taxonomy")
+            if summary_path is not None:
+                row = build_summary_row(
+                    family=family,
+                    family_taxid=family_taxid,
+                    family_lineage=family_lineage,
+                    seq_type=seq_type,
+                    region=region,
+                    segment=segment,
+                    n_species_discovered=0,
+                    n_species_with_seqs=0,
+                    seqlen_stats={},
+                    tree_stats={},
+                    n_species_relaxed=0,
+                )
+                write_summary_row(summary_path, row)
             return
         with open(species_cache, "w") as f:
             json.dump(species_list, f, indent=2)
@@ -109,6 +124,7 @@ def run_family(
     #         Results cached per species to avoid re-downloading
     # -------------------------------------------------------------------------
     species_data: dict[str, dict] = {}  # species_name → {records, metadata}
+    n_species_relaxed = 0  # species that needed a relaxed min_length threshold
 
     log.info("Downloading sequences for %d species (max %d per species) ...",
              len(species_list), max_per_species)
@@ -156,7 +172,7 @@ def run_family(
         raw_meta = [acc_to_raw_meta[rec.id] for rec in raw_records if rec.id in acc_to_raw_meta]
         raw_records = [rec for rec in raw_records if rec.id in acc_to_raw_meta]
 
-        filtered = filter_sequences(
+        filtered, fraction_used = filter_sequences(
             raw_records,
             seq_type=seq_type,
             min_length=quality_cfg["min_length"],
@@ -164,8 +180,10 @@ def run_family(
             exclude_organisms=quality_cfg.get("exclude_organisms"),
         )
         if not filtered:
-            log.debug("No sequences passed quality filter for %s", sp_name)
+            log.info("No sequences passed quality filter for %s", sp_name)
             continue
+        if fraction_used is not None and fraction_used < 0.5:
+            n_species_relaxed += 1
 
         acc_to_meta = {m["accession"]: m for m in raw_meta}
         filtered_meta = [acc_to_meta[r.id] for r in filtered if r.id in acc_to_meta]
@@ -212,6 +230,21 @@ def run_family(
             total_seqs, family,
         )
         _mark_skipped(family_dir, family, f"too few sequences after QC ({total_seqs} < 5)")
+        if summary_path is not None:
+            row = build_summary_row(
+                family=family,
+                family_taxid=family_taxid,
+                family_lineage=family_lineage,
+                seq_type=seq_type,
+                region=region,
+                segment=segment,
+                n_species_discovered=len(species_list),
+                n_species_with_seqs=len(species_data),
+                seqlen_stats=seqlen_stats,
+                tree_stats={},
+                n_species_relaxed=n_species_relaxed,
+            )
+            write_summary_row(summary_path, row)
         return
     log.info(
         "Download complete: %d sequences across %d / %d species passed quality filters",
@@ -299,6 +332,7 @@ def run_family(
             n_species_with_seqs=len(species_data),
             seqlen_stats=seqlen_stats,
             tree_stats=tree_stats,
+            n_species_relaxed=n_species_relaxed,
         )
         write_summary_row(summary_path, row)
 
@@ -369,7 +403,7 @@ def _run_target(
 
     # MSA
     msa_short_fasta = target_work / f"alignment_{label}_short.fasta"
-    msa_cfg = family_cfg["msa"]
+    msa_cfg = family_cfg[f"msa_{label}"]
     log.info("Running MAFFT (%s) on %d sequences for tree_%s ...",
              msa_cfg["options"], len(sel_records), label)
     run_msa(
@@ -437,7 +471,7 @@ def _run_target(
 
     # PhyloXML — pass the in-memory tree to avoid lossy Newick roundtrip
     log.info("Writing PhyloXML for tree_%s ...", label)
-    phylogeny_name = _build_phylogeny_name(
+    phylogeny_name, phylogeny_detail = _build_phylogeny_name(
         family=family,
         seq_type=seq_type,
         region=family_cfg["sequence"]["region"],
@@ -453,6 +487,8 @@ def _run_target(
         tree_model=tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa"),
         tree_options=tree_cfg.get("options", ""),
     )
+    tool_norm = tree_cfg["tool"].lower().replace("-", "").replace("_", "")
+    confidence_type = "SH_like" if tool_norm == "fasttree" else "SH_aLRT"
     write_phyloxml(
         newick_path=annotated_nwk,
         output_xml=family_dir / f"{family}_tree_{label}.xml",
@@ -461,6 +497,8 @@ def _run_target(
         family=family,
         tree=bio_tree,
         phylogeny_name=phylogeny_name,
+        phylogeny_detail=phylogeny_detail,
+        confidence_type=confidence_type,
     )
 
     return target_stats
@@ -481,7 +519,8 @@ def _build_phylogeny_name(
     tree_version: str,
     tree_model: str,
     tree_options: str,
-) -> str:
+) -> tuple[str, str]:
+    """Return (short_name, detail_str) for PhyloXML name and description."""
     mol = "protein" if seq_type == "protein" else "nucleotide"
     if segment:
         region_str = segment
@@ -490,17 +529,23 @@ def _build_phylogeny_name(
     else:
         region_str = f"gene: {region}"
 
-    msa_str = f"{msa_tool.upper()} {msa_version} {msa_options}".strip()
     tree_name = tree_tool.upper().replace("FASTTREE", "FastTree").replace("IQTREE2", "IQ-TREE").replace("IQTREE", "IQ-TREE")
-    tree_str = f"{tree_name} {tree_version} {tree_model}"
-    if tree_options:
-        tree_str += f" {tree_options}"
 
-    return (
-        f"{family} [{mol}, {region_str} "
+    # Short name: family [mol|region|MSA tool|tree tool model]
+    short_name = f"{family} [{mol}|{region_str}|{msa_tool.upper()}|{tree_name} {tree_model}]"
+
+    # Detail string: full options and versions for the description element
+    msa_detail = f"{msa_tool.upper()} {msa_version} {msa_options}".strip()
+    tree_detail = f"{tree_name} {tree_version} {tree_model}"
+    if tree_options:
+        tree_detail += f" {tree_options}"
+    detail_str = (
+        f"{mol}, {region_str} "
         f"(target={target_n} seqs, cluster id {threshold_min:.2f}\u2013{threshold_max:.2f}) "
-        f"| {msa_str} | {tree_str}]"
+        f"| {msa_detail} | {tree_detail}"
     )
+
+    return short_name, detail_str
 
 
 def _write_metadata_tsv(

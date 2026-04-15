@@ -121,7 +121,11 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "max_500": 500,
         "max_100": 100,
     },
-    "msa": {
+    "msa_500": {
+        "tool": "mafft",
+        "options": "--6merpair --retree 1",
+    },
+    "msa_100": {
         "tool": "mafft",
         "options": "--retree 1",
     },
@@ -133,7 +137,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
     },
     "tree_100": {
         "tool": "iqtree",
-        "options": "--fast -B 1000",
+        "options": "--fast",
         "model_nuc": "GTR+G",
         "model_aa": "WAG+G",
     },

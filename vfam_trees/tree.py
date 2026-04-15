@@ -137,10 +137,9 @@ def _run_iqtree(
     # Note: IQ-TREE's UFBoot (-B) is incompatible with --fast, so --fast is
     # removed automatically when bootstrap is injected.
     options_parts = options.split() if options else []
-    if "-B" not in options_parts and "-b" not in options_parts:
-        options_parts = [p for p in options_parts if p != "--fast"]
-        options_parts = ["-B", "1000"] + options_parts
-        log.debug("Auto-added -B 1000 for IQ-TREE bootstrap (--fast removed if present)")
+    if "-alrt" not in options_parts and "-B" not in options_parts and "-b" not in options_parts:
+        options_parts = ["-alrt", "1000"] + options_parts
+        log.debug("Auto-added -alrt 1000 for IQ-TREE SH-aLRT support")
 
     cmd = [
         "iqtree2",

@@ -19,6 +19,7 @@ COLUMNS = [
     "molecule_region",
     "species_discovered",
     "species_with_seqs",
+    "species_relaxed_threshold",
     # sequence length stats (post-QC)
     "seqlen_min",
     "seqlen_q1",
@@ -29,22 +30,22 @@ COLUMNS = [
     "seqlen_iqr",
     # tree_500
     "tree500_leaves",
-    "tree500_bs_min",
-    "tree500_bs_q1",
-    "tree500_bs_median",
-    "tree500_bs_q3",
-    "tree500_bs_max",
-    "tree500_bs_iqr",
+    "tree500_shlike_min",
+    "tree500_shlike_q1",
+    "tree500_shlike_median",
+    "tree500_shlike_q3",
+    "tree500_shlike_max",
+    "tree500_shlike_iqr",
     "tree500_msa_length",
     "tree500_msa_gap_pct",
     # tree_100
     "tree100_leaves",
-    "tree100_bs_min",
-    "tree100_bs_q1",
-    "tree100_bs_median",
-    "tree100_bs_q3",
-    "tree100_bs_max",
-    "tree100_bs_iqr",
+    "tree100_shalrt_min",
+    "tree100_shalrt_q1",
+    "tree100_shalrt_median",
+    "tree100_shalrt_q3",
+    "tree100_shalrt_max",
+    "tree100_shalrt_iqr",
     "tree100_msa_length",
     "tree100_msa_gap_pct",
 ]
@@ -160,6 +161,7 @@ def build_summary_row(
     n_species_with_seqs: int,
     seqlen_stats: dict,
     tree_stats: dict[str, dict],
+    n_species_relaxed: int = 0,
 ) -> dict:
     """Assemble a summary row dict from collected pipeline stats.
 
@@ -173,8 +175,9 @@ def build_summary_row(
         "ncbi_taxid":         family_taxid if family_taxid is not None else "",
         "lineage":            lineage_str,
         "molecule_region":    format_molecule_region(seq_type, region, segment),
-        "species_discovered": n_species_discovered,
-        "species_with_seqs":  n_species_with_seqs,
+        "species_discovered":        n_species_discovered,
+        "species_with_seqs":         n_species_with_seqs,
+        "species_relaxed_threshold": n_species_relaxed,
         "seqlen_min":         seqlen_stats.get("min", ""),
         "seqlen_q1":          seqlen_stats.get("q1", ""),
         "seqlen_median":      seqlen_stats.get("median", ""),
@@ -184,17 +187,20 @@ def build_summary_row(
         "seqlen_iqr":         seqlen_stats.get("iqr", ""),
     }
 
-    for label, prefix in (("500", "tree500"), ("100", "tree100")):
+    for label, prefix, sup_col in (
+        ("500", "tree500", "shlike"),
+        ("100", "tree100", "shalrt"),
+    ):
         stats = tree_stats.get(label, {})
-        bs = stats.get("bs", {k: "" for k in ("min", "q1", "median", "q3", "max", "iqr")})
+        sh = stats.get("bs", {k: "" for k in ("min", "q1", "median", "q3", "max", "iqr")})
         msa = stats.get("msa", {"length": "", "gap_pct": ""})
-        row[f"{prefix}_leaves"]     = stats.get("leaves", "")
-        row[f"{prefix}_bs_min"]     = bs.get("min", "")
-        row[f"{prefix}_bs_q1"]      = bs.get("q1", "")
-        row[f"{prefix}_bs_median"]  = bs.get("median", "")
-        row[f"{prefix}_bs_q3"]      = bs.get("q3", "")
-        row[f"{prefix}_bs_max"]     = bs.get("max", "")
-        row[f"{prefix}_bs_iqr"]     = bs.get("iqr", "")
+        row[f"{prefix}_leaves"]            = stats.get("leaves", "")
+        row[f"{prefix}_{sup_col}_min"]     = sh.get("min", "")
+        row[f"{prefix}_{sup_col}_q1"]      = sh.get("q1", "")
+        row[f"{prefix}_{sup_col}_median"]  = sh.get("median", "")
+        row[f"{prefix}_{sup_col}_q3"]      = sh.get("q3", "")
+        row[f"{prefix}_{sup_col}_max"]     = sh.get("max", "")
+        row[f"{prefix}_{sup_col}_iqr"]     = sh.get("iqr", "")
         row[f"{prefix}_msa_length"] = msa.get("length", "")
         row[f"{prefix}_msa_gap_pct"] = msa.get("gap_pct", "")
 
