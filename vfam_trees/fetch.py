@@ -338,6 +338,14 @@ def _fetch_batch(db: str, ids: list[str]) -> str:
             data = handle.read()
             handle.close()
             time.sleep(0.34)
+            # Warn if NCBI returned fewer records than requested
+            n_returned = data.count("\nLOCUS ") + (1 if data.startswith("LOCUS ") else 0)
+            if n_returned < len(ids):
+                log.warning(
+                    "NCBI returned %d record(s) for a batch of %d requested IDs "
+                    "(partial response)",
+                    n_returned, len(ids),
+                )
             return data
         except Exception as e:
             log.warning("Fetch attempt %d failed: %s", attempt + 1, e)

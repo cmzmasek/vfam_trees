@@ -24,6 +24,28 @@ def get_mafft_version() -> str:
         return "unknown"
 
 
+def validate_msa(fasta_path: Path) -> None:
+    """Validate that a FASTA MSA file is non-empty and all sequences are the same length.
+
+    Raises:
+        FileNotFoundError: if the file does not exist or is empty
+        ValueError: if fewer than 2 sequences, or sequences differ in length
+    """
+    if not fasta_path.exists() or fasta_path.stat().st_size == 0:
+        raise FileNotFoundError(f"MSA output is missing or empty: {fasta_path}")
+    from Bio import SeqIO
+    records = list(SeqIO.parse(str(fasta_path), "fasta"))
+    if len(records) < 2:
+        raise ValueError(f"MSA contains fewer than 2 sequences: {fasta_path}")
+    lengths = {len(r.seq) for r in records}
+    if len(lengths) > 1:
+        raise ValueError(
+            f"MSA sequences have inconsistent lengths {lengths} — "
+            f"alignment may be corrupted: {fasta_path}"
+        )
+    log.debug("MSA validated: %d sequences, alignment length %d", len(records), lengths.pop())
+
+
 def run_msa(
     input_fasta: Path,
     output_fasta: Path,

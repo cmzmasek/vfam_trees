@@ -28,44 +28,53 @@ def filter_sequences(
     min_length: int | None,
     max_ambiguous: float,
     exclude_organisms: list[str] | None = None,
-) -> tuple[list[SeqRecord], float | None]:
+) -> tuple[list[SeqRecord], float | None, dict]:
     """Apply quality filters to a list of SeqRecords.
 
     Args:
         records: input sequences
         seq_type: 'nucleotide' or 'protein'
         min_length: minimum sequence length; None = auto (50% of median,
-                    with fallback to 40%, 30%, 20% if no sequences pass)
+                    with fallback to 40%, 30% if no sequences pass)
         max_ambiguous: maximum fraction of ambiguous characters
         exclude_organisms: list of substrings matched case-insensitively
                            against the organism name in annotations
 
     Returns:
-        Tuple of (filtered records, fraction_used).
+        Tuple of (filtered records, fraction_used, qc_stats).
         fraction_used is None when min_length was user-specified, or the
-        median fraction (0.5, 0.4, 0.3, or 0.2) that yielded >0 sequences.
+        median fraction (0.5, 0.4, or 0.3) that yielded >0 sequences.
+        qc_stats is a dict with keys: n_excluded_organism, n_excluded_length,
+        n_excluded_ambiguity, n_undefined.
     """
+    empty_stats = {
+        "n_excluded_organism": 0,
+        "n_excluded_length": 0,
+        "n_excluded_ambiguity": 0,
+        "n_undefined": 0,
+    }
+
     if not records:
-        return [], None
+        return [], None, empty_stats
 
     exclude_lower = [t.lower() for t in (exclude_organisms or [])]
 
     # Organism exclusion — applied before length filtering to keep median accurate
     passed_organism = []
-    n_excluded = 0
+    n_excluded_organism = 0
     for rec in records:
         organism = rec.annotations.get("organism", "").lower()
         if any(term in organism for term in exclude_lower):
             log.debug("Excluding organism: %s", rec.annotations.get("organism", ""))
-            n_excluded += 1
+            n_excluded_organism += 1
         else:
             passed_organism.append(rec)
 
-    if n_excluded:
-        log.info("Excluded %d sequences matching organism exclusion list", n_excluded)
+    if n_excluded_organism:
+        log.info("Excluded %d sequences matching organism exclusion list", n_excluded_organism)
 
     if not passed_organism:
-        return [], None
+        return [], None, {**empty_stats, "n_excluded_organism": n_excluded_organism}
 
     floor = MIN_LENGTH_NUC if seq_type == "nucleotide" else MIN_LENGTH_AA
     ambig_chars = AMBIGUOUS_NUC if seq_type == "nucleotide" else AMBIGUOUS_AA
@@ -85,13 +94,20 @@ def filter_sequences(
         log.info(
             "Quality filter: %d passed, %d excluded organism, %d too short, "
             "%d too ambiguous, %d undefined sequence (from %d total)",
-            len(passed), n_excluded, n_short, n_ambig, n_undefined, len(records),
+            len(passed), n_excluded_organism, n_short, n_ambig, n_undefined, len(records),
         )
-        return passed, None
+        qc_stats = {
+            "n_excluded_organism": n_excluded_organism,
+            "n_excluded_length": n_short,
+            "n_excluded_ambiguity": n_ambig,
+            "n_undefined": n_undefined,
+        }
+        return passed, None, qc_stats
 
     # Auto mode: try fractions from most to least strict; stop when >0 sequences pass
     fraction_used = _AUTO_FRACTIONS[-1]
     passed: list[SeqRecord] = []
+    n_short = n_ambig = n_undefined = 0
     for fraction in _AUTO_FRACTIONS:
         effective = max(int(median_len * fraction), floor)
         log.info(
@@ -104,7 +120,7 @@ def filter_sequences(
         log.info(
             "Quality filter: %d passed, %d excluded organism, %d too short, "
             "%d too ambiguous, %d undefined sequence (from %d total)",
-            len(passed), n_excluded, n_short, n_ambig, n_undefined, len(records),
+            len(passed), n_excluded_organism, n_short, n_ambig, n_undefined, len(records),
         )
         fraction_used = fraction
         if passed:
@@ -115,7 +131,41 @@ def filter_sequences(
                 )
             break
 
-    return passed, fraction_used
+    qc_stats = {
+        "n_excluded_organism": n_excluded_organism,
+        "n_excluded_length": n_short,
+        "n_excluded_ambiguity": n_ambig,
+        "n_undefined": n_undefined,
+    }
+    return passed, fraction_used, qc_stats
+
+
+def remove_length_outliers(
+    records: list[SeqRecord],
+    multiplier: float = 3.0,
+) -> tuple[list[SeqRecord], int]:
+    """Remove sequences longer than multiplier × median length.
+
+    Args:
+        records: input sequences
+        multiplier: sequences longer than multiplier × median are removed
+
+    Returns:
+        (filtered records, number removed)
+    """
+    if len(records) < 2:
+        return records, 0
+    lengths = [len(r.seq) for r in records]
+    median_len = statistics.median(lengths)
+    cutoff = median_len * multiplier
+    passed = [r for r in records if len(r.seq) <= cutoff]
+    n_removed = len(records) - len(passed)
+    if n_removed:
+        log.info(
+            "Removed %d length outlier(s) (>%.0fx median; cutoff %d bp/aa)",
+            n_removed, multiplier, int(cutoff),
+        )
+    return passed, n_removed
 
 
 def _apply_length_filter(

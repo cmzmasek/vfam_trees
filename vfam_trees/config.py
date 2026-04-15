@@ -158,6 +158,25 @@ def _validate_global_config(cfg: dict) -> None:
         raise ValueError("global.yaml: ncbi.email must be set")
 
 
+_KNOWN_FAMILY_CONFIG_KEYS = frozenset(DEFAULT_FAMILY_CONFIG.keys())
+
+
+def _warn_unknown_keys(cfg: dict, path: Path) -> None:
+    """Warn about top-level keys in a user config that are not recognised."""
+    unknown = [
+        k for k in cfg
+        if not k.startswith("_") and k not in _KNOWN_FAMILY_CONFIG_KEYS
+    ]
+    if unknown:
+        log.warning(
+            "Unknown config key(s) in %s: %s — these will be ignored. "
+            "Known keys: %s",
+            path,
+            ", ".join(sorted(unknown)),
+            ", ".join(sorted(_KNOWN_FAMILY_CONFIG_KEYS)),
+        )
+
+
 def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tuple[dict, bool]:
     """Load per-family config, auto-generating it if missing.
 
@@ -167,6 +186,7 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
     if config_path.exists():
         with open(config_path) as f:
             cfg = yaml.safe_load(f)
+        _warn_unknown_keys(cfg, config_path)
         cfg = _merge_with_defaults(cfg, global_cfg)
         return cfg, False
     else:

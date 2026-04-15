@@ -21,6 +21,11 @@ COLUMNS = [
     "species_with_seqs",
     "species_relaxed_threshold",
     "seqs_passing_qc",
+    # QC exclusion breakdown
+    "qc_excluded_organism",
+    "qc_excluded_length",
+    "qc_excluded_ambiguity",
+    "qc_undefined",
     # sequence length stats (post-QC)
     "seqlen_min",
     "seqlen_q1",
@@ -37,6 +42,8 @@ COLUMNS = [
     "tree500_shlike_q3",
     "tree500_shlike_max",
     "tree500_shlike_iqr",
+    "tree500_cluster_thresh_min",
+    "tree500_cluster_thresh_max",
     "tree500_msa_length",
     "tree500_msa_gap_pct",
     # tree_100
@@ -47,6 +54,8 @@ COLUMNS = [
     "tree100_shalrt_q3",
     "tree100_shalrt_max",
     "tree100_shalrt_iqr",
+    "tree100_cluster_thresh_min",
+    "tree100_cluster_thresh_max",
     "tree100_msa_length",
     "tree100_msa_gap_pct",
 ]
@@ -164,6 +173,7 @@ def build_summary_row(
     tree_stats: dict[str, dict],
     n_species_relaxed: int = 0,
     total_seqs_qc: int = 0,
+    qc_stats: dict | None = None,
 ) -> dict:
     """Assemble a summary row dict from collected pipeline stats.
 
@@ -181,6 +191,10 @@ def build_summary_row(
         "species_with_seqs":         n_species_with_seqs,
         "species_relaxed_threshold": n_species_relaxed,
         "seqs_passing_qc":           total_seqs_qc,
+        "qc_excluded_organism":      (qc_stats or {}).get("n_excluded_organism", ""),
+        "qc_excluded_length":        (qc_stats or {}).get("n_excluded_length", ""),
+        "qc_excluded_ambiguity":     (qc_stats or {}).get("n_excluded_ambiguity", ""),
+        "qc_undefined":              (qc_stats or {}).get("n_undefined", ""),
         "seqlen_min":         seqlen_stats.get("min", ""),
         "seqlen_q1":          seqlen_stats.get("q1", ""),
         "seqlen_median":      seqlen_stats.get("median", ""),
@@ -197,14 +211,16 @@ def build_summary_row(
         stats = tree_stats.get(label, {})
         sh = stats.get("bs", {k: "" for k in ("min", "q1", "median", "q3", "max", "iqr")})
         msa = stats.get("msa", {"length": "", "gap_pct": ""})
-        row[f"{prefix}_leaves"]            = stats.get("leaves", "")
-        row[f"{prefix}_{sup_col}_min"]     = sh.get("min", "")
-        row[f"{prefix}_{sup_col}_q1"]      = sh.get("q1", "")
-        row[f"{prefix}_{sup_col}_median"]  = sh.get("median", "")
-        row[f"{prefix}_{sup_col}_q3"]      = sh.get("q3", "")
-        row[f"{prefix}_{sup_col}_max"]     = sh.get("max", "")
-        row[f"{prefix}_{sup_col}_iqr"]     = sh.get("iqr", "")
-        row[f"{prefix}_msa_length"] = msa.get("length", "")
-        row[f"{prefix}_msa_gap_pct"] = msa.get("gap_pct", "")
+        row[f"{prefix}_leaves"]             = stats.get("leaves", "")
+        row[f"{prefix}_{sup_col}_min"]      = sh.get("min", "")
+        row[f"{prefix}_{sup_col}_q1"]       = sh.get("q1", "")
+        row[f"{prefix}_{sup_col}_median"]   = sh.get("median", "")
+        row[f"{prefix}_{sup_col}_q3"]       = sh.get("q3", "")
+        row[f"{prefix}_{sup_col}_max"]      = sh.get("max", "")
+        row[f"{prefix}_{sup_col}_iqr"]      = sh.get("iqr", "")
+        row[f"{prefix}_cluster_thresh_min"] = stats.get("cluster_thresh_min", "")
+        row[f"{prefix}_cluster_thresh_max"] = stats.get("cluster_thresh_max", "")
+        row[f"{prefix}_msa_length"]         = msa.get("length", "")
+        row[f"{prefix}_msa_gap_pct"]        = msa.get("gap_pct", "")
 
     return row

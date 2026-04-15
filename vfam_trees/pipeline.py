@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import csv
 import json
+import statistics
 from pathlib import Path
 
 import yaml
@@ -20,13 +21,14 @@ from .summary import (
     compute_bootstrap_stats, compute_msa_stats, compute_seqlen_stats,
     build_summary_row, write_summary_row,
 )
-from .quality import filter_sequences, deduplicate, write_fasta
+from .quality import filter_sequences, remove_length_outliers, deduplicate, write_fasta
 from .rename import assign_short_ids, restore_fasta_names, restore_newick_names
 from .subsample import adaptive_cluster_species, proportional_merge
-from .msa import run_msa, get_mafft_version
-from .tree import run_tree, get_tree_tool_version
+from .msa import run_msa, get_mafft_version, validate_msa
+from .tree import run_tree, get_tree_tool_version, validate_newick
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
+from .report import generate_family_report
 from .logger import setup_logger, get_logger
 
 log = get_logger(__name__)
@@ -126,6 +128,13 @@ def run_family(
     # -------------------------------------------------------------------------
     species_data: dict[str, dict] = {}  # species_name → {records, metadata}
     n_species_relaxed = 0  # species that needed a relaxed min_length threshold
+    # Aggregate QC exclusion counts across all species
+    family_qc_stats: dict[str, int] = {
+        "n_excluded_organism": 0,
+        "n_excluded_length": 0,
+        "n_excluded_ambiguity": 0,
+        "n_undefined": 0,
+    }
 
     log.info("Downloading sequences for %d species (max %d per species) ...",
              len(species_list), max_per_species)
@@ -158,7 +167,7 @@ def run_family(
         else:
             log.info("[%d/%d] Using cached sequences: %s", i, len(species_list), sp_name)
 
-        # Parse + quality filter
+        # Parse records
         raw_records: list[SeqRecord] = []
         raw_meta: list[dict] = []
         for rec in parse_gb_records(gb_file):
@@ -168,18 +177,40 @@ def run_family(
         if not raw_records:
             continue
 
+        # Segment keyword validation for segmented families
+        if segment:
+            before = len(raw_records)
+            raw_records = [r for r in raw_records if segment.lower() in r.description.lower()]
+            n_missing_seg = before - len(raw_records)
+            if n_missing_seg:
+                log.warning(
+                    "%d/%d record(s) for %s do not contain segment keyword '%s' "
+                    "in title — excluding",
+                    n_missing_seg, before, sp_name, segment,
+                )
+            if not raw_records:
+                log.info("No records with segment '%s' for %s — skipping.", segment, sp_name)
+                continue
+            # Rebuild raw_meta to match filtered raw_records
+            valid_ids = {r.id for r in raw_records}
+            raw_meta = [m for m in raw_meta if m["accession"] in valid_ids]
+
         acc_to_raw_meta = {m["accession"]: m for m in raw_meta}
         raw_records = deduplicate(raw_records)
         raw_meta = [acc_to_raw_meta[rec.id] for rec in raw_records if rec.id in acc_to_raw_meta]
         raw_records = [rec for rec in raw_records if rec.id in acc_to_raw_meta]
 
-        filtered, fraction_used = filter_sequences(
+        filtered, fraction_used, sp_qc_stats = filter_sequences(
             raw_records,
             seq_type=seq_type,
             min_length=quality_cfg["min_length"],
             max_ambiguous=quality_cfg["max_ambiguous"],
             exclude_organisms=quality_cfg.get("exclude_organisms"),
         )
+        # Accumulate QC stats
+        for k in family_qc_stats:
+            family_qc_stats[k] += sp_qc_stats.get(k, 0)
+
         if not filtered:
             log.info("No sequences passed quality filter for %s", sp_name)
             continue
@@ -210,8 +241,7 @@ def run_family(
         with open(taxid_cache, "w") as f:
             json.dump(taxid_to_lineage, f)
 
-    # Attach ranked lineage to each metadata dict; prefer NCBI over GenBank's
-    # unranked lineage because the names are used for LCA matching.
+    # Attach ranked lineage to each metadata dict
     for data in species_data.values():
         for meta in data["metadata"]:
             ranked = taxid_to_lineage.get(str(meta.get("taxon_id", "")), [])
@@ -219,10 +249,8 @@ def run_family(
             if ranked:
                 meta["lineage"] = [e["name"] for e in ranked]
 
-    seqlen_stats = compute_seqlen_stats(
-        [len(r.seq) for d in species_data.values() for r in d["records"]]
-    )
-
+    seq_lengths_all = [len(r.seq) for d in species_data.values() for r in d["records"]]
+    seqlen_stats = compute_seqlen_stats(seq_lengths_all)
     total_seqs = sum(len(d["records"]) for d in species_data.values())
 
     if total_seqs < 5:
@@ -245,6 +273,7 @@ def run_family(
                 tree_stats={},
                 n_species_relaxed=n_species_relaxed,
                 total_seqs_qc=total_seqs,
+                qc_stats=family_qc_stats,
             )
             write_summary_row(summary_path, row)
         return
@@ -268,10 +297,6 @@ def run_family(
     )
 
     # Attach short_id back into metadata and rebuild species_data with short IDs
-    acc_to_short: dict[str, str] = {}
-    for orig_rec, renamed_rec in zip(all_records, renamed_records):
-        acc_to_short[orig_rec.id] = renamed_rec.id
-
     for meta, renamed_rec in zip(all_metadata, renamed_records):
         meta["short_id"] = renamed_rec.id
 
@@ -295,11 +320,14 @@ def run_family(
     ]
 
     tree_stats: dict[str, dict] = {}
+    tree_support: dict[str, list[float]] = {}
+    bio_trees: dict[str, object] = {}
+
     for target_n, max_reps, label in targets:
         log.info("-" * 40)
         log.info("Building tree_%s  (target=%d sequences, max_reps_per_species=%d)",
                  label, target_n, max_reps)
-        tree_stats[label] = _run_target(
+        stats, support_vals, bio_tree = _run_target(
             label=label,
             target_n=target_n,
             max_reps=max_reps,
@@ -316,28 +344,44 @@ def run_family(
             threads=threads,
             log=log,
         )
+        tree_stats[label] = stats
+        if support_vals:
+            tree_support[label] = support_vals
+        if bio_tree is not None:
+            bio_trees[label] = bio_tree
 
     log.info("=" * 60)
     log.info("Pipeline complete for %s", family)
     log.info("=" * 60)
     _mark_done(family_dir, family)
 
+    summary_row = build_summary_row(
+        family=family,
+        family_taxid=family_taxid,
+        family_lineage=family_lineage,
+        seq_type=seq_type,
+        region=region,
+        segment=segment,
+        n_species_discovered=len(species_list),
+        n_species_with_seqs=len(species_data),
+        seqlen_stats=seqlen_stats,
+        tree_stats=tree_stats,
+        n_species_relaxed=n_species_relaxed,
+        total_seqs_qc=total_seqs,
+        qc_stats=family_qc_stats,
+    )
     if summary_path is not None:
-        row = build_summary_row(
-            family=family,
-            family_taxid=family_taxid,
-            family_lineage=family_lineage,
-            seq_type=seq_type,
-            region=region,
-            segment=segment,
-            n_species_discovered=len(species_list),
-            n_species_with_seqs=len(species_data),
-            seqlen_stats=seqlen_stats,
-            tree_stats=tree_stats,
-            n_species_relaxed=n_species_relaxed,
-            total_seqs_qc=total_seqs,
-        )
-        write_summary_row(summary_path, row)
+        write_summary_row(summary_path, summary_row)
+
+    # PDF report
+    generate_family_report(
+        family=family,
+        output_pdf=family_dir / f"{family}_report.pdf",
+        summary_row=summary_row,
+        seq_lengths=seq_lengths_all,
+        tree_support=tree_support,
+        bio_trees=bio_trees,
+    )
 
 
 def _run_target(
@@ -356,17 +400,22 @@ def _run_target(
     work_dir: Path,
     threads: int,
     log,
-) -> dict:
+) -> tuple[dict, list[float], object]:
+    """Run clustering, MSA, tree inference, and annotation for one target size.
+
+    Returns (target_stats, support_values, bio_tree).
+    """
     target_work = work_dir / label
     target_work.mkdir(exist_ok=True)
 
     threshold_min = clustering_cfg.get("threshold_min", 0.70)
     threshold_max = clustering_cfg.get("threshold_max", 0.99)
 
-    # Adaptive per-species clustering
+    # Adaptive per-species clustering — track actual thresholds used
     log.info("Clustering sequences per species (%s, max_reps=%d, search range=%.2f–%.2f) ...",
              clustering_tool, max_reps, threshold_min, threshold_max)
     species_reps: dict[str, list[SeqRecord]] = {}
+    thresholds_used: list[float] = []
     for sp_name, data in species_data.items():
         sp_safe = sp_name.replace(" ", "_").replace("/", "_")
         sp_work = target_work / "clustering" / sp_safe
@@ -380,6 +429,10 @@ def _run_target(
             clustering_tool=clustering_tool,
         )
         species_reps[sp_name] = reps
+        thresholds_used.append(threshold_used)
+
+    cluster_thresh_min = round(min(thresholds_used), 4) if thresholds_used else ""
+    cluster_thresh_max = round(max(thresholds_used), 4) if thresholds_used else ""
 
     total_reps = sum(len(r) for r in species_reps.values())
     log.info("Clustering complete: %d total representatives across %d species",
@@ -391,7 +444,15 @@ def _run_target(
 
     if not sel_records:
         log.warning("No sequences selected for %s tree — skipping.", label)
-        return {}
+        return {}, [], None
+
+    # Outlier removal before MSA
+    sel_records, n_outliers = remove_length_outliers(sel_records)
+    if n_outliers:
+        log.info("Removed %d length outlier(s) from tree_%s input", n_outliers, label)
+    if not sel_records:
+        log.warning("All sequences removed as outliers for tree_%s — skipping.", label)
+        return {}, [], None
 
     sel_metadata = [short_id_to_meta.get(r.id, {}) for r in sel_records]
     id_map = {r.id: short_to_display.get(r.id, r.id) for r in sel_records}
@@ -404,40 +465,61 @@ def _run_target(
     # Metadata TSV
     _write_metadata_tsv(sel_metadata, short_to_display, family_dir / f"{family}_metadata_{label}.tsv")
 
-    # MSA
+    # ------------------------------------------------------------------
+    # MSA — with checkpointing
+    # ------------------------------------------------------------------
     msa_short_fasta = target_work / f"alignment_{label}_short.fasta"
+    msa_checkpoint = target_work / ".msa_done"
     msa_cfg = family_cfg[f"msa_{label}"]
-    log.info("Running MAFFT (%s) on %d sequences for tree_%s ...",
-             msa_cfg["options"], len(sel_records), label)
-    run_msa(
-        input_fasta=raw_short_fasta,
-        output_fasta=msa_short_fasta,
-        tool=msa_cfg["tool"],
-        options=msa_cfg["options"],
-        threads=threads,
-    )
-    log.info("MAFFT complete for tree_%s", label)
+
+    if msa_checkpoint.exists() and msa_short_fasta.exists():
+        log.info("Reusing cached MSA for tree_%s", label)
+    else:
+        log.info("Running MAFFT (%s) on %d sequences for tree_%s ...",
+                 msa_cfg["options"], len(sel_records), label)
+        run_msa(
+            input_fasta=raw_short_fasta,
+            output_fasta=msa_short_fasta,
+            tool=msa_cfg["tool"],
+            options=msa_cfg["options"],
+            threads=threads,
+        )
+        validate_msa(msa_short_fasta)
+        msa_checkpoint.touch()
+        log.info("MAFFT complete for tree_%s", label)
+
     restore_fasta_names(msa_short_fasta, family_dir / f"{family}_alignment_{label}.fasta", id_map)
 
-    # Tree inference
+    # ------------------------------------------------------------------
+    # Tree inference — with checkpointing
+    # ------------------------------------------------------------------
     tree_cfg = family_cfg[f"tree_{label}"]
-    log.info("Running %s (%s model) for tree_%s ...",
-             tree_cfg["tool"],
-             tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa"),
-             label)
-    treefile = run_tree(
-        alignment_fasta=msa_short_fasta,
-        output_dir=target_work / "tree",
-        prefix=f"tree_{label}",
-        tool=tree_cfg["tool"],
-        seq_type=seq_type,
-        model_nuc=tree_cfg.get("model_nuc", "GTR+G"),
-        model_aa=tree_cfg.get("model_aa", "WAG+G"),
-        options=tree_cfg.get("options", ""),
-        threads=threads,
-    )
+    tree_output_dir = target_work / "tree"
+    expected_treefile = tree_output_dir / f"tree_{label}.nwk"
+    tree_checkpoint = target_work / ".tree_done"
 
-    log.info("Tree inference complete for tree_%s", label)
+    if tree_checkpoint.exists() and expected_treefile.exists():
+        log.info("Reusing cached tree for tree_%s", label)
+        treefile = expected_treefile
+    else:
+        log.info("Running %s (%s model) for tree_%s ...",
+                 tree_cfg["tool"],
+                 tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa"),
+                 label)
+        treefile = run_tree(
+            alignment_fasta=msa_short_fasta,
+            output_dir=tree_output_dir,
+            prefix=f"tree_{label}",
+            tool=tree_cfg["tool"],
+            seq_type=seq_type,
+            model_nuc=tree_cfg.get("model_nuc", "GTR+G"),
+            model_aa=tree_cfg.get("model_aa", "WAG+G"),
+            options=tree_cfg.get("options", ""),
+            threads=threads,
+        )
+        validate_newick(treefile)
+        tree_checkpoint.touch()
+        log.info("Tree inference complete for tree_%s", label)
 
     # Taxonomy annotation + rooting
     log.info("Inferring internal node taxonomy and rooting tree_%s ...", label)
@@ -448,8 +530,11 @@ def _run_target(
         metadata=sel_metadata,
         output_nwk=annotated_nwk,
     )
-
     log.info("Taxonomy annotation complete for tree_%s", label)
+
+    # Detect extreme branch lengths (potential chimeras / misannotations)
+    if bio_tree is not None:
+        _warn_extreme_branches(bio_tree, label, log)
 
     # Write final Newick from in-memory tree — display names on leaves, no internal labels
     output_nwk = family_dir / f"{family}_tree_{label}.nwk"
@@ -459,20 +544,29 @@ def _run_target(
             if clade.is_terminal():
                 clade.name = short_to_display.get(clade.name, clade.name)
             else:
-                clade.name = None  # taxonomy labels live in PhyloXML, not Newick
+                clade.name = None
         Phylo.write(nwk_tree, str(output_nwk), "newick")
         log.info("Newick written to %s", output_nwk)
     else:
         source_nwk = annotated_nwk if annotated_nwk.exists() else treefile
         restore_newick_names(source_nwk, output_nwk, short_to_display)
 
-    # Collect summary stats before writing outputs
-    target_stats: dict = {"leaves": len(sel_records)}
+    # Collect summary stats
+    target_stats: dict = {
+        "leaves": len(sel_records),
+        "cluster_thresh_min": cluster_thresh_min,
+        "cluster_thresh_max": cluster_thresh_max,
+    }
+    support_vals: list[float] = []
     if bio_tree is not None:
         target_stats["bs"] = compute_bootstrap_stats(bio_tree)
+        support_vals = [
+            c.confidence for c in bio_tree.find_clades()
+            if not c.is_terminal() and c.confidence is not None
+        ]
     target_stats["msa"] = compute_msa_stats(msa_short_fasta)
 
-    # PhyloXML — pass the in-memory tree to avoid lossy Newick roundtrip
+    # PhyloXML
     log.info("Writing PhyloXML for tree_%s ...", label)
     phylogeny_name, phylogeny_detail = _build_phylogeny_name(
         family=family,
@@ -504,7 +598,31 @@ def _run_target(
         confidence_type=confidence_type,
     )
 
-    return target_stats
+    return target_stats, support_vals, bio_tree
+
+
+def _warn_extreme_branches(bio_tree, label: str, log) -> None:
+    """Warn about terminal branches that are >10× the median — possible chimeras."""
+    branch_lengths = [
+        c.branch_length for c in bio_tree.get_terminals()
+        if c.branch_length is not None and c.branch_length > 0
+    ]
+    if len(branch_lengths) < 3:
+        return
+    median_bl = statistics.median(branch_lengths)
+    if median_bl == 0:
+        return
+    threshold = median_bl * 10
+    outliers = [
+        c for c in bio_tree.get_terminals()
+        if c.branch_length is not None and c.branch_length > threshold
+    ]
+    for clade in outliers:
+        log.warning(
+            "tree_%s: possible chimera/misannotation — leaf '%s' has branch length "
+            "%.4f (>10× median %.4f)",
+            label, clade.name, clade.branch_length, median_bl,
+        )
 
 
 def _build_phylogeny_name(
@@ -534,10 +652,8 @@ def _build_phylogeny_name(
 
     tree_name = tree_tool.upper().replace("FASTTREE", "FastTree").replace("IQTREE2", "IQ-TREE").replace("IQTREE", "IQ-TREE")
 
-    # Short name: family [mol|region|MSA tool|tree tool model]
     short_name = f"{family} [{mol}|{region_str}|{msa_tool.upper()}|{tree_name} {tree_model}]"
 
-    # Detail string: full options and versions for the description element
     msa_detail = f"{msa_tool.upper()} {msa_version} {msa_options}".strip()
     tree_detail = f"{tree_name} {tree_version} {tree_model}"
     if tree_options:

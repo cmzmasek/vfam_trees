@@ -36,6 +36,25 @@ def get_tree_tool_version(tool: str) -> str:
     return "unknown"
 
 
+def validate_newick(nwk_path: Path) -> None:
+    """Validate that a Newick file is non-empty and parseable.
+
+    Raises:
+        FileNotFoundError: if the file does not exist or is empty
+        ValueError: if the file cannot be parsed as a Newick tree
+    """
+    if not nwk_path.exists() or nwk_path.stat().st_size == 0:
+        raise FileNotFoundError(f"Newick file is missing or empty: {nwk_path}")
+    try:
+        from Bio import Phylo
+        trees = list(Phylo.parse(str(nwk_path), "newick"))
+        if not trees:
+            raise ValueError(f"No trees found in Newick file: {nwk_path}")
+        log.debug("Newick validated: %d tree(s) parsed from %s", len(trees), nwk_path)
+    except Exception as e:
+        raise ValueError(f"Newick file failed to parse ({nwk_path}): {e}") from e
+
+
 def run_tree(
     alignment_fasta: Path,
     output_dir: Path,
