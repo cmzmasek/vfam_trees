@@ -3,4 +3,4 @@ click>=8.1
 pyyaml>=6.0
 snakemake>=7.0
 requests>=2.31
-six>=1.16          # ete3 dependency
+matplotlib>=3.9    # PDF report generation; requires NumPy 2.x compatible build

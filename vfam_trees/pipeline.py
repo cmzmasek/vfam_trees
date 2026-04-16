@@ -18,7 +18,7 @@ from .fetch import (
     fetch_taxonomy_lineages,
 )
 from .summary import (
-    compute_bootstrap_stats, compute_msa_stats, compute_seqlen_stats,
+    compute_support_stats, compute_msa_stats, compute_seqlen_stats,
     build_summary_row, write_summary_row,
 )
 from .quality import filter_sequences, remove_length_outliers, deduplicate, write_fasta
@@ -559,7 +559,7 @@ def _run_target(
     }
     support_vals: list[float] = []
     if bio_tree is not None:
-        target_stats["bs"] = compute_bootstrap_stats(bio_tree)
+        target_stats["support"] = compute_support_stats(bio_tree)
         support_vals = [
             c.confidence for c in bio_tree.find_clades()
             if not c.is_terminal() and c.confidence is not None

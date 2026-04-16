@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="vfam_trees",
-    version="1.0.3",
+    version="1.0.4",
     packages=find_packages(),
     install_requires=[
         "biopython>=1.81",
@@ -10,6 +10,7 @@ setup(
         "pyyaml>=6.0",
         "snakemake>=7.0",
         "requests>=2.31",
+        "matplotlib>=3.9",
     ],
     entry_points={
         "console_scripts": [

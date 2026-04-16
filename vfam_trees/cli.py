@@ -272,6 +272,118 @@ def init_configs(families: Path, global_config: Path, configs_dir: Path):
 
 
 # ---------------------------------------------------------------------------
+# init
+# ---------------------------------------------------------------------------
+
+GLOBAL_CONFIG_TEMPLATE = """\
+# vfam_trees global configuration
+# Edit this file before running the pipeline.
+
+ncbi:
+  email: "your.email@example.com"   # REQUIRED — your email address for NCBI Entrez API
+  api_key: ""                        # Optional but recommended — get one at:
+                                     # https://www.ncbi.nlm.nih.gov/account/
+
+output_dir: results
+log_level: INFO         # DEBUG, INFO, WARNING
+
+# Default values applied when per-family config is auto-generated.
+# Override any of these here to change the default for all families.
+defaults:
+  download:
+    max_per_species: 200
+
+  sequence:
+    type: nucleotide    # nucleotide or protein
+    region: whole_genome
+    segment: null
+
+  quality:
+    min_length: null    # null = auto (50% of median sequence length)
+    max_ambiguous: 0.01
+    exclude_organisms:
+      - synthetic construct
+      - metagenome
+      - MAG
+      - uncultured
+      - unverified
+      - vector
+
+  clustering:
+    tool: mmseqs2
+    threshold_min: 0.70
+    threshold_max: 0.99
+    max_reps_500: 20
+    max_reps_100: 5
+
+  targets:
+    max_500: 500
+    max_100: 100
+
+  msa_500:
+    tool: mafft
+    options: "--6merpair --retree 1"
+
+  msa_100:
+    tool: mafft
+    options: "--retree 1"
+
+  tree_500:
+    tool: fasttree
+    options: ""
+    model_nuc: GTR+G
+    model_aa: WAG+G
+
+  tree_100:
+    tool: iqtree
+    options: "--fast"
+    model_nuc: GTR+G
+    model_aa: WAG+G
+"""
+
+
+@main.command("init")
+@click.option(
+    "--global-config", "-g",
+    default=DEFAULT_GLOBAL_CFG,
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Path to write the global config template.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Overwrite an existing config file.",
+)
+def init(global_config: Path, force: bool):
+    """Generate a template global config file.
+
+    Creates config/global.yaml (or the path given by --global-config)
+    with all default values and comments explaining each setting.
+    Edit the file — especially ncbi.email — before running the pipeline.
+
+    \b
+    Examples:
+      vfam_trees init
+      vfam_trees init --force
+      vfam_trees init -g /path/to/my_global.yaml
+    """
+    if global_config.exists() and not force:
+        click.echo(
+            f"Config already exists: {global_config}\n"
+            "Use --force to overwrite.",
+            err=True,
+        )
+        sys.exit(1)
+
+    global_config.parent.mkdir(parents=True, exist_ok=True)
+    global_config.write_text(GLOBAL_CONFIG_TEMPLATE)
+    click.echo(f"Created: {global_config}")
+    click.echo("Edit the file and set ncbi.email before running the pipeline.")
+
+
+# ---------------------------------------------------------------------------
 # test
 # ---------------------------------------------------------------------------
 
@@ -348,6 +460,7 @@ def test(global_config: Path):
     click.echo("Configuration:")
     if not global_config.exists():
         click.echo(f"  [MISSING]  {global_config}")
+        click.echo(f"             Run 'vfam_trees init' to generate a template.")
         ok = False
     else:
         click.echo(f"  [OK]  {global_config}")

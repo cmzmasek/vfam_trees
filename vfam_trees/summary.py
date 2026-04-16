@@ -87,8 +87,8 @@ def compute_seqlen_stats(lengths: list[int]) -> dict:
     }
 
 
-def compute_bootstrap_stats(tree: BioTree) -> dict:
-    """Return bootstrap summary statistics for internal nodes of a tree.
+def compute_support_stats(tree: BioTree) -> dict:
+    """Return branch-support summary statistics for internal nodes of a tree.
 
     Only internal nodes with a non-None confidence value are included.
     Returns a dict with keys: min, q1, median, q3, max, iqr.
@@ -178,7 +178,7 @@ def build_summary_row(
     """Assemble a summary row dict from collected pipeline stats.
 
     tree_stats should be keyed by label ("500", "100"), each value a dict with:
-        leaves, bs (bootstrap stats dict), msa (msa stats dict).
+        leaves, support (branch-support stats dict), msa (msa stats dict).
     """
     lineage_str = "; ".join(e["name"] for e in family_lineage) if family_lineage else ""
 
@@ -209,7 +209,7 @@ def build_summary_row(
         ("100", "tree100", "shalrt"),
     ):
         stats = tree_stats.get(label, {})
-        sh = stats.get("bs", {k: "" for k in ("min", "q1", "median", "q3", "max", "iqr")})
+        sh = stats.get("support", {k: "" for k in ("min", "q1", "median", "q3", "max", "iqr")})
         msa = stats.get("msa", {"length": "", "gap_pct": ""})
         row[f"{prefix}_leaves"]             = stats.get("leaves", "")
         row[f"{prefix}_{sup_col}_min"]      = sh.get("min", "")

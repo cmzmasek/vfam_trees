@@ -154,8 +154,22 @@ def load_global_config(path: Path) -> dict:
 
 
 def _validate_global_config(cfg: dict) -> None:
-    if not cfg.get("ncbi", {}).get("email"):
-        raise ValueError("global.yaml: ncbi.email must be set")
+    import re
+    email = cfg.get("ncbi", {}).get("email", "").strip()
+    if not email:
+        raise ValueError(
+            "global.yaml: ncbi.email must be set. "
+            "Run 'vfam_trees init' to generate a template config."
+        )
+    if email == "your.email@example.com":
+        raise ValueError(
+            "global.yaml: ncbi.email is still set to the placeholder value. "
+            "Replace it with your actual email address."
+        )
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise ValueError(
+            f"global.yaml: ncbi.email does not look like a valid email address: '{email}'"
+        )
 
 
 _KNOWN_FAMILY_CONFIG_KEYS = frozenset(DEFAULT_FAMILY_CONFIG.keys())
