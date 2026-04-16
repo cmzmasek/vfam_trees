@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="vfam_trees",
-    version="1.0.4",
+    version="1.0.5",
     packages=find_packages(),
     install_requires=[
         "biopython>=1.81",

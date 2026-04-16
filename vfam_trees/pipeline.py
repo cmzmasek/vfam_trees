@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import csv
 import json
+import shutil
 import statistics
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from .tree import run_tree, get_tree_tool_version, validate_newick
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
 from .report import generate_family_report
+from .cache import SequenceCache
 from .logger import setup_logger, get_logger
 
 log = get_logger(__name__)
@@ -60,6 +62,19 @@ def run_family(
         email=global_cfg["ncbi"]["email"],
         api_key=global_cfg["ncbi"].get("api_key") or None,
     )
+
+    # Global sequence cache (optional — only active when cache.dir is set in global.yaml)
+    cache_cfg  = global_cfg.get("cache") or {}
+    cache_dir  = cache_cfg.get("dir") or None
+    seq_cache: SequenceCache | None = None
+    if cache_dir:
+        ttl_days  = cache_cfg.get("ttl_days") or None
+        seq_cache = SequenceCache(Path(cache_dir), ttl_days=ttl_days)
+        cs = seq_cache.stats()
+        log.info(
+            "Global sequence cache: %s  (%d entries, %.1f MB)",
+            seq_cache.cache_dir, cs["entries"], cs["size_mb"],
+        )
 
     # Fetch family-level taxonomy (taxid + ranked lineage) for the summary
     family_taxid = get_family_taxid(family)
@@ -147,9 +162,46 @@ def run_family(
         sp_work.mkdir(parents=True, exist_ok=True)
 
         gb_file = sp_work / "sequences.gb"
+        db      = "nuccore" if seq_type == "nucleotide" else "protein"
 
-        # Download (cached)
-        if not gb_file.exists():
+        # --- Download with three-tier caching ---
+        # Tier 1: local per-run cache (sp_work/sequences.gb)
+        if gb_file.exists():
+            log.info("[%d/%d] Local cache hit: %s", i, len(species_list), sp_name)
+
+        # Tier 2: global shared cache
+        elif seq_cache is not None:
+            with seq_cache.download_lock(sp_taxid, db, region, segment, max_per_species) as got_lock:
+                # Re-check after acquiring the lock — a concurrent job may have
+                # downloaded this species while we were waiting.
+                cached = seq_cache.get(sp_taxid, db, region, segment, max_per_species)
+                if cached is not None:
+                    log.info("[%d/%d] Global cache hit: %s", i, len(species_list), sp_name)
+                    shutil.copy2(cached, gb_file)
+                else:
+                    if not got_lock:
+                        log.warning(
+                            "[%d/%d] Proceeding without lock for %s", i, len(species_list), sp_name
+                        )
+                    log.info("[%d/%d] Downloading (will cache): %s", i, len(species_list), sp_name)
+                    n = fetch_species_sequences(
+                        taxid=sp_taxid,
+                        species_name=sp_name,
+                        seq_type=seq_type,
+                        region=region,
+                        output_gb=gb_file,
+                        max_per_species=max_per_species,
+                        exclude_organisms=quality_cfg.get("exclude_organisms"),
+                        segment=segment,
+                    )
+                    if n == 0:
+                        log.info("[%d/%d] No sequences found for %s — skipping.",
+                                 i, len(species_list), sp_name)
+                        continue
+                    seq_cache.store(sp_taxid, db, region, segment, max_per_species, gb_file, n)
+
+        # Tier 3: no global cache — plain download
+        else:
             log.info("[%d/%d] Downloading: %s", i, len(species_list), sp_name)
             n = fetch_species_sequences(
                 taxid=sp_taxid,
@@ -162,10 +214,9 @@ def run_family(
                 segment=segment,
             )
             if n == 0:
-                log.info("[%d/%d] No sequences found for %s — skipping.", i, len(species_list), sp_name)
+                log.info("[%d/%d] No sequences found for %s — skipping.",
+                         i, len(species_list), sp_name)
                 continue
-        else:
-            log.info("[%d/%d] Using cached sequences: %s", i, len(species_list), sp_name)
 
         # Parse records
         raw_records: list[SeqRecord] = []

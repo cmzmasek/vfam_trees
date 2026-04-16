@@ -287,6 +287,14 @@ ncbi:
 output_dir: results
 log_level: INFO         # DEBUG, INFO, WARNING
 
+# Optional shared sequence download cache.
+# Sequences are stored keyed by (taxid, db, region, segment, max_per_species)
+# and reused across runs and families on the same machine — or on a shared
+# filesystem across machines.  Remove or set dir to null to disable.
+cache:
+  dir: ~/.vfam_cache    # path to cache root; ~ is expanded automatically
+  ttl_days: 90          # null = never expire; set to re-download after N days
+
 # Default values applied when per-family config is auto-generated.
 # Override any of these here to change the default for all families.
 defaults:
@@ -500,6 +508,32 @@ def test(global_config: Path):
     except Exception as e:
         click.echo(f"  [FAIL]  Cannot reach NCBI Entrez: {e}")
         ok = False
+
+    click.echo("")
+
+    # Cache
+    click.echo("Sequence cache:")
+    try:
+        import yaml as _yaml2
+        with open(global_config) as f:
+            _gcfg = _yaml2.safe_load(f)
+        _cache_cfg = (_gcfg or {}).get("cache") or {}
+        _cache_dir = _cache_cfg.get("dir") or None
+        if _cache_dir:
+            from pathlib import Path as _Path
+            from .cache import SequenceCache as _SC
+            _sc = _SC(_Path(_cache_dir))
+            _st = _sc.stats()
+            click.echo(f"  [OK]  {_sc.cache_dir}  ({_st['entries']} entries, {_st['size_mb']} MB)")
+            _ttl = _cache_cfg.get("ttl_days")
+            if _ttl:
+                click.echo(f"  [OK]  ttl_days = {_ttl}")
+            else:
+                click.echo("  [--]  ttl_days not set (entries never expire)")
+        else:
+            click.echo("  [--]  cache.dir not set in global.yaml — caching disabled")
+    except Exception:
+        click.echo("  [--]  (could not read cache config)")
 
     click.echo("")
     if ok:

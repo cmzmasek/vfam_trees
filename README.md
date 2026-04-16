@@ -30,6 +30,7 @@ Two trees are produced per family:
 - Per-family PDF report (statistics table, sequence length histogram, SH support histograms, tree_100 visualization)
 - Pre-configured support for 35+ segmented RNA virus families and 19 DNA virus families
 - Per-run summary TSV with SH support statistics, MSA statistics, QC breakdown, and clustering thresholds; skipped families are always included
+- Optional shared sequence download cache (`~/.vfam_cache` or any path) keyed by query parameters, with configurable TTL and per-entry lock files for safe parallel use
 
 ## Dependencies
 
@@ -108,6 +109,18 @@ ncbi:
 An NCBI API key can be obtained for free at https://www.ncbi.nlm.nih.gov/account/
 
 The `defaults:` section in `global.yaml` overrides the built-in defaults for all families. Per-family configs can further override individual parameters.
+
+#### Sequence download cache
+
+To avoid re-downloading the same species across runs or across families, enable the global cache in `global.yaml`:
+
+```yaml
+cache:
+  dir: ~/.vfam_cache    # shared across all runs on this machine (or a lab filesystem)
+  ttl_days: 90          # re-download after 90 days; null = never expire
+```
+
+Cache entries are keyed by `(taxid, db, region, segment, max_per_species)` so changing any query parameter automatically triggers a fresh download. Parallel family jobs (`-j N`) coordinate via per-entry lock files so the same species is never downloaded twice concurrently.
 
 ### 2. Per-family configs (`configs/<Family>.yaml`)
 
