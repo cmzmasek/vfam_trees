@@ -222,5 +222,11 @@ def build_summary_row(
         row[f"{prefix}_cluster_thresh_max"] = stats.get("cluster_thresh_max", "")
         row[f"{prefix}_msa_length"]         = msa.get("length", "")
         row[f"{prefix}_msa_gap_pct"]        = msa.get("gap_pct", "")
+        row[f"{prefix}_seq_type"]           = stats.get("seq_type", "")
+        row[f"{prefix}_msa_tool"]           = stats.get("msa_tool", "")
+        row[f"{prefix}_msa_options"]        = stats.get("msa_options", "")
+        row[f"{prefix}_tree_tool"]          = stats.get("tree_tool", "")
+        row[f"{prefix}_tree_model"]         = stats.get("tree_model", "")
+        row[f"{prefix}_tree_options"]       = stats.get("tree_options", "")
 
     return row

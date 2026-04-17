@@ -75,11 +75,19 @@ def generate_family_report(
         for label in ("500", "100"):
             prefix = f"tree{label}"
             sup = "shlike" if label == "500" else "shalrt"
+            tree_opts = str(summary_row.get(f"{prefix}_tree_options", "")).strip()
+            msa_opts  = str(summary_row.get(f"{prefix}_msa_options", "")).strip()
             table_data += [
-                [f"Tree {label} — leaves",         str(summary_row.get(f"{prefix}_leaves", ""))],
-                [f"Tree {label} — MSA length",     str(summary_row.get(f"{prefix}_msa_length", ""))],
-                [f"Tree {label} — MSA gap %",      str(summary_row.get(f"{prefix}_msa_gap_pct", ""))],
-                [f"Tree {label} — cluster thresh", f"{summary_row.get(f'{prefix}_cluster_thresh_min', '')}–{summary_row.get(f'{prefix}_cluster_thresh_max', '')}"],
+                [f"Tree {label} — sequence type",    str(summary_row.get(f"{prefix}_seq_type", ""))],
+                [f"Tree {label} — MSA tool",         str(summary_row.get(f"{prefix}_msa_tool", ""))],
+                [f"Tree {label} — MSA options",      msa_opts or "—"],
+                [f"Tree {label} — tree program",     str(summary_row.get(f"{prefix}_tree_tool", ""))],
+                [f"Tree {label} — tree model",       str(summary_row.get(f"{prefix}_tree_model", ""))],
+                [f"Tree {label} — tree options",     tree_opts or "—"],
+                [f"Tree {label} — leaves",           str(summary_row.get(f"{prefix}_leaves", ""))],
+                [f"Tree {label} — MSA length",       str(summary_row.get(f"{prefix}_msa_length", ""))],
+                [f"Tree {label} — MSA gap %",        str(summary_row.get(f"{prefix}_msa_gap_pct", ""))],
+                [f"Tree {label} — cluster thresh",   f"{summary_row.get(f'{prefix}_cluster_thresh_min', '')}–{summary_row.get(f'{prefix}_cluster_thresh_max', '')}"],
                 [f"Tree {label} — SH support median", str(summary_row.get(f"{prefix}_{sup}_median", ""))],
                 [f"Tree {label} — SH support IQR",    str(summary_row.get(f"{prefix}_{sup}_iqr", ""))],
             ]
@@ -157,20 +165,10 @@ def generate_family_report(
         # ------------------------------------------------------------------
         tree_100 = bio_trees.get("100")
         if tree_100 is not None:
-            try:
-                n_leaves = sum(1 for _ in tree_100.get_terminals())
-                fig_h = max(6, n_leaves * 0.18)
-                fig, ax = plt.subplots(figsize=(11, min(fig_h, 24)))
-                Phylo.draw(tree_100, axes=ax, do_show=False)
-                ax.set_title(f"{family} tree_100", fontsize=11, fontweight="bold")
-                # Scale leaf label font size with tree size
-                font_size = max(4, min(8, int(200 / max(n_leaves, 1))))
-                for txt in ax.texts:
-                    txt.set_fontsize(font_size)
+            fig = _draw_tree_fig(tree_100, family, "100")
+            if fig is not None:
                 pdf.savefig(fig, bbox_inches="tight")
                 plt.close(fig)
-            except Exception as e:
-                log.warning("Tree visualization skipped for %s: %s", family, e)
 
         # PDF metadata
         d = pdf.infodict()
@@ -179,6 +177,66 @@ def generate_family_report(
         d["CreationDate"] = datetime.now(timezone.utc)
 
     log.info("PDF report written to %s", output_pdf)
+
+
+def save_tree_images(
+    family: str,
+    output_dir: Path,
+    bio_trees: dict[str, Any],
+) -> None:
+    """Save standalone PDF and PNG images of the tree_100 and tree_500 visualizations."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError as e:
+        log.warning("Tree image export skipped — matplotlib not available: %s", e)
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for label in ("100", "500"):
+        tree = bio_trees.get(label)
+        if tree is None:
+            continue
+        fig = _draw_tree_fig(tree, family, label)
+        if fig is None:
+            continue
+        stem = f"{family}_tree_{label}"
+        for path, kwargs in [
+            (output_dir / f"{stem}.pdf", {}),
+            (output_dir / f"{stem}.png", {"dpi": 150}),
+        ]:
+            try:
+                fig.savefig(str(path), bbox_inches="tight", **kwargs)
+                log.info("Tree image written to %s", path)
+            except Exception as e:
+                log.warning("Could not write %s: %s", path, e)
+        plt.close(fig)
+
+
+def _draw_tree_fig(tree, family: str, label: str = "100"):
+    """Return a matplotlib Figure of the tree, or None on error."""
+    try:
+        import matplotlib.pyplot as plt
+        from Bio import Phylo
+    except ImportError:
+        return None
+
+    try:
+        n_leaves = sum(1 for _ in tree.get_terminals())
+        fig_h = max(6, n_leaves * 0.18)
+        fig, ax = plt.subplots(figsize=(11, min(fig_h, 24)))
+        Phylo.draw(tree, axes=ax, do_show=False)
+        ax.axis("off")
+        ax.set_title(f"{family} tree_{label}", fontsize=11, fontweight="bold")
+        font_size = max(4, min(8, int(200 / max(n_leaves, 1))))
+        for txt in ax.texts:
+            txt.set_fontsize(font_size)
+        return fig
+    except Exception as e:
+        log.warning("Tree visualization skipped for %s: %s", family, e)
+        return None
 
 
 def _wrap(text: str, width: int) -> str:

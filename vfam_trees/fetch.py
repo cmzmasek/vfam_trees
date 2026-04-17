@@ -260,9 +260,22 @@ def _build_species_query(
         if seq_type == "nucleotide":
             base += ' AND ("complete genome"[Title] OR "complete sequence"[Title])'
     else:
-        # Marker gene (e.g. large DNA viruses): filter by gene name only —
-        # individual gene records rarely carry "complete genome" in their title
-        base += f' AND "{region}"[Gene]'
+        # Marker gene / marker protein for large DNA viruses.
+        # nuccore: search [Gene] — gene-name annotation on nucleotide records.
+        # protein: search [Protein Name] — descriptive names like "DNA polymerase"
+        #          are stored there, not in [Gene] (which holds short symbols like UL30).
+        #          Also include [Gene] as a fallback for gene-symbol-named markers
+        #          like B646L that may appear in either field.
+        if seq_type == "protein":
+            base += (
+                f' AND ("{region}"[Protein Name] OR "{region}"[Gene])'
+            )
+        else:
+            base += (
+                f' AND "{region}"[Gene]'
+                ' NOT "complete genome"[Title]'
+                ' NOT "complete sequence"[Title]'
+            )
     if refseq_only:
         base += " AND refseq[filter]"
     base += " NOT patent[filter]"

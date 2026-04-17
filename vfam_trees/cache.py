@@ -114,6 +114,7 @@ class SequenceCache:
         source_gb: Path,
         n_records: int,
         query: str = "",
+        family: str = "",
     ) -> Path:
         """Copy *source_gb* into the cache and write a manifest.
 
@@ -139,6 +140,7 @@ class SequenceCache:
             "downloaded":      datetime.now(timezone.utc).isoformat(),
             "n_records":       n_records,
             "query":           query,
+            "family":          family,
         }
         try:
             (entry_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -225,6 +227,34 @@ class SequenceCache:
             log.info("Invalidated cache entry: %s", entry_dir)
             return True
         return False
+
+    def clear_family(self, family: str) -> int:
+        """Delete all cache entries whose manifest lists *family*.
+
+        Returns the number of entries removed.
+        """
+        to_remove = []
+        for manifest_path in self.cache_dir.rglob("manifest.json"):
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except Exception:
+                continue
+            if manifest.get("family") == family:
+                to_remove.append(manifest_path.parent)
+        for entry_dir in to_remove:
+            shutil.rmtree(entry_dir)
+            log.info("Cleared cache entry for %s: %s", family, entry_dir)
+        return len(to_remove)
+
+    def clear_all(self) -> int:
+        """Delete every entry in the cache.  Returns the number removed."""
+        removed = 0
+        for manifest_path in list(self.cache_dir.rglob("manifest.json")):
+            entry_dir = manifest_path.parent
+            if entry_dir.exists():
+                shutil.rmtree(entry_dir)
+                removed += 1
+        return removed
 
     def stats(self) -> dict:
         """Return basic cache statistics (entry count and total size)."""

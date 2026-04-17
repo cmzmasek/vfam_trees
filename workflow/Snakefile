@@ -25,14 +25,9 @@ THREADS      = config.get("threads", 1)
 
 
 def family_done(family):
-    status_file = Path(OUTPUT_DIR) / family / ".status.json"
-    if not status_file.exists():
-        return False
-    try:
-        state = json.loads(status_file.read_text())
-        return state.get("status") in ("done", "skipped")
-    except Exception:
-        return False
+    # Sentinel written by the pipeline when a family finishes (done or skipped).
+    sentinel = Path(OUTPUT_DIR) / f".done_{family}"
+    return sentinel.exists()
 
 
 def pending_families():
@@ -42,7 +37,7 @@ def pending_families():
 PENDING = pending_families()
 
 if not PENDING:
-    print("All families already processed. Use --forcerun or delete .status.json to rerun.")
+    print("All families already processed. Use --forcerun or delete .done_<family> to rerun.")
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +46,7 @@ if not PENDING:
 rule all:
     input:
         expand(
-            "{output_dir}/{family}/.status.json",
+            "{output_dir}/.done_{family}",
             output_dir=OUTPUT_DIR,
             family=PENDING,
         )
@@ -62,9 +57,7 @@ rule all:
 # ---------------------------------------------------------------------------
 rule run_family:
     output:
-        status = "{output_dir}/{family}/.status.json",
-    log:
-        "{output_dir}/{family}/{family}.log",
+        sentinel = "{output_dir}/.done_{family}",
     threads: THREADS
     run:
         from vfam_trees.pipeline import run_family

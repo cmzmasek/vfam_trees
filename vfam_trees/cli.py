@@ -204,8 +204,8 @@ def status(families: Path, output_dir: Path):
     family_list = _read_family_list(families)
     rows = []
     for family in family_list:
-        status_file = output_dir / family / ".status.json"
-        if status_file.exists():
+        status_file = _find_status_file(family, output_dir)
+        if status_file is not None:
             try:
                 state = json.loads(status_file.read_text())
                 st = state.get("status", "unknown")
@@ -544,6 +544,110 @@ def test(global_config: Path):
 
 
 # ---------------------------------------------------------------------------
+# cache
+# ---------------------------------------------------------------------------
+
+@main.group()
+def cache():
+    """Manage the shared sequence download cache."""
+
+
+def _load_cache(global_config: Path):
+    """Return a SequenceCache instance from global config, or exit if unconfigured."""
+    import yaml as _yaml
+    from .cache import SequenceCache
+
+    if not global_config.exists():
+        click.echo(f"Global config not found: {global_config}", err=True)
+        sys.exit(1)
+    with open(global_config) as f:
+        gcfg = _yaml.safe_load(f)
+    cache_dir = ((gcfg or {}).get("cache") or {}).get("dir")
+    if not cache_dir:
+        click.echo("cache.dir is not set in global.yaml — caching is disabled.", err=True)
+        sys.exit(1)
+    return SequenceCache(Path(cache_dir).expanduser())
+
+
+@cache.command("clear")
+@click.argument("family", required=False)
+@click.option(
+    "--all", "clear_all",
+    is_flag=True,
+    default=False,
+    help="Clear the entire cache (all families).",
+)
+@click.option(
+    "--global-config", "-g",
+    default=DEFAULT_GLOBAL_CFG,
+    show_default=True,
+    type=click.Path(path_type=Path),
+)
+@click.option(
+    "--yes", "-y",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation prompt.",
+)
+def cache_clear(family: str | None, clear_all: bool, global_config: Path, yes: bool):
+    """Clear cached sequences for a family or the entire cache.
+
+    \b
+    Examples:
+      vfam_trees cache clear Asfarviridae
+      vfam_trees cache clear --all
+      vfam_trees cache clear --all --yes
+    """
+    if not family and not clear_all:
+        click.echo("Specify a FAMILY name or --all.", err=True)
+        sys.exit(1)
+    if family and clear_all:
+        click.echo("Specify either a FAMILY name or --all, not both.", err=True)
+        sys.exit(1)
+
+    sc = _load_cache(global_config)
+
+    if clear_all:
+        st = sc.stats()
+        if not yes:
+            click.confirm(
+                f"Delete all {st['entries']} cache entries ({st['size_mb']} MB) in {sc.cache_dir}?",
+                abort=True,
+            )
+        removed = sc.clear_all()
+        click.echo(f"Removed {removed} cache entries.")
+    else:
+        if not yes:
+            click.confirm(f"Delete all cached sequences for {family}?", abort=True)
+        removed = sc.clear_family(family)
+        if removed:
+            click.echo(f"Removed {removed} cache entries for {family}.")
+        else:
+            click.echo(f"No cache entries found for {family}.")
+
+
+@cache.command("stats")
+@click.option(
+    "--global-config", "-g",
+    default=DEFAULT_GLOBAL_CFG,
+    show_default=True,
+    type=click.Path(path_type=Path),
+)
+def cache_stats(global_config: Path):
+    """Show cache size and entry count.
+
+    \b
+    Examples:
+      vfam_trees cache stats
+    """
+    sc = _load_cache(global_config)
+    st = sc.stats()
+    click.echo(f"Cache directory : {st['cache_dir']}")
+    click.echo(f"Entries         : {st['entries']}")
+    click.echo(f"Total size      : {st['size_mb']} MB")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 def _read_family_list(path: Path) -> list[str]:
@@ -551,11 +655,22 @@ def _read_family_list(path: Path) -> list[str]:
     return [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
 
 
+def _find_status_file(family: str, output_dir: Path) -> Path | None:
+    """Return the .status.json path for a family, searching both the plain
+    name and the taxid-suffixed name (e.g. Asfarviridae_137992)."""
+    plain = output_dir / family / ".status.json"
+    if plain.exists():
+        return plain
+    for candidate in sorted(output_dir.glob(f"{family}_*/.status.json")):
+        return candidate
+    return None
+
+
 def _clear_status(families: list[str], output_dir: Path) -> None:
     for family in families:
-        status_file = output_dir / family / ".status.json"
-        if status_file.exists():
-            status_file.unlink()
+        sentinel = output_dir / f".done_{family}"
+        if sentinel.exists():
+            sentinel.unlink()
             click.echo(f"Cleared status for {family}")
 
 

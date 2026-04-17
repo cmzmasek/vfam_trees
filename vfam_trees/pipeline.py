@@ -29,7 +29,7 @@ from .msa import run_msa, get_mafft_version, validate_msa
 from .tree import run_tree, get_tree_tool_version, validate_newick
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
-from .report import generate_family_report
+from .report import generate_family_report, save_tree_images
 from .cache import SequenceCache
 from .logger import setup_logger, get_logger
 
@@ -46,7 +46,23 @@ def run_family(
     summary_path: Path | None = None,
 ) -> None:
     """Execute the full pipeline for a single viral family."""
-    family_dir = output_dir / family
+    global_cfg = load_global_config(global_config_path)
+    configure_entrez(
+        email=global_cfg["ncbi"]["email"],
+        api_key=global_cfg["ncbi"].get("api_key") or None,
+    )
+
+    # Fetch family-level taxonomy (taxid + ranked lineage) for the summary.
+    # Done first so the taxid can be embedded in the output directory name.
+    family_taxid = get_family_taxid(family)
+    if family_taxid is not None:
+        family_lineage_map = fetch_taxonomy_lineages([family_taxid])
+        family_lineage = family_lineage_map.get(str(family_taxid), [])
+    else:
+        family_lineage = []
+
+    dir_name = f"{family}_{family_taxid}" if family_taxid is not None else family
+    family_dir = output_dir / dir_name
     family_dir.mkdir(parents=True, exist_ok=True)
 
     log_file = family_dir / f"{family}.log"
@@ -57,11 +73,8 @@ def run_family(
     log.info("Starting pipeline for %s", family)
     log.info("=" * 60)
 
-    global_cfg = load_global_config(global_config_path)
-    configure_entrez(
-        email=global_cfg["ncbi"]["email"],
-        api_key=global_cfg["ncbi"].get("api_key") or None,
-    )
+    if family_taxid is None:
+        log.warning("Could not resolve NCBI taxid for family %s", family)
 
     # Global sequence cache (optional — only active when cache.dir is set in global.yaml)
     cache_cfg  = global_cfg.get("cache") or {}
@@ -75,15 +88,6 @@ def run_family(
             "Global sequence cache: %s  (%d entries, %.1f MB)",
             seq_cache.cache_dir, cs["entries"], cs["size_mb"],
         )
-
-    # Fetch family-level taxonomy (taxid + ranked lineage) for the summary
-    family_taxid = get_family_taxid(family)
-    if family_taxid is not None:
-        family_lineage_map = fetch_taxonomy_lineages([family_taxid])
-        family_lineage = family_lineage_map.get(str(family_taxid), [])
-    else:
-        log.warning("Could not resolve NCBI taxid for family %s", family)
-        family_lineage = []
 
     family_cfg, auto_generated = load_family_config(family, configs_dir, global_cfg)
     if auto_generated:
@@ -115,7 +119,7 @@ def run_family(
         species_list = discover_species(family)
         if not species_list:
             log.warning("No species found for %s — skipping.", family)
-            _mark_skipped(family_dir, family, "no species found in NCBI taxonomy")
+            _mark_skipped(family_dir, family, output_dir, "no species found in NCBI taxonomy")
             if summary_path is not None:
                 row = build_summary_row(
                     family=family,
@@ -153,6 +157,8 @@ def run_family(
 
     log.info("Downloading sequences for %d species (max %d per species) ...",
              len(species_list), max_per_species)
+    from .summary import format_molecule_region
+    log.info("Sequence type: %s", format_molecule_region(seq_type, region, segment))
 
     for i, sp in enumerate(species_list, start=1):
         sp_name = sp["name"]
@@ -198,7 +204,7 @@ def run_family(
                         log.info("[%d/%d] No sequences found for %s — skipping.",
                                  i, len(species_list), sp_name)
                         continue
-                    seq_cache.store(sp_taxid, db, region, segment, max_per_species, gb_file, n)
+                    seq_cache.store(sp_taxid, db, region, segment, max_per_species, gb_file, n, family=family)
 
         # Tier 3: no global cache — plain download
         else:
@@ -309,7 +315,7 @@ def run_family(
             "Only %d sequence(s) passed quality filters for %s (minimum 4) — skipping.",
             total_seqs, family,
         )
-        _mark_skipped(family_dir, family, f"too few sequences after QC ({total_seqs} < 4)")
+        _mark_skipped(family_dir, family, output_dir, f"too few sequences after QC ({total_seqs} < 4)")
         if summary_path is not None:
             row = build_summary_row(
                 family=family,
@@ -410,7 +416,7 @@ def run_family(
     log.info("=" * 60)
     log.info("Pipeline complete for %s", family)
     log.info("=" * 60)
-    _mark_done(family_dir, family)
+    _mark_done(family_dir, family, output_dir)
 
     summary_row = build_summary_row(
         family=family,
@@ -437,6 +443,13 @@ def run_family(
         summary_row=summary_row,
         seq_lengths=seq_lengths_all,
         tree_support=tree_support,
+        bio_trees=bio_trees,
+    )
+
+    # Standalone tree images (PDF + PNG)
+    save_tree_images(
+        family=family,
+        output_dir=family_dir,
         bio_trees=bio_trees,
     )
 
@@ -499,16 +512,22 @@ def _run_target(
     sel_records = proportional_merge(species_reps, target_n)
     log.info("Proportional merge: selected %d sequences for tree_%s", len(sel_records), label)
 
-    if not sel_records:
-        log.warning("No sequences selected for %s tree — skipping.", label)
+    if len(sel_records) < 4:
+        log.warning(
+            "Only %d sequence(s) after proportional merge for tree_%s (minimum 4) — skipping.",
+            len(sel_records), label,
+        )
         return {}, [], None
 
     # Outlier removal before MSA
     sel_records, n_outliers = remove_length_outliers(sel_records)
     if n_outliers:
         log.info("Removed %d length outlier(s) from tree_%s input", n_outliers, label)
-    if not sel_records:
-        log.warning("All sequences removed as outliers for tree_%s — skipping.", label)
+    if len(sel_records) < 4:
+        log.warning(
+            "Only %d sequence(s) after outlier removal for tree_%s (minimum 4) — skipping.",
+            len(sel_records), label,
+        )
         return {}, [], None
 
     sel_metadata = [short_id_to_meta.get(r.id, {}) for r in sel_records]
@@ -609,10 +628,17 @@ def _run_target(
         restore_newick_names(source_nwk, output_nwk, short_to_display)
 
     # Collect summary stats
+    tree_model = tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa")
     target_stats: dict = {
-        "leaves": len(sel_records),
-        "cluster_thresh_min": cluster_thresh_min,
-        "cluster_thresh_max": cluster_thresh_max,
+        "leaves":              len(sel_records),
+        "cluster_thresh_min":  cluster_thresh_min,
+        "cluster_thresh_max":  cluster_thresh_max,
+        "seq_type":            seq_type,
+        "msa_tool":            msa_cfg["tool"],
+        "msa_options":         msa_cfg.get("options", ""),
+        "tree_tool":           tree_cfg["tool"],
+        "tree_model":          tree_model or "",
+        "tree_options":        tree_cfg.get("options", ""),
     }
     support_vals: list[float] = []
     if bio_tree is not None:
@@ -753,11 +779,13 @@ def _save_config_copy(cfg: dict, path: Path) -> None:
         yaml.dump(clean, f, default_flow_style=False, sort_keys=False)
 
 
-def _mark_done(family_dir: Path, family: str) -> None:
+def _mark_done(family_dir: Path, family: str, output_dir: Path) -> None:
     (family_dir / ".status.json").write_text(json.dumps({"family": family, "status": "done"}))
+    (output_dir / f".done_{family}").write_text("")
 
 
-def _mark_skipped(family_dir: Path, family: str, reason: str) -> None:
+def _mark_skipped(family_dir: Path, family: str, output_dir: Path, reason: str) -> None:
     (family_dir / ".status.json").write_text(
         json.dumps({"family": family, "status": "skipped", "reason": reason})
     )
+    (output_dir / f".done_{family}").write_text("")
