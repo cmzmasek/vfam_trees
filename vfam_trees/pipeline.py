@@ -551,6 +551,7 @@ def _run_target(
     do_outlier_removal = outlier_cfg.get("enabled", True)
     outlier_factor = float(outlier_cfg.get("factor", 10.0))
     max_iterations = int(outlier_cfg.get("max_iterations", 3))
+    outlier_min_seqs = int(outlier_cfg.get("min_seqs", 40))
 
     msa_short_fasta = target_work / f"alignment_{label}_short.fasta"
     msa_checkpoint = target_work / ".msa_done"
@@ -612,10 +613,28 @@ def _run_target(
         if not do_outlier_removal or iteration >= max_iterations:
             break
 
+        if len(sel_records) <= outlier_min_seqs:
+            log.info(
+                "Skipping branch-length outlier removal for tree_%s (iteration %d): "
+                "%d sequences ≤ min_seqs threshold %d.",
+                label, iteration, len(sel_records), outlier_min_seqs,
+            )
+            break
+
         outlier_ids = _find_branch_length_outliers(treefile, outlier_factor)
         if not outlier_ids:
             log.info("No branch-length outliers found for tree_%s (iteration %d) — stopping.",
                      label, iteration)
+            break
+
+        # Only remove outliers that still leave at least outlier_min_seqs sequences
+        remaining_after = len(sel_records) - len(outlier_ids)
+        if remaining_after < outlier_min_seqs:
+            log.info(
+                "Skipping branch-length outlier removal for tree_%s (iteration %d): "
+                "removing %d outlier(s) would leave only %d sequences (min_seqs=%d).",
+                label, iteration, len(outlier_ids), remaining_after, outlier_min_seqs,
+            )
             break
 
         removed_names = [short_to_display.get(oid, oid) for oid in outlier_ids]

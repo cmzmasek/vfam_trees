@@ -145,6 +145,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "enabled": True,
         "factor": 10.0,
         "max_iterations": 3,
+        "min_seqs": 40,
     },
 }
 
