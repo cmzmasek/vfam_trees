@@ -304,12 +304,12 @@ def run_family(
     seqlen_stats = compute_seqlen_stats(seq_lengths_all)
     total_seqs = sum(len(d["records"]) for d in species_data.values())
 
-    if total_seqs < 5:
+    if total_seqs < 4:
         log.warning(
-            "Only %d sequence(s) passed quality filters for %s (minimum 5) — skipping.",
+            "Only %d sequence(s) passed quality filters for %s (minimum 4) — skipping.",
             total_seqs, family,
         )
-        _mark_skipped(family_dir, family, f"too few sequences after QC ({total_seqs} < 5)")
+        _mark_skipped(family_dir, family, f"too few sequences after QC ({total_seqs} < 4)")
         if summary_path is not None:
             row = build_summary_row(
                 family=family,
@@ -399,7 +399,13 @@ def run_family(
         if support_vals:
             tree_support[label] = support_vals
         if bio_tree is not None:
-            bio_trees[label] = bio_tree
+            # Store a display-name copy for the PDF report so leaf labels are
+            # human-readable rather than short IDs.
+            display_tree = copy.deepcopy(bio_tree)
+            for clade in display_tree.find_clades():
+                if clade.is_terminal():
+                    clade.name = short_to_display.get(clade.name, clade.name)
+            bio_trees[label] = display_tree
 
     log.info("=" * 60)
     log.info("Pipeline complete for %s", family)
@@ -585,7 +591,7 @@ def _run_target(
 
     # Detect extreme branch lengths (potential chimeras / misannotations)
     if bio_tree is not None:
-        _warn_extreme_branches(bio_tree, label, log)
+        _warn_extreme_branches(bio_tree, label, short_to_display, log)
 
     # Write final Newick from in-memory tree — display names on leaves, no internal labels
     output_nwk = family_dir / f"{family}_tree_{label}.nwk"
@@ -652,7 +658,9 @@ def _run_target(
     return target_stats, support_vals, bio_tree
 
 
-def _warn_extreme_branches(bio_tree, label: str, log) -> None:
+def _warn_extreme_branches(
+    bio_tree, label: str, short_to_display: dict[str, str], log
+) -> None:
     """Warn about terminal branches that are >10× the median — possible chimeras."""
     branch_lengths = [
         c.branch_length for c in bio_tree.get_terminals()
@@ -669,10 +677,11 @@ def _warn_extreme_branches(bio_tree, label: str, log) -> None:
         if c.branch_length is not None and c.branch_length > threshold
     ]
     for clade in outliers:
+        display_name = short_to_display.get(clade.name, clade.name)
         log.warning(
             "tree_%s: possible chimera/misannotation — leaf '%s' has branch length "
             "%.4f (>10× median %.4f)",
-            label, clade.name, clade.branch_length, median_bl,
+            label, display_name, clade.branch_length, median_bl,
         )
 
 
