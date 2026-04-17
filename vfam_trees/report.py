@@ -7,6 +7,7 @@ from typing import Any
 
 from . import __version__
 from .logger import get_logger
+from .summary import compute_seqlen_stats
 
 log = get_logger(__name__)
 
@@ -16,8 +17,9 @@ def generate_family_report(
     output_pdf: Path,
     summary_row: dict,
     seq_lengths: list[int],
-    tree_support: dict[str, list[float]],
-    bio_trees: dict[str, Any],
+    tree_seq_lengths: dict[str, list[int]] | None = None,
+    tree_support: dict[str, list[float]] | None = None,
+    bio_trees: dict[str, Any] | None = None,
 ) -> None:
     """Generate a per-family PDF report with stats and plots.
 
@@ -29,6 +31,13 @@ def generate_family_report(
         tree_support: {"500": [sh_values], "100": [sh_values]}
         bio_trees: {"500": BioPython tree, "100": BioPython tree}
     """
+    if tree_seq_lengths is None:
+        tree_seq_lengths = {}
+    if tree_support is None:
+        tree_support = {}
+    if bio_trees is None:
+        bio_trees = {}
+
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -77,6 +86,7 @@ def generate_family_report(
             sup = "shlike" if label == "500" else "shalrt"
             tree_opts = str(summary_row.get(f"{prefix}_tree_options", "")).strip()
             msa_opts  = str(summary_row.get(f"{prefix}_msa_options", "")).strip()
+            tsl = compute_seqlen_stats(tree_seq_lengths.get(label, []))
             table_data += [
                 [f"Tree {label} — sequence type",    str(summary_row.get(f"{prefix}_seq_type", ""))],
                 [f"Tree {label} — MSA tool",         str(summary_row.get(f"{prefix}_msa_tool", ""))],
@@ -85,6 +95,10 @@ def generate_family_report(
                 [f"Tree {label} — tree model",       str(summary_row.get(f"{prefix}_tree_model", ""))],
                 [f"Tree {label} — tree options",     tree_opts or "—"],
                 [f"Tree {label} — leaves",           str(summary_row.get(f"{prefix}_leaves", ""))],
+                [f"Tree {label} — seq len min",      str(tsl.get("min", ""))],
+                [f"Tree {label} — seq len median",   str(tsl.get("median", ""))],
+                [f"Tree {label} — seq len max",      str(tsl.get("max", ""))],
+                [f"Tree {label} — seq len IQR",      str(tsl.get("iqr", ""))],
                 [f"Tree {label} — MSA length",       str(summary_row.get(f"{prefix}_msa_length", ""))],
                 [f"Tree {label} — MSA gap %",        str(summary_row.get(f"{prefix}_msa_gap_pct", ""))],
                 [f"Tree {label} — cluster thresh",   f"{summary_row.get(f'{prefix}_cluster_thresh_min', '')}–{summary_row.get(f'{prefix}_cluster_thresh_max', '')}"],
@@ -128,7 +142,27 @@ def generate_family_report(
             plt.close(fig)
 
         # ------------------------------------------------------------------
-        # Page 3: SH support histograms
+        # Pages 3a/3b: Sequence length histograms for tree_500 and tree_100
+        # ------------------------------------------------------------------
+        for label, color in (("500", "#3c6e9f"), ("100", "#e07b39")):
+            lengths = tree_seq_lengths.get(label, [])
+            if lengths:
+                fig, ax = plt.subplots(figsize=(9, 5))
+                ax.hist(lengths, bins=min(40, max(5, len(lengths) // 3)),
+                        color=color, edgecolor="white", linewidth=0.5)
+                ax.set_xlabel("Sequence length (bp/aa)", fontsize=11)
+                ax.set_ylabel("Count", fontsize=11)
+                ax.set_title(
+                    f"{family} tree_{label} — sequence length distribution (n={len(lengths)})",
+                    fontsize=12,
+                )
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close(fig)
+
+        # ------------------------------------------------------------------
+        # Page 4: SH support histograms
         # ------------------------------------------------------------------
         has_500 = bool(tree_support.get("500"))
         has_100 = bool(tree_support.get("100"))

@@ -17,6 +17,7 @@ Two trees are produced per family:
 - Proportional cross-species sampling to fill target tree sizes
 - Minimum sequence checks at multiple stages (post-QC, post-merge, post-outlier-removal); families and individual tree targets are skipped gracefully when too few sequences remain
 - Length outlier removal before alignment (sequences >3× median length excluded)
+- Iterative post-tree branch-length outlier removal: after each tree, leaves with branch length >factor× median are removed and MSA+tree is re-run (up to max_iterations; configurable per family, on by default)
 - MAFFT multiple sequence alignment (separate options for tree_500 and tree_100)
 - FastTree (tree_500) and IQ-TREE `--fast` (tree_100) tree inference
 - SH-like support values (FastTree) and SH-aLRT support values (IQ-TREE); stored in PhyloXML `<confidence>` elements and reported in the summary TSV
@@ -30,7 +31,12 @@ Two trees are produced per family:
 - Warning when NCBI returns a partial batch
 - Warning when a per-family YAML config contains unrecognized keys
 - Warning when a config file overrides a recommended DNA-family setting (e.g. stale auto-generated config with `region: whole_genome` for a large DNA virus family)
-- Per-family PDF report (statistics table including MSA/tree tools and options, sequence length histogram, SH support histograms, tree_100 visualization)
+- Per-family PDF report containing:
+  - Statistics table (NCBI taxid, lineage, molecule/region, species counts, QC breakdown, post-QC sequence length stats, and per-tree: sequence type, MSA tool/options, tree program/model/options, leaf count, sequence length stats, MSA length/gap%, clustering thresholds, SH support stats)
+  - Post-QC sequence length histogram
+  - Per-tree sequence length histograms for tree_500 and tree_100 (sequences actually used to build each tree)
+  - SH support value histograms for both trees
+  - tree_100 visualization
 - Standalone PDF and PNG tree images for both tree_100 and tree_500 (no axes/frame)
 - Output directories named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 - Pre-configured support for 35+ segmented RNA virus families and 19 DNA virus families
@@ -195,6 +201,11 @@ tree_100:
   options: "--fast"             # SH-aLRT support; compatible with --fast
   model_nuc: GTR+G
   model_aa: WAG+G
+
+outlier_removal:
+  enabled: true                 # iterative post-tree branch-length outlier removal
+  factor: 10.0                  # remove leaves with branch_length > factor × median
+  max_iterations: 3             # maximum MSA+tree iterations
 ```
 
 #### DNA virus families
@@ -270,17 +281,17 @@ For each family, results are written to `results/<Family>_<taxid>/` (e.g. `resul
 | `<Family>_tree_500.png` | Standalone PNG tree image (broad, 150 dpi) |
 | `<Family>_tree_100.pdf` | Standalone PDF tree image (collapsed) |
 | `<Family>_tree_100.png` | Standalone PNG tree image (collapsed, 150 dpi) |
-| `<Family>_alignment_500.fasta` | MAFFT alignment (broad) |
-| `<Family>_alignment_100.fasta` | MAFFT alignment (collapsed) |
-| `<Family>_sequences_raw_500.fasta` | QC-filtered sequences before alignment (broad) |
-| `<Family>_sequences_raw_100.fasta` | QC-filtered sequences before alignment (collapsed) |
+| `<Family>_alignment_500.fasta` | Final MAFFT alignment used for tree_500 (reflects sequences after iterative outlier removal) |
+| `<Family>_alignment_100.fasta` | Final MAFFT alignment used for tree_100 (reflects sequences after iterative outlier removal) |
+| `<Family>_sequences_raw_500.fasta` | Sequences entering the MSA (after QC, clustering, and proportional merge; before post-tree outlier removal) |
+| `<Family>_sequences_raw_100.fasta` | Sequences entering the MSA (after QC, clustering, and proportional merge; before post-tree outlier removal) |
 | `<Family>_metadata_500.tsv` | Sequence metadata (broad) |
 | `<Family>_metadata_100.tsv` | Sequence metadata (collapsed) |
 | `<Family>_id_map.tsv` | Short ID → display name mapping |
-| `<Family>_report.pdf` | Per-family PDF report (stats table, length histogram, SH support histograms, tree_100 visualization) |
+| `<Family>_report.pdf` | Per-family PDF report: stats table, post-QC length histogram, per-tree length histograms (tree_500 and tree_100), SH support histograms, tree_100 visualization |
 | `<Family>.log` | Per-family log |
 
-A cross-family summary TSV is written to `results/summary.tsv` and updated after each family completes (including families that were skipped due to no species or too few sequences). Key columns include species counts, QC exclusion breakdown, sequence length statistics, clustering thresholds, MSA tool/options, tree program/model/options, and SH support statistics for both trees.
+A cross-family summary TSV is written to `results/summary.tsv` and updated after each family completes (including families that were skipped due to no species or too few sequences). Key columns include species counts, QC exclusion breakdown, post-QC sequence length statistics, clustering thresholds, MSA tool/options, tree program/model/options, per-tree leaf counts, and SH support statistics for both trees.
 
 ## License
 

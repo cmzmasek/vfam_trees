@@ -141,6 +141,11 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "model_nuc": "GTR+G",
         "model_aa": "WAG+G",
     },
+    "outlier_removal": {
+        "enabled": True,
+        "factor": 10.0,
+        "max_iterations": 3,
+    },
 }
 
 

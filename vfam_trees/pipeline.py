@@ -379,6 +379,7 @@ def run_family(
     tree_stats: dict[str, dict] = {}
     tree_support: dict[str, list[float]] = {}
     bio_trees: dict[str, object] = {}
+    tree_seq_lengths: dict[str, list[int]] = {}
 
     for target_n, max_reps, label in targets:
         log.info("-" * 40)
@@ -402,6 +403,8 @@ def run_family(
             log=log,
         )
         tree_stats[label] = stats
+        if stats.get("seq_lengths"):
+            tree_seq_lengths[label] = stats["seq_lengths"]
         if support_vals:
             tree_support[label] = support_vals
         if bio_tree is not None:
@@ -442,6 +445,7 @@ def run_family(
         output_pdf=family_dir / f"{family}_report.pdf",
         summary_row=summary_row,
         seq_lengths=seq_lengths_all,
+        tree_seq_lengths=tree_seq_lengths,
         tree_support=tree_support,
         bio_trees=bio_trees,
     )
@@ -541,61 +545,102 @@ def _run_target(
     # Metadata TSV
     _write_metadata_tsv(sel_metadata, short_to_display, family_dir / f"{family}_metadata_{label}.tsv")
 
-    # ------------------------------------------------------------------
-    # MSA — with checkpointing
-    # ------------------------------------------------------------------
+    msa_cfg = family_cfg[f"msa_{label}"]
+    tree_cfg = family_cfg[f"tree_{label}"]
+    outlier_cfg = family_cfg.get("outlier_removal", {})
+    do_outlier_removal = outlier_cfg.get("enabled", True)
+    outlier_factor = float(outlier_cfg.get("factor", 10.0))
+    max_iterations = int(outlier_cfg.get("max_iterations", 3))
+
     msa_short_fasta = target_work / f"alignment_{label}_short.fasta"
     msa_checkpoint = target_work / ".msa_done"
-    msa_cfg = family_cfg[f"msa_{label}"]
-
-    if msa_checkpoint.exists() and msa_short_fasta.exists():
-        log.info("Reusing cached MSA for tree_%s", label)
-    else:
-        log.info("Running MAFFT (%s) on %d sequences for tree_%s ...",
-                 msa_cfg["options"], len(sel_records), label)
-        run_msa(
-            input_fasta=raw_short_fasta,
-            output_fasta=msa_short_fasta,
-            tool=msa_cfg["tool"],
-            options=msa_cfg["options"],
-            threads=threads,
-        )
-        validate_msa(msa_short_fasta)
-        msa_checkpoint.touch()
-        log.info("MAFFT complete for tree_%s", label)
-
-    restore_fasta_names(msa_short_fasta, family_dir / f"{family}_alignment_{label}.fasta", id_map)
-
-    # ------------------------------------------------------------------
-    # Tree inference — with checkpointing
-    # ------------------------------------------------------------------
-    tree_cfg = family_cfg[f"tree_{label}"]
     tree_output_dir = target_work / "tree"
     expected_treefile = tree_output_dir / f"tree_{label}.nwk"
     tree_checkpoint = target_work / ".tree_done"
+    treefile: Path | None = None
 
-    if tree_checkpoint.exists() and expected_treefile.exists():
-        log.info("Reusing cached tree for tree_%s", label)
-        treefile = expected_treefile
-    else:
-        log.info("Running %s (%s model) for tree_%s ...",
-                 tree_cfg["tool"],
-                 tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa"),
-                 label)
-        treefile = run_tree(
-            alignment_fasta=msa_short_fasta,
-            output_dir=tree_output_dir,
-            prefix=f"tree_{label}",
-            tool=tree_cfg["tool"],
-            seq_type=seq_type,
-            model_nuc=tree_cfg.get("model_nuc", "GTR+G"),
-            model_aa=tree_cfg.get("model_aa", "WAG+G"),
-            options=tree_cfg.get("options", ""),
-            threads=threads,
+    for iteration in range(max_iterations + 1):
+        # ------------------------------------------------------------------
+        # MSA — with checkpointing
+        # ------------------------------------------------------------------
+        if msa_checkpoint.exists() and msa_short_fasta.exists():
+            log.info("Reusing cached MSA for tree_%s (iteration %d)", label, iteration)
+        else:
+            log.info("Running MAFFT (%s) on %d sequences for tree_%s (iteration %d) ...",
+                     msa_cfg["options"], len(sel_records), label, iteration)
+            write_fasta(sel_records, raw_short_fasta)
+            run_msa(
+                input_fasta=raw_short_fasta,
+                output_fasta=msa_short_fasta,
+                tool=msa_cfg["tool"],
+                options=msa_cfg["options"],
+                threads=threads,
+            )
+            validate_msa(msa_short_fasta)
+            msa_checkpoint.touch()
+            log.info("MAFFT complete for tree_%s (iteration %d)", label, iteration)
+
+        # ------------------------------------------------------------------
+        # Tree inference — with checkpointing
+        # ------------------------------------------------------------------
+        if tree_checkpoint.exists() and expected_treefile.exists():
+            log.info("Reusing cached tree for tree_%s (iteration %d)", label, iteration)
+            treefile = expected_treefile
+        else:
+            log.info("Running %s (%s model) for tree_%s (iteration %d) ...",
+                     tree_cfg["tool"],
+                     tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa"),
+                     label, iteration)
+            treefile = run_tree(
+                alignment_fasta=msa_short_fasta,
+                output_dir=tree_output_dir,
+                prefix=f"tree_{label}",
+                tool=tree_cfg["tool"],
+                seq_type=seq_type,
+                model_nuc=tree_cfg.get("model_nuc", "GTR+G"),
+                model_aa=tree_cfg.get("model_aa", "WAG+G"),
+                options=tree_cfg.get("options", ""),
+                threads=threads,
+            )
+            validate_newick(treefile)
+            tree_checkpoint.touch()
+            log.info("Tree inference complete for tree_%s (iteration %d)", label, iteration)
+
+        # ------------------------------------------------------------------
+        # Post-tree branch-length outlier removal (iterative)
+        # ------------------------------------------------------------------
+        if not do_outlier_removal or iteration >= max_iterations:
+            break
+
+        outlier_ids = _find_branch_length_outliers(treefile, outlier_factor)
+        if not outlier_ids:
+            log.info("No branch-length outliers found for tree_%s (iteration %d) — stopping.",
+                     label, iteration)
+            break
+
+        removed_names = [short_to_display.get(oid, oid) for oid in outlier_ids]
+        log.info(
+            "tree_%s iteration %d: removing %d branch-length outlier(s) (>%.1f× median): %s",
+            label, iteration, len(outlier_ids), outlier_factor,
+            ", ".join(removed_names),
         )
-        validate_newick(treefile)
-        tree_checkpoint.touch()
-        log.info("Tree inference complete for tree_%s", label)
+
+        sel_records = [r for r in sel_records if r.id not in outlier_ids]
+        if len(sel_records) < 4:
+            log.warning(
+                "Only %d sequence(s) after branch-length outlier removal for tree_%s — stopping.",
+                len(sel_records), label,
+            )
+            break
+
+        # Clear checkpoints so the next iteration re-runs MSA + tree
+        msa_checkpoint.unlink(missing_ok=True)
+        tree_checkpoint.unlink(missing_ok=True)
+        # Update metadata/id_map for the reduced set
+        sel_metadata = [short_id_to_meta.get(r.id, {}) for r in sel_records]
+        id_map = {r.id: short_to_display.get(r.id, r.id) for r in sel_records}
+
+    restore_fasta_names(msa_short_fasta, family_dir / f"{family}_alignment_{label}.fasta", id_map)
 
     # Taxonomy annotation + rooting
     log.info("Inferring internal node taxonomy and rooting tree_%s ...", label)
@@ -629,6 +674,7 @@ def _run_target(
 
     # Collect summary stats
     tree_model = tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa")
+    tree_seq_lengths = [len(r.seq) for r in sel_records]
     target_stats: dict = {
         "leaves":              len(sel_records),
         "cluster_thresh_min":  cluster_thresh_min,
@@ -639,6 +685,7 @@ def _run_target(
         "tree_tool":           tree_cfg["tool"],
         "tree_model":          tree_model or "",
         "tree_options":        tree_cfg.get("options", ""),
+        "seq_lengths":         tree_seq_lengths,
     }
     support_vals: list[float] = []
     if bio_tree is not None:
@@ -682,6 +729,29 @@ def _run_target(
     )
 
     return target_stats, support_vals, bio_tree
+
+
+def _find_branch_length_outliers(treefile: Path, factor: float) -> set[str]:
+    """Return leaf IDs whose branch length exceeds factor × median."""
+    from Bio import Phylo as _Phylo
+    try:
+        bio_tree = next(iter(_Phylo.parse(str(treefile), "newick")))
+    except Exception:
+        return set()
+    branch_lengths = [
+        c.branch_length for c in bio_tree.get_terminals()
+        if c.branch_length is not None and c.branch_length > 0
+    ]
+    if len(branch_lengths) < 3:
+        return set()
+    median_bl = statistics.median(branch_lengths)
+    if median_bl == 0:
+        return set()
+    threshold = median_bl * factor
+    return {
+        c.name for c in bio_tree.get_terminals()
+        if c.branch_length is not None and c.branch_length > threshold and c.name
+    }
 
 
 def _warn_extreme_branches(
