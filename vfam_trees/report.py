@@ -163,10 +163,10 @@ def generate_family_report(
                 fig, ax = plt.subplots(figsize=(11, min(fig_h, 24)))
                 Phylo.draw(tree_100, axes=ax, do_show=False)
                 ax.set_title(f"{family} tree_100", fontsize=11, fontweight="bold")
-                # Remove individual leaf labels if too many (>60) to keep readable
-                if n_leaves > 60:
-                    for label in ax.get_yticklabels():
-                        label.set_fontsize(5)
+                # Scale leaf label font size with tree size
+                font_size = max(4, min(8, int(200 / max(n_leaves, 1))))
+                for txt in ax.texts:
+                    txt.set_fontsize(font_size)
                 pdf.savefig(fig, bbox_inches="tight")
                 plt.close(fig)
             except Exception as e:
