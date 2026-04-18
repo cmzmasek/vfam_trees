@@ -17,7 +17,7 @@ Two trees are produced per family:
 - Proportional cross-species sampling to fill target tree sizes
 - Minimum sequence checks at multiple stages (post-QC, post-merge, post-outlier-removal); families and individual tree targets are skipped gracefully when too few sequences remain
 - Length outlier removal before alignment (sequences >3× median length excluded)
-- Iterative post-tree branch-length outlier removal: after each tree, leaves with branch length >factor× median are removed and MSA+tree is re-run (up to max_iterations; removal only proceeds when at least min_seqs sequences remain; configurable per family, on by default)
+- Iterative post-tree branch-length outlier removal: after each tree, leaves with branch length exceeding `median + factor × MAD` (Median Absolute Deviation — robust to skewed distributions) are removed and MSA+tree is re-run (up to max_iterations; removal only proceeds when at least min_seqs sequences remain; configurable per family, on by default)
 - MAFFT multiple sequence alignment (separate options for tree_500 and tree_100)
 - FastTree (tree_500) and IQ-TREE `--fast` (tree_100) tree inference
 - SH-like support values (FastTree) and SH-aLRT support values (IQ-TREE); stored in PhyloXML `<confidence>` elements and reported in the summary TSV
@@ -204,7 +204,7 @@ tree_100:
 
 outlier_removal:
   enabled: true                 # iterative post-tree branch-length outlier removal
-  factor: 10.0                  # remove leaves with branch_length > factor × median
+  factor: 5.0                   # threshold = median + factor × MAD (Median Absolute Deviation)
   max_iterations: 3             # maximum MSA+tree iterations
   min_seqs: 40                  # only remove outliers when ≥ min_seqs sequences remain after removal
 ```

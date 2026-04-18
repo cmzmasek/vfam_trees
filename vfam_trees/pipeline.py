@@ -639,7 +639,7 @@ def _run_target(
 
         removed_names = [short_to_display.get(oid, oid) for oid in outlier_ids]
         log.info(
-            "tree_%s iteration %d: removing %d branch-length outlier(s) (>%.1f× median): %s",
+            "tree_%s iteration %d: removing %d branch-length outlier(s) (>median + %.1f×MAD): %s",
             label, iteration, len(outlier_ids), outlier_factor,
             ", ".join(removed_names),
         )
@@ -751,7 +751,11 @@ def _run_target(
 
 
 def _find_branch_length_outliers(treefile: Path, factor: float) -> set[str]:
-    """Return leaf IDs whose branch length exceeds factor × median."""
+    """Return leaf IDs whose branch length exceeds median + factor × MAD.
+
+    Uses the Median Absolute Deviation (MAD), a robust spread estimator that is
+    not inflated by the outliers being detected (unlike standard deviation).
+    """
     from Bio import Phylo as _Phylo
     try:
         bio_tree = next(iter(_Phylo.parse(str(treefile), "newick")))
@@ -764,9 +768,10 @@ def _find_branch_length_outliers(treefile: Path, factor: float) -> set[str]:
     if len(branch_lengths) < 3:
         return set()
     median_bl = statistics.median(branch_lengths)
-    if median_bl == 0:
+    mad = statistics.median([abs(x - median_bl) for x in branch_lengths])
+    if mad == 0:
         return set()
-    threshold = median_bl * factor
+    threshold = median_bl + factor * mad
     return {
         c.name for c in bio_tree.get_terminals()
         if c.branch_length is not None and c.branch_length > threshold and c.name
