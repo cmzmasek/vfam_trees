@@ -293,13 +293,16 @@ def _draw_tree_fig(
         fig_w = 14 if has_legend else 11
         fig, ax = plt.subplots(figsize=(fig_w, min(fig_h, 24)))
 
-        Phylo.draw(tree, axes=ax, do_show=False,
-                   label_colors=label_colors or {})
+        Phylo.draw(tree, axes=ax, do_show=False)
         ax.axis("off")
         ax.set_title(f"{family} tree_{label}", fontsize=11, fontweight="bold")
         font_size = max(4, min(8, int(200 / max(n_leaves, 1))))
         for txt in ax.texts:
             txt.set_fontsize(font_size)
+            if label_colors:
+                color = label_colors.get(txt.get_text().strip())
+                if color:
+                    txt.set_color(color)
 
         if has_legend and genus_to_color:
             _draw_taxonomy_legend(ax, genus_to_color, subfamily_to_genera or {})
@@ -356,6 +359,53 @@ def _draw_taxonomy_legend(
     )
 
 
+_REALM_BG: dict[str, str] = {
+    "monodnaviria":   "#f3e5f5",   # lavender  — ssDNA
+    "duplodnaviria":  "#e3f2fd",   # light blue — dsDNA (tailed phages)
+    "varidnaviria":   "#dceefb",   # steel blue — dsDNA (non-tailed)
+    "pararnavirae":   "#fff8e1",   # amber      — RT viruses
+    "negarnaviricota": "#fce4ec",  # pink       — –ssRNA
+    "riboviria":      "#e8f5e9",   # light green — +ssRNA / dsRNA
+}
+_REALM_LABEL: dict[str, str] = {
+    "monodnaviria":   "ssDNA",
+    "duplodnaviria":  "dsDNA (tailed)",
+    "varidnaviria":   "dsDNA (non-tailed)",
+    "pararnavirae":   "RT viruses",
+    "negarnaviricota": "–ssRNA",
+    "riboviria":      "+ssRNA / dsRNA",
+}
+_DEFAULT_BG = "#f5f5f5"
+
+
+def _lineage_to_bg(lineage_str: str) -> str:
+    l = lineage_str.lower()
+    for key, color in _REALM_BG.items():
+        if key in l:
+            return color
+    return _DEFAULT_BG
+
+
+def _read_summary_lineages(output_dir: Path) -> dict[str, str]:
+    """Return {family: lineage_str} from summary.tsv if present."""
+    import csv as _csv
+    summary = output_dir / "summary.tsv"
+    if not summary.exists():
+        return {}
+    result: dict[str, str] = {}
+    try:
+        with open(summary, newline="") as f:
+            reader = _csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                fam = row.get("family", "")
+                lin = row.get("lineage", "")
+                if fam:
+                    result[fam] = lin
+    except Exception:
+        pass
+    return result
+
+
 def generate_overview_png(output_dir: Path, output_path: Path) -> None:
     """Thumbnail grid of every tree_100 found under output_dir.
 
@@ -378,6 +428,8 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
         log.warning("No tree_100.nwk files found in %s — skipping overview PNG.", output_dir)
         return
 
+    lineage_map = _read_summary_lineages(output_dir)
+
     entries: list[tuple[str, object]] = []
     for nwk_path in nwk_files:
         family = nwk_path.stem.replace("_tree_100", "")
@@ -399,12 +451,19 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
     fig, axes = plt.subplots(n_rows, n_cols,
                              figsize=(n_cols * thumb_w, n_rows * thumb_h))
 
-    # Normalise axes to a flat list regardless of grid shape
     import numpy as np
     ax_flat = np.array(axes).flatten() if n > 1 else [axes]
 
+    used_groups: dict[str, str] = {}  # label → color (for legend)
     for idx, (family, tree) in enumerate(entries):
         ax = ax_flat[idx]
+        lineage = lineage_map.get(family, "")
+        bg_color = _lineage_to_bg(lineage)
+        l = lineage.lower()
+        for key, label in _REALM_LABEL.items():
+            if key in l:
+                used_groups[label] = _REALM_BG[key]
+                break
         try:
             tree_copy = copy.deepcopy(tree)
             for clade in tree_copy.get_terminals():
@@ -412,9 +471,11 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
             Phylo.draw(tree_copy, axes=ax, do_show=False)
             for txt in ax.texts:
                 txt.set_visible(False)
+            ax.set_facecolor(bg_color)
             ax.axis("off")
             ax.set_title(family, fontsize=6, pad=3, fontweight="bold")
         except Exception as e:
+            ax.set_facecolor(bg_color)
             ax.axis("off")
             ax.set_title(family, fontsize=6)
             log.warning("Could not draw overview thumbnail for %s: %s", family, e)
@@ -425,6 +486,14 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
 
     fig.suptitle("tree_100 overview", fontsize=11, fontweight="bold", y=1.01)
     plt.tight_layout()
+
+    # Add viral-group color legend if lineage data was available
+    if used_groups:
+        import matplotlib.patches as mpatches
+        handles = [mpatches.Patch(color=c, label=lbl) for lbl, c in sorted(used_groups.items())]
+        fig.legend(handles=handles, loc="lower center", ncol=len(handles),
+                   fontsize=7, frameon=True, title="Viral group",
+                   title_fontsize=7, bbox_to_anchor=(0.5, -0.02))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:

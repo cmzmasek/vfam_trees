@@ -58,6 +58,13 @@ COLUMNS = [
     "tree100_cluster_thresh_max",
     "tree100_msa_length",
     "tree100_msa_gap_pct",
+    # diversity / outlier counts
+    "tree500_n_outliers_removed",
+    "tree100_n_outliers_removed",
+    "tree500_n_genera",
+    "tree100_n_genera",
+    "tree500_n_subfamilies",
+    "tree100_n_subfamilies",
 ]
 
 
@@ -218,15 +225,18 @@ def build_summary_row(
         row[f"{prefix}_{sup_col}_q3"]       = sh.get("q3", "")
         row[f"{prefix}_{sup_col}_max"]      = sh.get("max", "")
         row[f"{prefix}_{sup_col}_iqr"]      = sh.get("iqr", "")
-        row[f"{prefix}_cluster_thresh_min"] = stats.get("cluster_thresh_min", "")
-        row[f"{prefix}_cluster_thresh_max"] = stats.get("cluster_thresh_max", "")
-        row[f"{prefix}_msa_length"]         = msa.get("length", "")
-        row[f"{prefix}_msa_gap_pct"]        = msa.get("gap_pct", "")
-        row[f"{prefix}_seq_type"]           = stats.get("seq_type", "")
-        row[f"{prefix}_msa_tool"]           = stats.get("msa_tool", "")
-        row[f"{prefix}_msa_options"]        = stats.get("msa_options", "")
-        row[f"{prefix}_tree_tool"]          = stats.get("tree_tool", "")
-        row[f"{prefix}_tree_model"]         = stats.get("tree_model", "")
-        row[f"{prefix}_tree_options"]       = stats.get("tree_options", "")
+        row[f"{prefix}_cluster_thresh_min"]   = stats.get("cluster_thresh_min", "")
+        row[f"{prefix}_cluster_thresh_max"]   = stats.get("cluster_thresh_max", "")
+        row[f"{prefix}_msa_length"]           = msa.get("length", "")
+        row[f"{prefix}_msa_gap_pct"]          = msa.get("gap_pct", "")
+        row[f"{prefix}_seq_type"]             = stats.get("seq_type", "")
+        row[f"{prefix}_msa_tool"]             = stats.get("msa_tool", "")
+        row[f"{prefix}_msa_options"]          = stats.get("msa_options", "")
+        row[f"{prefix}_tree_tool"]            = stats.get("tree_tool", "")
+        row[f"{prefix}_tree_model"]           = stats.get("tree_model", "")
+        row[f"{prefix}_tree_options"]         = stats.get("tree_options", "")
+        row[f"{prefix}_n_outliers_removed"]   = stats.get("n_outliers_removed", "")
+        row[f"{prefix}_n_genera"]             = stats.get("n_genera", "")
+        row[f"{prefix}_n_subfamilies"]        = stats.get("n_subfamilies", "")
 
     return row

@@ -574,6 +574,7 @@ def _run_target(
     expected_treefile = tree_output_dir / f"tree_{label}.nwk"
     tree_checkpoint = target_work / ".tree_done"
     treefile: Path | None = None
+    n_outliers_removed = 0
 
     for iteration in range(max_iterations + 1):
         # ------------------------------------------------------------------
@@ -652,13 +653,30 @@ def _run_target(
             )
             break
 
-        removed_names = [short_to_display.get(oid, oid) for oid in outlier_ids]
-        log.info(
-            "tree_%s iteration %d: removing %d branch-length outlier(s) (>median + %.1f×MAD): %s",
-            label, iteration, len(outlier_ids), outlier_factor,
-            ", ".join(removed_names),
-        )
+        # Log detailed stats for each removed sequence
+        _bl_stats = _branch_length_stats(treefile)
+        _median   = _bl_stats["median"]
+        _mad      = _bl_stats["mad"]
+        _threshold = _median + outlier_factor * _mad
+        _bl_map   = _bl_stats["bl_map"]
 
+        log.info(
+            "tree_%s iteration %d: branch-length stats — median=%.5f, MAD=%.5f, "
+            "threshold (median + %.1f×MAD)=%.5f",
+            label, iteration, _median, _mad, outlier_factor, _threshold,
+        )
+        for oid in outlier_ids:
+            display_name = short_to_display.get(oid, oid)
+            bl = _bl_map.get(oid, float("nan"))
+            log.info(
+                "tree_%s iteration %d: removing outlier '%s' — branch length %.5f "
+                "(%.1f× median, threshold=%.5f)",
+                label, iteration, display_name, bl,
+                bl / _median if _median else float("nan"),
+                _threshold,
+            )
+
+        n_outliers_removed += len(outlier_ids)
         sel_records = [r for r in sel_records if r.id not in outlier_ids]
         if len(sel_records) < 4:
             log.warning(
@@ -687,10 +705,6 @@ def _run_target(
     )
     log.info("Taxonomy annotation complete for tree_%s", label)
 
-    # Detect extreme branch lengths (potential chimeras / misannotations)
-    if bio_tree is not None:
-        _warn_extreme_branches(bio_tree, label, short_to_display, log)
-
     # Write final Newick from in-memory tree — display names on leaves, no internal labels
     output_nwk = family_dir / f"{family}_tree_{label}.nwk"
     if bio_tree is not None:
@@ -710,24 +724,28 @@ def _run_target(
     display_to_color, short_to_color, genus_to_color, subfamily_to_genera = assign_leaf_colors(
         sel_records, short_id_to_meta, short_to_display
     )
+    n_subfamilies = sum(1 for k in subfamily_to_genera if k != "(unclassified)")
 
     # Collect summary stats
     tree_model = tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa")
     tree_seq_lengths = [len(r.seq) for r in sel_records]
     target_stats: dict = {
-        "leaves":              len(sel_records),
-        "cluster_thresh_min":  cluster_thresh_min,
-        "cluster_thresh_max":  cluster_thresh_max,
-        "seq_type":            seq_type,
-        "msa_tool":            msa_cfg["tool"],
-        "msa_options":         msa_options,
-        "tree_tool":           tree_cfg["tool"],
-        "tree_model":          tree_model or "",
-        "tree_options":        tree_cfg.get("options", ""),
-        "seq_lengths":         tree_seq_lengths,
-        "display_to_color":    display_to_color,
-        "genus_to_color":      genus_to_color,
-        "subfamily_to_genera": subfamily_to_genera,
+        "leaves":                len(sel_records),
+        "cluster_thresh_min":    cluster_thresh_min,
+        "cluster_thresh_max":    cluster_thresh_max,
+        "seq_type":              seq_type,
+        "msa_tool":              msa_cfg["tool"],
+        "msa_options":           msa_options,
+        "tree_tool":             tree_cfg["tool"],
+        "tree_model":            tree_model or "",
+        "tree_options":          tree_cfg.get("options", ""),
+        "seq_lengths":           tree_seq_lengths,
+        "display_to_color":      display_to_color,
+        "genus_to_color":        genus_to_color,
+        "subfamily_to_genera":   subfamily_to_genera,
+        "n_outliers_removed":    n_outliers_removed,
+        "n_genera":              len(genus_to_color),
+        "n_subfamilies":         n_subfamilies,
     }
     support_vals: list[float] = []
     if bio_tree is not None:
@@ -774,59 +792,37 @@ def _run_target(
     return target_stats, support_vals, bio_tree
 
 
-def _find_branch_length_outliers(treefile: Path, factor: float) -> set[str]:
-    """Return leaf IDs whose branch length exceeds median + factor × MAD.
-
-    Uses the Median Absolute Deviation (MAD), a robust spread estimator that is
-    not inflated by the outliers being detected (unlike standard deviation).
-    """
+def _branch_length_stats(treefile: Path) -> dict:
+    """Return median, MAD, and per-leaf branch-length map for a Newick file."""
     from Bio import Phylo as _Phylo
     try:
         bio_tree = next(iter(_Phylo.parse(str(treefile), "newick")))
     except Exception:
-        return set()
-    branch_lengths = [
-        c.branch_length for c in bio_tree.get_terminals()
-        if c.branch_length is not None and c.branch_length > 0
-    ]
-    if len(branch_lengths) < 3:
-        return set()
-    median_bl = statistics.median(branch_lengths)
-    mad = statistics.median([abs(x - median_bl) for x in branch_lengths])
-    if mad == 0:
+        return {"median": 0.0, "mad": 0.0, "bl_map": {}}
+    bl_map = {
+        c.name: c.branch_length for c in bio_tree.get_terminals()
+        if c.name and c.branch_length is not None
+    }
+    bls = [b for b in bl_map.values() if b > 0]
+    if len(bls) < 3:
+        return {"median": 0.0, "mad": 0.0, "bl_map": bl_map}
+    median_bl = statistics.median(bls)
+    mad = statistics.median([abs(x - median_bl) for x in bls])
+    return {"median": median_bl, "mad": mad, "bl_map": bl_map}
+
+
+def _find_branch_length_outliers(treefile: Path, factor: float) -> set[str]:
+    """Return leaf IDs whose branch length exceeds median + factor × MAD."""
+    stats = _branch_length_stats(treefile)
+    median_bl, mad = stats["median"], stats["mad"]
+    if median_bl == 0 or mad == 0:
         return set()
     threshold = median_bl + factor * mad
     return {
-        c.name for c in bio_tree.get_terminals()
-        if c.branch_length is not None and c.branch_length > threshold and c.name
+        name for name, bl in stats["bl_map"].items()
+        if bl is not None and bl > threshold
     }
 
-
-def _warn_extreme_branches(
-    bio_tree, label: str, short_to_display: dict[str, str], log
-) -> None:
-    """Warn about terminal branches that are >10× the median — possible chimeras."""
-    branch_lengths = [
-        c.branch_length for c in bio_tree.get_terminals()
-        if c.branch_length is not None and c.branch_length > 0
-    ]
-    if len(branch_lengths) < 3:
-        return
-    median_bl = statistics.median(branch_lengths)
-    if median_bl == 0:
-        return
-    threshold = median_bl * 10
-    outliers = [
-        c for c in bio_tree.get_terminals()
-        if c.branch_length is not None and c.branch_length > threshold
-    ]
-    for clade in outliers:
-        display_name = short_to_display.get(clade.name, clade.name)
-        log.warning(
-            "tree_%s: possible chimera/misannotation — leaf '%s' has branch length "
-            "%.4f (>10× median %.4f)",
-            label, display_name, clade.branch_length, median_bl,
-        )
 
 
 def _build_phylogeny_name(

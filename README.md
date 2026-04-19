@@ -4,8 +4,8 @@
 
 Two trees are produced per family:
 
-- **tree_500** — broad diversity tree (up to 500 sequences, FastTree / GTR+G or WAG+G, SH-like support)
-- **tree_100** — collapsed representative tree (up to 100 sequences, IQ-TREE / GTR+G or WAG+G, SH-aLRT support)
+- **tree_500** — broad diversity tree (up to 500 sequences, FastTree / GTR+G or LG+G, SH-like support)
+- **tree_100** — collapsed representative tree (up to 100 sequences, IQ-TREE / GTR+G or TEST, SH-aLRT support)
 
 ## Features
 
@@ -17,14 +17,15 @@ Two trees are produced per family:
 - Proportional cross-species sampling to fill target tree sizes
 - Minimum sequence checks at multiple stages (post-QC, post-merge, post-outlier-removal); families and individual tree targets are skipped gracefully when too few sequences remain
 - Length outlier removal before alignment (sequences >3× median length excluded)
-- Iterative post-tree branch-length outlier removal: after each tree, leaves with branch length exceeding `median + factor × MAD` (Median Absolute Deviation — robust to skewed distributions) are removed and MSA+tree is re-run (up to max_iterations; removal only proceeds when at least min_seqs sequences remain; configurable per family, on by default)
-- MAFFT multiple sequence alignment (separate options for tree_500 and tree_100)
+- Iterative post-tree branch-length outlier removal: after each tree, leaves with branch length exceeding `median + factor × MAD` (Median Absolute Deviation — robust to skewed distributions) are removed and MSA+tree is re-run (up to max_iterations; removal only proceeds when at least min_seqs sequences remain; configurable per family, on by default); detailed per-outlier log messages include branch length, ratio to median, and threshold
+- Separate MSA options for nucleotide vs. amino acid sequences (`options` / `options_aa`) in both msa_500 and msa_100 sections; IQ-TREE `TEST` model selects the best-fit substitution model automatically for amino acid tree_100 runs
+- MAFFT multiple sequence alignment (separate options for tree_500 and tree_100, and for nucleotide vs. protein)
 - FastTree (tree_500) and IQ-TREE `--fast` (tree_100) tree inference
 - SH-like support values (FastTree) and SH-aLRT support values (IQ-TREE); stored in PhyloXML `<confidence>` elements and reported in the summary TSV
 - Taxonomy-guided tree rooting using LCA specificity scoring, with MAD and midpoint fallbacks
 - LCA-based internal node annotation using NCBI ranked lineages
-- PhyloXML output with `<confidence type="SH_like|SH_aLRT">`, `<taxonomy>`, and `vipr:` metadata properties
-- Chimera / misannotation detection: warns when a terminal branch length exceeds 10× the median (using display names in warnings)
+- PhyloXML output with `<confidence type="SH_like|SH_aLRT">`, `<taxonomy>`, `<sequence>`, and `vipr:` metadata properties; leaf node labels are colored by genus using a `style:font_color` property
+- **Genus/subfamily leaf coloring**: leaves are colored in HLS color space — one hue band per subfamily, lightness varies across genera within a subfamily; colors are applied in PDF/PNG tree images, standalone tree images, and PhyloXML output; a structured legend (grouped by subfamily) is included in all tree figures
 - Segment keyword validation: for segmented RNA families, records not containing the expected segment keyword in their title are excluded
 - Checkpointing: MSA and tree steps are skipped if their outputs already exist (resume after interruption)
 - Validation of MAFFT and tree output files before continuing
@@ -36,12 +37,15 @@ Two trees are produced per family:
   - Post-QC sequence length histogram
   - Per-tree sequence length histograms for tree_500 and tree_100 (sequences actually used to build each tree)
   - SH support value histograms for both trees
-  - tree_100 visualization
-- Standalone PDF and PNG tree images for both tree_100 and tree_500 (no axes/frame)
+  - tree_100 visualization with genus/subfamily color legend
+- Standalone PDF and PNG tree images for both tree_100 and tree_500, with genus/subfamily color legend
+- **Overview PNG** (`overview_tree_100.png`): thumbnail grid of all tree_100 trees across all processed families, automatically generated at the end of `vfam_trees run`; thumbnails are shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) using NCBI lineage data; regenerate at any time with `vfam_trees overview`
 - Output directories named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 - Pre-configured support for 35+ segmented RNA virus families and 19 DNA virus families
-- Per-run summary TSV with SH support statistics, MSA statistics, QC breakdown, and clustering thresholds; skipped families are always included
+- Per-run summary TSV with SH support statistics, MSA statistics, QC breakdown, clustering thresholds, outlier removal counts, and genus/subfamily diversity counts; skipped families are always included
 - Optional shared sequence download cache keyed by query parameters, with configurable TTL and per-entry lock files for safe parallel use
+- **Pipeline stage tracking**: `vfam_trees status` reports the current processing stage for in-progress families (downloading/QC, MSA, tree inference, annotating) in addition to done/pending/skipped
+- **Dry-run mode**: `vfam_trees run --dry-run` previews per-family configuration parameters (sequence type, region, tree tools and models) without executing the pipeline
 
 ## Dependencies
 
@@ -92,10 +96,13 @@ vfam_trees test
 # 3. Generate per-family configs (review before running)
 vfam_trees init-configs -f families.txt
 
-# 4. Run the pipeline
+# 4. Preview what will run without executing anything
+vfam_trees run -f families.txt --dry-run
+
+# 5. Run the pipeline
 vfam_trees run -f families.txt -j 4 -t 4
 
-# 5. Check progress
+# 6. Check progress
 vfam_trees status -f families.txt
 ```
 
@@ -147,6 +154,9 @@ Per-family configs are auto-generated if missing. Generate them in advance to re
 
 ```bash
 vfam_trees init-configs -f families.txt
+
+# Regenerate with current defaults (overwrites any manual edits):
+vfam_trees init-configs -f families.txt --force
 ```
 
 Key parameters:
@@ -184,23 +194,25 @@ targets:
 
 msa_500:
   tool: mafft
-  options: "--6merpair --retree 1"   # fast, good for large diverse sets
+  options: "--6merpair --retree 1"       # used for nucleotide sequences
+  options_aa: "--6merpair --retree 1"    # used for amino acid sequences
 
 msa_100:
   tool: mafft
-  options: "--retree 1"
+  options: "--retree 2"                  # used for nucleotide sequences
+  options_aa: "--auto"                   # used for amino acid sequences (MAFFT auto-selects strategy)
 
 tree_500:
   tool: fasttree
   options: ""
   model_nuc: GTR+G
-  model_aa: WAG+G
+  model_aa: LG+G              # LG+G used for amino acid sequences
 
 tree_100:
   tool: iqtree
   options: "--fast"             # SH-aLRT support; compatible with --fast
   model_nuc: GTR+G
-  model_aa: WAG+G
+  model_aa: TEST               # TEST = IQ-TREE ModelFinder (selects best-fit model automatically)
 
 outlier_removal:
   enabled: true                 # iterative post-tree branch-length outlier removal
@@ -240,6 +252,12 @@ vfam_trees test
 # Generate per-family configs without running
 vfam_trees init-configs -f families.txt
 
+# Regenerate configs with current defaults (overwrites manual edits)
+vfam_trees init-configs -f families.txt --force
+
+# Preview per-family parameters without running the pipeline
+vfam_trees run -f families.txt --dry-run
+
 # Run pipeline (1 family at a time)
 vfam_trees run -f families.txt
 
@@ -249,8 +267,11 @@ vfam_trees run -f families.txt -j 4 -t 4
 # Force re-run families already marked as done
 vfam_trees run -f families.txt --force
 
-# Check progress
+# Check progress (shows current stage for in-progress families)
 vfam_trees status -f families.txt
+
+# (Re-)generate the overview PNG of all tree_100 trees
+vfam_trees overview
 
 # Cache management
 vfam_trees cache clear Asfarviridae
@@ -278,10 +299,10 @@ For each family, results are written to `results/<Family>_<taxid>/` (e.g. `resul
 | `<Family>_tree_100.xml` | PhyloXML tree (collapsed, up to 100 sequences) |
 | `<Family>_tree_500.nwk` | Newick tree (broad) |
 | `<Family>_tree_100.nwk` | Newick tree (collapsed) |
-| `<Family>_tree_500.pdf` | Standalone PDF tree image (broad) |
-| `<Family>_tree_500.png` | Standalone PNG tree image (broad, 150 dpi) |
-| `<Family>_tree_100.pdf` | Standalone PDF tree image (collapsed) |
-| `<Family>_tree_100.png` | Standalone PNG tree image (collapsed, 150 dpi) |
+| `<Family>_tree_500.pdf` | Standalone PDF tree image with genus/subfamily color legend |
+| `<Family>_tree_500.png` | Standalone PNG tree image (150 dpi) with genus/subfamily color legend |
+| `<Family>_tree_100.pdf` | Standalone PDF tree image with genus/subfamily color legend |
+| `<Family>_tree_100.png` | Standalone PNG tree image (150 dpi) with genus/subfamily color legend |
 | `<Family>_alignment_500.fasta` | Final MAFFT alignment used for tree_500 (reflects sequences after iterative outlier removal) |
 | `<Family>_alignment_100.fasta` | Final MAFFT alignment used for tree_100 (reflects sequences after iterative outlier removal) |
 | `<Family>_sequences_raw_500.fasta` | Sequences entering the MSA (after QC, clustering, and proportional merge; before post-tree outlier removal) |
@@ -289,10 +310,15 @@ For each family, results are written to `results/<Family>_<taxid>/` (e.g. `resul
 | `<Family>_metadata_500.tsv` | Sequence metadata (broad) |
 | `<Family>_metadata_100.tsv` | Sequence metadata (collapsed) |
 | `<Family>_id_map.tsv` | Short ID → display name mapping |
-| `<Family>_report.pdf` | Per-family PDF report: stats table, post-QC length histogram, per-tree length histograms (tree_500 and tree_100), SH support histograms, tree_100 visualization |
+| `<Family>_report.pdf` | Per-family PDF report: stats table, post-QC length histogram, per-tree length histograms (tree_500 and tree_100), SH support histograms, tree_100 visualization with genus/subfamily color legend |
 | `<Family>.log` | Per-family log |
 
-A cross-family summary TSV is written to `results/summary.tsv` and updated after each family completes (including families that were skipped due to no species or too few sequences). Key columns include species counts, QC exclusion breakdown, post-QC sequence length statistics, clustering thresholds, MSA tool/options, tree program/model/options, per-tree leaf counts, and SH support statistics for both trees.
+At the cross-family level, in `results/`:
+
+| File | Description |
+|------|-------------|
+| `summary.tsv` | One row per family: species counts, QC exclusion breakdown, post-QC sequence length stats, clustering thresholds, MSA tool/options, tree program/model/options, per-tree leaf counts, SH support stats, outlier removal counts, genus/subfamily diversity counts |
+| `overview_tree_100.png` | Thumbnail grid of all tree_100 trees; thumbnails shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) |
 
 ## License
 

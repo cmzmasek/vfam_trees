@@ -96,6 +96,12 @@ def main():
     help="Rerun families that were already processed.",
 )
 @click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Preview per-family config parameters without running the pipeline.",
+)
+@click.option(
     "--verbose", "log_level",
     flag_value="DEBUG",
     help="Verbose output (DEBUG level).",
@@ -121,6 +127,7 @@ def run(
     cores: int,
     threads: int,
     force: bool,
+    dry_run: bool,
     log_level: str,
 ):
     """Run the full pipeline for one or more viral families.
@@ -145,6 +152,10 @@ def run(
     if not family_list:
         click.echo("No families found in input file.", err=True)
         sys.exit(1)
+
+    if dry_run:
+        _print_dry_run(family_list, global_config, configs_dir, output_dir, threads)
+        sys.exit(0)
 
     click.echo(f"Families to process: {', '.join(family_list)}")
 
@@ -220,14 +231,19 @@ def status(families: Path, output_dir: Path):
             except Exception:
                 st, reason = "error reading status", ""
         else:
-            st, reason = "pending", ""
+            family_dir = _find_family_dir(family, output_dir)
+            if family_dir is not None:
+                st = "in-progress"
+                reason = _detect_stage(family_dir)
+            else:
+                st, reason = "pending", ""
         rows.append((family, st, reason))
 
     w = max(len(r[0]) for r in rows) + 2
-    click.echo(f"{'Family':<{w}}  {'Status':<12}  Notes")
-    click.echo("-" * 60)
+    click.echo(f"{'Family':<{w}}  {'Status':<14}  Stage / Notes")
+    click.echo("-" * 70)
     for family, st, reason in rows:
-        click.echo(f"{family:<{w}}  {st:<12}  {reason}")
+        click.echo(f"{family:<{w}}  {st:<14}  {reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -252,17 +268,25 @@ def status(families: Path, output_dir: Path):
     show_default=True,
     type=click.Path(path_type=Path),
 )
-def init_configs(families: Path, global_config: Path, configs_dir: Path):
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing configs with current defaults (user edits will be lost).",
+)
+def init_configs(families: Path, global_config: Path, configs_dir: Path, force: bool):
     """Generate default per-family configs without running the pipeline.
 
     Creates configs/{Family}.yaml for any family that does not already
-    have one. Existing configs are left untouched. Run this before the
-    pipeline to review and tune parameters (clustering thresholds, models,
-    max sequences per species, etc.) before committing to a full run.
+    have one. Existing configs are left untouched unless --force is used.
+    Run this before the pipeline to review and tune parameters (clustering
+    thresholds, models, max sequences per species, etc.) before committing
+    to a full run.
 
     \b
     Examples:
       vfam_trees init-configs -f families.txt
+      vfam_trees init-configs -f families.txt --force
       vfam_trees init-configs -f families.txt -c /data/configs
     """
     from .config import load_global_config, load_family_config
@@ -271,11 +295,14 @@ def init_configs(families: Path, global_config: Path, configs_dir: Path):
     global_cfg = load_global_config(global_config)
 
     for family in family_list:
+        config_path = configs_dir / f"{family}.yaml"
+        if force and config_path.exists():
+            config_path.unlink()
         cfg, auto = load_family_config(family, configs_dir, global_cfg)
         if auto:
-            click.echo(f"Generated: {configs_dir / family}.yaml")
+            click.echo(f"{'Regenerated' if force else 'Generated'}: {config_path}")
         else:
-            click.echo(f"Exists:    {configs_dir / family}.yaml")
+            click.echo(f"Exists:      {config_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +746,88 @@ def _clear_status(families: list[str], output_dir: Path) -> None:
         if sentinel.exists():
             sentinel.unlink()
             click.echo(f"Cleared status for {family}")
+
+
+def _find_family_dir(family: str, output_dir: Path) -> Path | None:
+    """Return the output directory for a family (taxid-suffixed or plain), or None."""
+    plain = output_dir / family
+    if plain.is_dir():
+        return plain
+    for d in sorted(output_dir.glob(f"{family}_*")):
+        if d.is_dir():
+            return d
+    return None
+
+
+def _detect_stage(family_dir: Path) -> str:
+    """Infer the current pipeline stage from work-dir checkpoint files."""
+    work = family_dir / "_work"
+    if not work.is_dir():
+        return "initializing"
+    checkpoints = [
+        (work / "100" / ".tree_done", "annotating / writing outputs"),
+        (work / "100" / ".msa_done",  "tree inference (tree_100)"),
+        (work / "500" / ".tree_done", "MSA + clustering (tree_100)"),
+        (work / "500" / ".msa_done",  "tree inference (tree_500)"),
+    ]
+    for path, stage in checkpoints:
+        if path.exists():
+            return stage
+    if (work / "species_list.json").exists():
+        return "downloading / QC"
+    return "initializing"
+
+
+def _print_dry_run(
+    family_list: list[str],
+    global_config: Path,
+    configs_dir: Path,
+    output_dir: Path,
+    threads: int,
+) -> None:
+    """Print a per-family config preview table without running anything."""
+    from .config import load_global_config, load_family_config
+
+    click.echo(f"DRY RUN — vfam_trees pipeline preview")
+    click.echo(f"Families file: {len(family_list)} families  |  Output: {output_dir}  |  Threads/job: {threads}")
+    click.echo("")
+
+    global_cfg = load_global_config(global_config)
+
+    header = (
+        f"{'Family':<22}  {'Config':<8}  {'Type':<12}  {'Region/segment':<18}  "
+        f"{'max/sp':>6}  {'Tree-500':<18}  {'Tree-100':<18}"
+    )
+    click.echo(header)
+    click.echo("─" * len(header))
+
+    for family in family_list:
+        cfg, auto = load_family_config(family, configs_dir, global_cfg)
+        cfg_tag = "auto" if auto else "exists"
+        seq_type = cfg["sequence"]["type"]
+        region = cfg["sequence"].get("segment") or cfg["sequence"].get("region", "")
+        max_sp = cfg["download"]["max_per_species"]
+
+        t500 = cfg.get("tree_500", {})
+        t100 = cfg.get("tree_100", {})
+        model_key = "model_aa" if seq_type == "protein" else "model_nuc"
+        tree500_str = f"{t500.get('tool','?')} {t500.get(model_key,'?')}"
+        tree100_str = f"{t100.get('tool','?')} {t100.get(model_key,'?')}"
+
+        # Mark already-completed families
+        family_dir = _find_family_dir(family, output_dir)
+        status_file = _find_status_file(family, output_dir)
+        if status_file is not None:
+            try:
+                st = json.loads(status_file.read_text()).get("status", "")
+                cfg_tag = f"{cfg_tag} [{st}]"
+            except Exception:
+                pass
+
+        click.echo(
+            f"{family:<22}  {cfg_tag:<8}  {seq_type:<12}  {region:<18}  "
+            f"{max_sp:>6}  {tree500_str:<18}  {tree100_str:<18}"
+        )
 
 
 def _yaml_encode(value) -> str:
