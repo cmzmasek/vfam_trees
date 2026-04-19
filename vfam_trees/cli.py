@@ -364,23 +364,25 @@ defaults:
 
   msa_500:
     tool: mafft
-    options: "--6merpair --retree 1"
+    options_nuc: "--6merpair --retree 1"
+    options_aa: "--6merpair --retree 1"
 
   msa_100:
     tool: mafft
-    options: "--retree 1"
+    options_nuc: "--retree 2"
+    options_aa: "--auto"
 
   tree_500:
     tool: fasttree
     options: ""
     model_nuc: GTR+G
-    model_aa: WAG+G
+    model_aa: LG+G
 
   tree_100:
     tool: iqtree
     options: "--fast"
     model_nuc: GTR+G
-    model_aa: WAG+G
+    model_aa: TEST
 """
 
 

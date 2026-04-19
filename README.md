@@ -194,13 +194,13 @@ targets:
 
 msa_500:
   tool: mafft
-  options: "--6merpair --retree 1"       # used for nucleotide sequences
-  options_aa: "--6merpair --retree 1"    # used for amino acid sequences
+  options_nuc: "--6merpair --retree 1"   # used for nucleotide sequences
+  options_aa: "--6merpair --retree 1"   # used for amino acid sequences
 
 msa_100:
   tool: mafft
-  options: "--retree 2"                  # used for nucleotide sequences
-  options_aa: "--auto"                   # used for amino acid sequences (MAFFT auto-selects strategy)
+  options_nuc: "--retree 2"             # used for nucleotide sequences
+  options_aa: "--auto"                  # used for amino acid sequences (MAFFT auto-selects strategy)
 
 tree_500:
   tool: fasttree

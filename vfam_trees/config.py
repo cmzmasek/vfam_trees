@@ -123,12 +123,12 @@ DEFAULT_FAMILY_CONFIG: dict = {
     },
     "msa_500": {
         "tool": "mafft",
-        "options": "--6merpair --retree 1",
+        "options_nuc": "--6merpair --retree 1",
         "options_aa": "--6merpair --retree 1",
     },
     "msa_100": {
         "tool": "mafft",
-        "options": "--retree 2",
+        "options_nuc": "--retree 2",
         "options_aa": "--auto",
     },
     "tree_500": {

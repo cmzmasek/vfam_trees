@@ -559,7 +559,7 @@ def _run_target(
     msa_options = (
         msa_cfg.get("options_aa", "--auto")
         if seq_type == "protein"
-        else msa_cfg.get("options", "")
+        else msa_cfg.get("options_nuc", "")
     )
     tree_cfg = family_cfg[f"tree_{label}"]
     outlier_cfg = family_cfg.get("outlier_removal", {})
