@@ -51,6 +51,7 @@ def write_phyloxml(
     phylogeny_name: str | None = None,
     phylogeny_detail: str | None = None,
     confidence_type: str = "SH_aLRT",
+    leaf_colors: dict[str, str] | None = None,
 ) -> None:
     """Generate a PhyloXML file from a Newick tree with vipr: metadata properties.
 
@@ -86,7 +87,8 @@ def write_phyloxml(
         + (f" | {phylogeny_detail}" if phylogeny_detail else "")
     )
 
-    _write_clade(phylogeny_el, tree.root, id_map, leaf_metadata, confidence_type)
+    _write_clade(phylogeny_el, tree.root, id_map, leaf_metadata, confidence_type,
+                 leaf_colors or {})
 
     output_xml.parent.mkdir(parents=True, exist_ok=True)
     _write_pretty_xml(root, output_xml)
@@ -99,11 +101,12 @@ def _write_clade(
     id_map: dict[str, str],
     leaf_metadata: dict[str, dict],
     confidence_type: str = "SH_aLRT",
+    leaf_colors: dict[str, str] | None = None,
 ) -> ET.Element:
     clade_el = ET.SubElement(parent_el, "clade")
 
     # PhyloXML schema requires this element order:
-    # name, branch_length, confidence, ..., property, clade
+    # name, branch_length, confidence, width, color, ..., taxonomy, property, clade
 
     is_leaf = clade.is_terminal()
 
@@ -129,7 +132,20 @@ def _write_clade(
         conf_el = ET.SubElement(clade_el, "confidence", type=confidence_type)
         conf_el.text = str(clade.confidence)
 
-    # taxonomy + properties follow confidence
+    # <color> element for leaf clades (genus-based coloring)
+    if is_leaf and leaf_colors:
+        short_id = clade.name or ""
+        hex_color = leaf_colors.get(short_id, "")
+        if hex_color and len(hex_color) == 7 and hex_color.startswith("#"):
+            r_int = int(hex_color[1:3], 16)
+            g_int = int(hex_color[3:5], 16)
+            b_int = int(hex_color[5:7], 16)
+            color_el = ET.SubElement(clade_el, "color")
+            ET.SubElement(color_el, "red").text = str(r_int)
+            ET.SubElement(color_el, "green").text = str(g_int)
+            ET.SubElement(color_el, "blue").text = str(b_int)
+
+    # taxonomy + properties follow confidence / color
     if is_leaf:
         short_id = clade.name or ""
         meta = leaf_metadata.get(short_id, {})
@@ -174,7 +190,7 @@ def _write_clade(
 
     # child clades must come last
     for child in clade.clades:
-        _write_clade(clade_el, child, id_map, leaf_metadata, confidence_type)
+        _write_clade(clade_el, child, id_map, leaf_metadata, confidence_type, leaf_colors)
 
     return clade_el
 

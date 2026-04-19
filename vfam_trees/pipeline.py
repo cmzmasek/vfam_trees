@@ -30,6 +30,7 @@ from .tree import run_tree, get_tree_tool_version, validate_newick
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
 from .report import generate_family_report, save_tree_images
+from .colors import assign_leaf_colors
 from .cache import SequenceCache
 from .logger import setup_logger, get_logger
 
@@ -380,6 +381,7 @@ def run_family(
     tree_support: dict[str, list[float]] = {}
     bio_trees: dict[str, object] = {}
     tree_seq_lengths: dict[str, list[int]] = {}
+    tree_leaf_colors: dict[str, dict] = {}  # label → {display_to_color, genus_to_color, subfamily_to_genera}
 
     for target_n, max_reps, label in targets:
         log.info("-" * 40)
@@ -405,6 +407,12 @@ def run_family(
         tree_stats[label] = stats
         if stats.get("seq_lengths"):
             tree_seq_lengths[label] = stats["seq_lengths"]
+        if stats.get("display_to_color"):
+            tree_leaf_colors[label] = {
+                "display_to_color":    stats["display_to_color"],
+                "genus_to_color":      stats["genus_to_color"],
+                "subfamily_to_genera": stats["subfamily_to_genera"],
+            }
         if support_vals:
             tree_support[label] = support_vals
         if bio_tree is not None:
@@ -448,6 +456,7 @@ def run_family(
         tree_seq_lengths=tree_seq_lengths,
         tree_support=tree_support,
         bio_trees=bio_trees,
+        tree_leaf_colors=tree_leaf_colors,
     )
 
     # Standalone tree images (PDF + PNG)
@@ -455,6 +464,7 @@ def run_family(
         family=family,
         output_dir=family_dir,
         bio_trees=bio_trees,
+        tree_leaf_colors=tree_leaf_colors,
     )
 
 
@@ -546,6 +556,11 @@ def _run_target(
     _write_metadata_tsv(sel_metadata, short_to_display, family_dir / f"{family}_metadata_{label}.tsv")
 
     msa_cfg = family_cfg[f"msa_{label}"]
+    msa_options = (
+        msa_cfg.get("options_aa", "--auto")
+        if seq_type == "protein"
+        else msa_cfg.get("options", "")
+    )
     tree_cfg = family_cfg[f"tree_{label}"]
     outlier_cfg = family_cfg.get("outlier_removal", {})
     do_outlier_removal = outlier_cfg.get("enabled", True)
@@ -568,13 +583,13 @@ def _run_target(
             log.info("Reusing cached MSA for tree_%s (iteration %d)", label, iteration)
         else:
             log.info("Running MAFFT (%s) on %d sequences for tree_%s (iteration %d) ...",
-                     msa_cfg["options"], len(sel_records), label, iteration)
+                     msa_options, len(sel_records), label, iteration)
             write_fasta(sel_records, raw_short_fasta)
             run_msa(
                 input_fasta=raw_short_fasta,
                 output_fasta=msa_short_fasta,
                 tool=msa_cfg["tool"],
-                options=msa_cfg["options"],
+                options=msa_options,
                 threads=threads,
             )
             validate_msa(msa_short_fasta)
@@ -691,6 +706,11 @@ def _run_target(
         source_nwk = annotated_nwk if annotated_nwk.exists() else treefile
         restore_newick_names(source_nwk, output_nwk, short_to_display)
 
+    # Assign leaf colors by genus / subfamily
+    display_to_color, short_to_color, genus_to_color, subfamily_to_genera = assign_leaf_colors(
+        sel_records, short_id_to_meta, short_to_display
+    )
+
     # Collect summary stats
     tree_model = tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa")
     tree_seq_lengths = [len(r.seq) for r in sel_records]
@@ -700,11 +720,14 @@ def _run_target(
         "cluster_thresh_max":  cluster_thresh_max,
         "seq_type":            seq_type,
         "msa_tool":            msa_cfg["tool"],
-        "msa_options":         msa_cfg.get("options", ""),
+        "msa_options":         msa_options,
         "tree_tool":           tree_cfg["tool"],
         "tree_model":          tree_model or "",
         "tree_options":        tree_cfg.get("options", ""),
         "seq_lengths":         tree_seq_lengths,
+        "display_to_color":    display_to_color,
+        "genus_to_color":      genus_to_color,
+        "subfamily_to_genera": subfamily_to_genera,
     }
     support_vals: list[float] = []
     if bio_tree is not None:
@@ -727,7 +750,7 @@ def _run_target(
         threshold_max=threshold_max,
         msa_tool=msa_cfg["tool"],
         msa_version=get_mafft_version(),
-        msa_options=msa_cfg["options"],
+        msa_options=msa_options,
         tree_tool=tree_cfg["tool"],
         tree_version=get_tree_tool_version(tree_cfg["tool"]),
         tree_model=tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa"),
@@ -745,6 +768,7 @@ def _run_target(
         phylogeny_name=phylogeny_name,
         phylogeny_detail=phylogeny_detail,
         confidence_type=confidence_type,
+        leaf_colors=short_to_color,
     )
 
     return target_stats, support_vals, bio_tree

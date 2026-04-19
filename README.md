@@ -204,7 +204,7 @@ tree_100:
 
 outlier_removal:
   enabled: true                 # iterative post-tree branch-length outlier removal
-  factor: 5.0                   # threshold = median + factor × MAD (Median Absolute Deviation)
+  factor: 20.0                  # threshold = median + factor × MAD (Median Absolute Deviation)
   max_iterations: 3             # maximum MSA+tree iterations
   min_seqs: 40                  # only remove outliers when ≥ min_seqs sequences remain after removal
 ```

@@ -20,6 +20,7 @@ def generate_family_report(
     tree_seq_lengths: dict[str, list[int]] | None = None,
     tree_support: dict[str, list[float]] | None = None,
     bio_trees: dict[str, Any] | None = None,
+    tree_leaf_colors: dict[str, dict] | None = None,
 ) -> None:
     """Generate a per-family PDF report with stats and plots.
 
@@ -37,6 +38,8 @@ def generate_family_report(
         tree_support = {}
     if bio_trees is None:
         bio_trees = {}
+    if tree_leaf_colors is None:
+        tree_leaf_colors = {}
 
     try:
         import matplotlib
@@ -199,7 +202,13 @@ def generate_family_report(
         # ------------------------------------------------------------------
         tree_100 = bio_trees.get("100")
         if tree_100 is not None:
-            fig = _draw_tree_fig(tree_100, family, "100")
+            colors_100 = tree_leaf_colors.get("100", {})
+            fig = _draw_tree_fig(
+                tree_100, family, "100",
+                label_colors=colors_100.get("display_to_color"),
+                genus_to_color=colors_100.get("genus_to_color"),
+                subfamily_to_genera=colors_100.get("subfamily_to_genera"),
+            )
             if fig is not None:
                 pdf.savefig(fig, bbox_inches="tight")
                 plt.close(fig)
@@ -217,6 +226,7 @@ def save_tree_images(
     family: str,
     output_dir: Path,
     bio_trees: dict[str, Any],
+    tree_leaf_colors: dict[str, dict] | None = None,
 ) -> None:
     """Save standalone PDF and PNG images of the tree_100 and tree_500 visualizations."""
     try:
@@ -227,13 +237,22 @@ def save_tree_images(
         log.warning("Tree image export skipped — matplotlib not available: %s", e)
         return
 
+    if tree_leaf_colors is None:
+        tree_leaf_colors = {}
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for label in ("100", "500"):
         tree = bio_trees.get(label)
         if tree is None:
             continue
-        fig = _draw_tree_fig(tree, family, label)
+        colors = tree_leaf_colors.get(label, {})
+        fig = _draw_tree_fig(
+            tree, family, label,
+            label_colors=colors.get("display_to_color"),
+            genus_to_color=colors.get("genus_to_color"),
+            subfamily_to_genera=colors.get("subfamily_to_genera"),
+        )
         if fig is None:
             continue
         stem = f"{family}_tree_{label}"
@@ -249,10 +268,18 @@ def save_tree_images(
         plt.close(fig)
 
 
-def _draw_tree_fig(tree, family: str, label: str = "100"):
+def _draw_tree_fig(
+    tree,
+    family: str,
+    label: str = "100",
+    label_colors: dict[str, str] | None = None,
+    genus_to_color: dict[str, str] | None = None,
+    subfamily_to_genera: dict[str, list[str]] | None = None,
+):
     """Return a matplotlib Figure of the tree, or None on error."""
     try:
         import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
         from Bio import Phylo
     except ImportError:
         return None
@@ -260,17 +287,152 @@ def _draw_tree_fig(tree, family: str, label: str = "100"):
     try:
         n_leaves = sum(1 for _ in tree.get_terminals())
         fig_h = max(6, n_leaves * 0.18)
-        fig, ax = plt.subplots(figsize=(11, min(fig_h, 24)))
-        Phylo.draw(tree, axes=ax, do_show=False)
+
+        has_legend = bool(genus_to_color)
+        # Reserve right portion for legend when colors are present
+        fig_w = 14 if has_legend else 11
+        fig, ax = plt.subplots(figsize=(fig_w, min(fig_h, 24)))
+
+        Phylo.draw(tree, axes=ax, do_show=False,
+                   label_colors=label_colors or {})
         ax.axis("off")
         ax.set_title(f"{family} tree_{label}", fontsize=11, fontweight="bold")
         font_size = max(4, min(8, int(200 / max(n_leaves, 1))))
         for txt in ax.texts:
             txt.set_fontsize(font_size)
+
+        if has_legend and genus_to_color:
+            _draw_taxonomy_legend(ax, genus_to_color, subfamily_to_genera or {})
+
         return fig
     except Exception as e:
         log.warning("Tree visualization skipped for %s: %s", family, e)
         return None
+
+
+def _draw_taxonomy_legend(
+    ax,
+    genus_to_color: dict[str, str],
+    subfamily_to_genera: dict[str, list[str]],
+) -> None:
+    """Add a genus/subfamily color legend to the axes."""
+    import matplotlib.patches as mpatches
+
+    handles = []
+    # Build legend entries grouped by subfamily
+    placed: set[str] = set()
+
+    if subfamily_to_genera:
+        for subfamily, genera in sorted(subfamily_to_genera.items()):
+            # Subfamily header (bold, no patch)
+            handles.append(mpatches.Patch(color="none", label=f"  {subfamily}"))
+            for genus in sorted(genera):
+                color = genus_to_color.get(genus, "#888888")
+                handles.append(mpatches.Patch(color=color, label=f"    {genus}"))
+                placed.add(genus)
+    # Any remaining genera without a subfamily
+    for genus, color in sorted(genus_to_color.items()):
+        if genus not in placed:
+            handles.append(mpatches.Patch(color=color, label=genus))
+
+    if not handles:
+        return
+
+    n = len(handles)
+    ncol = max(1, n // 30)
+    legend = ax.legend(
+        handles=handles,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        fontsize=6,
+        frameon=True,
+        framealpha=0.8,
+        ncol=ncol,
+        title="Genus (by subfamily)",
+        title_fontsize=7,
+        borderpad=0.5,
+        handlelength=1.0,
+        handletextpad=0.4,
+    )
+
+
+def generate_overview_png(output_dir: Path, output_path: Path) -> None:
+    """Thumbnail grid of every tree_100 found under output_dir.
+
+    Scans output_dir for */*_tree_100.nwk files, draws each as a small
+    topology-only thumbnail (no leaf labels), arranges them in a grid,
+    and saves the result as a PNG.
+    """
+    try:
+        import copy
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from Bio import Phylo
+    except ImportError as e:
+        log.warning("Overview PNG skipped — matplotlib/biopython not available: %s", e)
+        return
+
+    nwk_files = sorted(output_dir.glob("*/*_tree_100.nwk"))
+    if not nwk_files:
+        log.warning("No tree_100.nwk files found in %s — skipping overview PNG.", output_dir)
+        return
+
+    entries: list[tuple[str, object]] = []
+    for nwk_path in nwk_files:
+        family = nwk_path.stem.replace("_tree_100", "")
+        try:
+            tree = next(iter(Phylo.parse(str(nwk_path), "newick")))
+            entries.append((family, tree))
+        except Exception as e:
+            log.warning("Could not parse %s for overview: %s", nwk_path, e)
+
+    if not entries:
+        log.warning("No parseable tree_100 files found — skipping overview PNG.")
+        return
+
+    n = len(entries)
+    n_cols = min(5, n)
+    n_rows = (n + n_cols - 1) // n_cols
+
+    thumb_w, thumb_h = 3.0, 3.5
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(n_cols * thumb_w, n_rows * thumb_h))
+
+    # Normalise axes to a flat list regardless of grid shape
+    import numpy as np
+    ax_flat = np.array(axes).flatten() if n > 1 else [axes]
+
+    for idx, (family, tree) in enumerate(entries):
+        ax = ax_flat[idx]
+        try:
+            tree_copy = copy.deepcopy(tree)
+            for clade in tree_copy.get_terminals():
+                clade.name = ""
+            Phylo.draw(tree_copy, axes=ax, do_show=False)
+            for txt in ax.texts:
+                txt.set_visible(False)
+            ax.axis("off")
+            ax.set_title(family, fontsize=6, pad=3, fontweight="bold")
+        except Exception as e:
+            ax.axis("off")
+            ax.set_title(family, fontsize=6)
+            log.warning("Could not draw overview thumbnail for %s: %s", family, e)
+
+    # Hide unused axes
+    for idx in range(len(entries), len(ax_flat)):
+        ax_flat[idx].axis("off")
+
+    fig.suptitle("tree_100 overview", fontsize=11, fontweight="bold", y=1.01)
+    plt.tight_layout()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
+        log.info("Overview PNG written to %s", output_path)
+    except Exception as e:
+        log.warning("Could not write overview PNG: %s", e)
+    plt.close(fig)
 
 
 def _wrap(text: str, width: int) -> str:

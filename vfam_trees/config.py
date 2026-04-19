@@ -124,26 +124,28 @@ DEFAULT_FAMILY_CONFIG: dict = {
     "msa_500": {
         "tool": "mafft",
         "options": "--6merpair --retree 1",
+        "options_aa": "--6merpair --retree 1",
     },
     "msa_100": {
         "tool": "mafft",
-        "options": "--retree 1",
+        "options": "--retree 2",
+        "options_aa": "--auto",
     },
     "tree_500": {
         "tool": "fasttree",
         "options": "",
         "model_nuc": "GTR+G",
-        "model_aa": "WAG+G",
+        "model_aa": "LG+G",
     },
     "tree_100": {
         "tool": "iqtree",
         "options": "--fast",
         "model_nuc": "GTR+G",
-        "model_aa": "WAG+G",
+        "model_aa": "TEST",
     },
     "outlier_removal": {
         "enabled": True,
-        "factor": 5.0,
+        "factor": 20.0,
         "max_iterations": 3,
         "min_seqs": 40,
     },

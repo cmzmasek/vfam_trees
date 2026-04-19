@@ -171,6 +171,13 @@ def run(
 
     click.echo(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd)
+
+    if result.returncode == 0:
+        from .report import generate_overview_png
+        overview_path = output_dir / "overview_tree_100.png"
+        click.echo(f"Generating overview PNG: {overview_path}")
+        generate_overview_png(output_dir, overview_path)
+
     sys.exit(result.returncode)
 
 
@@ -645,6 +652,46 @@ def cache_stats(global_config: Path):
     click.echo(f"Cache directory : {st['cache_dir']}")
     click.echo(f"Entries         : {st['entries']}")
     click.echo(f"Total size      : {st['size_mb']} MB")
+
+
+# ---------------------------------------------------------------------------
+# overview
+# ---------------------------------------------------------------------------
+
+@main.command("overview")
+@click.option(
+    "--output-dir", "-o",
+    default=DEFAULT_OUTPUT_DIR,
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Results directory to scan for tree_100 files.",
+)
+@click.option(
+    "--output", "-O",
+    default=None,
+    type=click.Path(path_type=Path),
+    help="Output PNG path (default: <output-dir>/overview_tree_100.png).",
+)
+def overview(output_dir: Path, output: Path | None):
+    """Generate a thumbnail grid PNG of all tree_100 trees.
+
+    Scans the results directory for completed tree_100.nwk files,
+    draws each as a small topology-only thumbnail (no leaf labels),
+    and arranges them in a grid with the family name below each.
+
+    This is run automatically at the end of 'vfam_trees run'. Use
+    this command to regenerate the overview at any time.
+
+    \b
+    Examples:
+      vfam_trees overview
+      vfam_trees overview -o /data/results
+      vfam_trees overview -O /data/results/my_overview.png
+    """
+    from .report import generate_overview_png
+    out = output if output is not None else output_dir / "overview_tree_100.png"
+    generate_overview_png(output_dir, Path(out))
+    click.echo(f"Done: {out}")
 
 
 # ---------------------------------------------------------------------------
