@@ -125,14 +125,17 @@ def _taxonomy_guided_root(
 
     best_score = -1.0
     best_clade = None
+    best_branch_len = float("inf")
 
     for clade in branches:
         if clade is tree.root:
             continue
         score = _score_rooting(tree, clade, short_id_to_lineage)
-        if score > best_score:
+        branch_len = clade.branch_length or 0.0
+        if score > best_score or (score == best_score and branch_len < best_branch_len):
             best_score = score
             best_clade = clade
+            best_branch_len = branch_len
 
     if best_clade is None:
         log.warning("Taxonomy-guided rooting: no valid root found")
