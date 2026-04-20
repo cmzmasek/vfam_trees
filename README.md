@@ -43,7 +43,7 @@ Two trees are produced per family:
 - Standalone PDF and PNG tree images for both tree_100 and tree_500, with genus/subfamily color legend
 - **Overview PNG** (`overview_tree_100.png`): thumbnail grid of all tree_100 trees across all processed families, automatically generated at the end of `vfam_trees run`; thumbnails are shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) using NCBI lineage data; regenerate at any time with `vfam_trees overview`
 - Output directories named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
-- Pre-configured support for 35+ segmented RNA virus families and 19 DNA virus families
+- Pre-configured support for 35+ segmented RNA virus families and 27 DNA virus families
 - Per-run summary TSV with SH support statistics, MSA statistics, QC breakdown, clustering thresholds, outlier removal counts, and genus/subfamily diversity counts; skipped families are always included
 - Optional shared sequence download cache keyed by query parameters, with configurable TTL and per-entry lock files for safe parallel use
 - **Pipeline stage tracking**: `vfam_trees status` reports the current processing stage for in-progress families (downloading/QC, MSA, tree inference, annotating) in addition to done/pending/skipped
@@ -239,17 +239,23 @@ outlier_removal:
 
 #### DNA virus families
 
-Known large-genome DNA virus families are automatically configured to use protein marker genes:
+Known DNA virus families are automatically configured with curated ICTV-aligned markers. Small ssDNA / dsDNA families use a single diagnostic protein (when one is well established), medium–large dsDNA families use a family-specific structural or replication protein, and nucleocytoplasmic large DNA viruses (NCLDVs) share DNA polymerase (family B) as a universal marker:
 
 | Family group | Marker gene | Sequence type |
 |---|---|---|
-| Poxviridae | DNA polymerase | protein |
-| Orthoherpesviridae, Alloherpesviridae, Malacoherpesviridae | DNA polymerase | protein |
+| Circoviridae, Smacoviridae | Rep | protein |
+| Anelloviridae | ORF1 | protein |
+| Parvoviridae | NS1 | protein |
+| Polyomaviridae | large T antigen | protein |
+| Papillomaviridae | L1 | protein |
+| Hepadnaviridae | whole genome | nucleotide |
 | Adenoviridae | hexon | protein |
-| Asfarviridae | B646L (p72) | protein |
-| Baculoviridae, Nudiviridae, Ascoviridae | DNA polymerase | protein |
+| Orthoherpesviridae, Alloherpesviridae, Malacoherpesviridae, Herpesviridae | DNA polymerase | protein |
 | Iridoviridae | major capsid protein | protein |
-| Anelloviridae, Circoviridae, Parvoviridae, Polyomaviridae, Papillomaviridae, etc. | whole genome | nucleotide |
+| Asfarviridae | B646L (p72) | protein |
+| Baculoviridae, Nudiviridae, Ascoviridae | lef-8 | protein |
+| Poxviridae | rpo147 | protein |
+| Nimaviridae, Hytrosaviridae, Phycodnaviridae, Mimiviridae, Marseilleviridae, Pandoraviridae, Pithoviridae, Medusaviridae | DNA polymerase | protein |
 
 If a stale auto-generated config file exists with incorrect settings for these families, the program will log a warning and suggest deleting the file to regenerate it.
 
