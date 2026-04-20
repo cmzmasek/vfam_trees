@@ -49,7 +49,7 @@ def test_apply_smart_defaults_dna_family():
 
 def test_apply_smart_defaults_whole_genome_dna():
     cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
-    _apply_smart_defaults("Anelloviridae", cfg)
+    _apply_smart_defaults("Hepadnaviridae", cfg)
     assert cfg["sequence"]["region"] == "whole_genome"
 
 

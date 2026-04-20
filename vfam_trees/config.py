@@ -55,37 +55,74 @@ SEGMENTED_FAMILIES: dict[str, str] = {
 
 
 # DNA virus families and their optimal search strategy.
-# "region" sets the NCBI [Gene] filter; whole_genome uses the title-based
-# complete-genome search instead.  Families with large genomes (>~30 kb) use
-# a phylogenetically informative marker gene; small-genome families use the
-# full genome.
+# "region" is used with "<region>"[Protein Name] OR "<region>"[Gene] for
+# protein markers, or a title-based "complete genome" search when set to
+# whole_genome.  Nearly all families use a conserved marker protein — the
+# only whole-genome default remaining is Hepadnaviridae (~3.2 kb dsDNA),
+# whose overlapping-ORF architecture makes whole-genome nucleotide
+# alignment workable at family scale.
 DNA_FAMILIES: dict[str, dict] = {
-    # ---- Small genomes: whole-genome approach ----
-    "Anelloviridae":      {"sequence": {"region": "whole_genome"}},  # ~2 kb ssDNA circular
-    "Circoviridae":       {"sequence": {"region": "whole_genome"}},  # ~2 kb ssDNA circular
-    "Smacoviridae":       {"sequence": {"region": "whole_genome"}},  # ~2 kb ssDNA circular
-    "Hepadnaviridae":     {"sequence": {"region": "whole_genome"}},  # ~3.2 kb partial dsDNA
-    "Parvoviridae":       {"sequence": {"region": "whole_genome"}},  # ~5 kb ssDNA linear
-    "Polyomaviridae":     {"sequence": {"region": "whole_genome"}},  # ~5 kb dsDNA circular
-    "Papillomaviridae":   {"sequence": {"region": "whole_genome"}},  # ~8 kb dsDNA circular
-    # ---- Large genomes: marker gene — protein sequences ----
-    # Adenoviridae (~35 kb) — hexon major capsid protein
+    # ---- Small ssDNA / dsDNA families: marker-protein approach ----
+    # CRESS-DNA families — ambisense organisation (Rep and Cap on opposite
+    # strands around the origin of replication) makes whole-genome
+    # alignment unreliable; Rep is the ICTV species-demarcation marker.
+    "Circoviridae":       {"sequence": {"region": "Rep", "type": "protein"}},          # ~2 kb ssDNA circular
+    "Smacoviridae":       {"sequence": {"region": "Rep", "type": "protein"}},          # ~2.3 kb ssDNA circular
+    # Anelloviridae — ORF1 (capsid) is the standard phylogenetic marker;
+    # ORF2/ORF3 are hypervariable and make whole-genome alignment poor.
+    "Anelloviridae":      {"sequence": {"region": "ORF1", "type": "protein"}},         # ~2–4 kb ssDNA circular
+    # Hepadnaviridae — small enough (3.2 kb) with heavily overlapping ORFs
+    # that whole-genome nucleotide alignment still works at family scale.
+    "Hepadnaviridae":     {"sequence": {"region": "whole_genome"}},                    # ~3.2 kb partial dsDNA
+    # Parvoviridae — NS1 (replicase) is ICTV's recommended phylogenetic
+    # marker; conserved enough to align across Parvovirinae/Densovirinae.
+    "Parvoviridae":       {"sequence": {"region": "NS1", "type": "protein"}},          # ~5 kb ssDNA linear
+    # Polyomaviridae — large T antigen is the standard cross-genus marker
+    # (early/late ambisense organisation rules out whole-genome alignment).
+    "Polyomaviridae":     {"sequence": {"region": "large T antigen", "type": "protein"}},  # ~5 kb dsDNA circular
+    # Papillomaviridae — L1 (major capsid) is the ICTV gold-standard
+    # marker: species demarcation = >10% L1 nucleotide divergence.
+    "Papillomaviridae":   {"sequence": {"region": "L1", "type": "protein"}},           # ~8 kb dsDNA circular
+
+    # ---- Medium–large dsDNA families: marker-protein approach ----
+    # Adenoviridae (~35 kb) — hexon (major capsid protein)
     "Adenoviridae":       {"sequence": {"region": "hexon", "type": "protein"}},
     # Herpesviruses (~130–240 kb) — DNA polymerase (UL30/UL30-like)
     "Orthoherpesviridae": {"sequence": {"region": "DNA polymerase", "type": "protein"}},
     "Herpesviridae":      {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # legacy ICTV name
     "Alloherpesviridae":  {"sequence": {"region": "DNA polymerase", "type": "protein"}},
     "Malacoherpesviridae":{"sequence": {"region": "DNA polymerase", "type": "protein"}},
-    # Poxviridae (~130–375 kb) — DNA polymerase (E9L-like)
-    "Poxviridae":         {"sequence": {"region": "DNA polymerase", "type": "protein"}},
+    # Poxviridae (~130–375 kb) — largest DNA-directed RNA polymerase subunit
+    # (rpo147 / A24R homolog).  Single-marker cross-subfamily resolution is
+    # inherently limited; concatenated core genes (~20–30) are the real
+    # fix and sit outside this pipeline's single-gene model.  Chordopoxvirinae
+    # are typically annotated gene=rpo147; some Entomopoxvirinae annotations
+    # differ and may need an override in the per-family YAML.
+    "Poxviridae":         {"sequence": {"region": "rpo147", "type": "protein"}},
     # Iridoviridae (~100–220 kb) — major capsid protein
     "Iridoviridae":       {"sequence": {"region": "major capsid protein", "type": "protein"}},
     # Asfarviridae (~190 kb) — B646L (p72, major capsid protein)
     "Asfarviridae":       {"sequence": {"region": "B646L", "type": "protein"}},
-    # Insect large dsDNA (~80–230 kb) — DNA polymerase
-    "Baculoviridae":      {"sequence": {"region": "DNA polymerase", "type": "protein"}},
-    "Nudiviridae":        {"sequence": {"region": "DNA polymerase", "type": "protein"}},
-    "Ascoviridae":        {"sequence": {"region": "DNA polymerase", "type": "protein"}},
+    # Nimaviridae (~300 kb, shrimp WSSV) — DNA polymerase
+    "Nimaviridae":        {"sequence": {"region": "DNA polymerase", "type": "protein"}},
+    # Hytrosaviridae (~120–190 kb, insect salivary gland hypertrophy viruses)
+    "Hytrosaviridae":     {"sequence": {"region": "DNA polymerase", "type": "protein"}},
+    # Baculoviridae / Nudiviridae / Ascoviridae (~80–230 kb) — lef-8 (late
+    # expression factor 8) is a member of the ICTV 3-gene species-demarcation
+    # set (polh, lef-8, lef-9) with the strongest single-marker phylogenetic
+    # signal for these insect dsDNA families.
+    "Baculoviridae":      {"sequence": {"region": "lef-8", "type": "protein"}},
+    "Nudiviridae":        {"sequence": {"region": "lef-8", "type": "protein"}},
+    "Ascoviridae":        {"sequence": {"region": "lef-8", "type": "protein"}},
+
+    # ---- Nucleocytoplasmic large DNA viruses (NCLDVs) / giant dsDNA ----
+    # DNA polymerase B is the universal NCLDV phylogenetic marker.
+    "Phycodnaviridae":    {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~150–560 kb algal
+    "Mimiviridae":        {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~1.2 Mb amoebal
+    "Marseilleviridae":   {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~350 kb amoebal
+    "Pandoraviridae":     {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~2 Mb amoebal
+    "Pithoviridae":       {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~600 kb amoebal
+    "Medusaviridae":      {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~380 kb amoebal
 }
 
 
