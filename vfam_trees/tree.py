@@ -36,6 +36,36 @@ def get_tree_tool_version(tool: str) -> str:
     return "unknown"
 
 
+def parse_iqtree_best_model(log_path: Path) -> str | None:
+    """Return the best-fit model string from an IQ-TREE `.iqtree` log, or None.
+
+    Prefers the ModelFinder line ("Best-fit model according to BIC/AIC/AICc")
+    and falls back to the "Model of substitution" line that IQ-TREE always
+    writes.
+    """
+    if not log_path.exists():
+        return None
+    try:
+        text = log_path.read_text()
+    except Exception:
+        return None
+    m = re.search(r"^Best-fit model according to \S+:\s*(\S+)", text, re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"^Model of substitution:\s*(\S+)", text, re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def is_model_finder_spec(model: str) -> bool:
+    """Return True if `model` asks IQ-TREE's ModelFinder to pick the model."""
+    if not model:
+        return True
+    root = model.split("+", 1)[0].strip().upper()
+    return root in {"TEST", "TESTONLY", "TESTNEW", "TESTNEWONLY", "MF", "MFP"}
+
+
 def validate_newick(nwk_path: Path) -> None:
     """Validate that a Newick file is non-empty and parseable.
 
@@ -62,7 +92,7 @@ def run_tree(
     tool: str,
     seq_type: str,
     model_nuc: str = "GTR+G",
-    model_aa: str = "WAG+G",
+    model_aa: str = "LG+G",
     options: str = "",
     threads: int = 1,
 ) -> Path:
@@ -87,7 +117,8 @@ def run_tree(
     tool_norm = tool.lower().replace("-", "").replace("_", "")
 
     if tool_norm == "fasttree":
-        return _run_fasttree(alignment_fasta, output_dir, prefix, seq_type, options)
+        return _run_fasttree(alignment_fasta, output_dir, prefix, seq_type,
+                             model_nuc, model_aa, options)
     elif tool_norm in ("iqtree", "iqtree2"):
         return _run_iqtree(alignment_fasta, output_dir, prefix, seq_type,
                            model_nuc, model_aa, options, threads)
@@ -99,20 +130,74 @@ def run_tree(
 # FastTree
 # ---------------------------------------------------------------------------
 
+def _fasttree_nuc_flags(model: str) -> list[str]:
+    """Map a nucleotide model string to FastTree command-line flags.
+
+    FastTree supports GTR (with ``-gtr``) or its default JC69. Any other
+    substitution model falls back to GTR with a warning. ``+G`` / ``+GAMMA``
+    suffixes enable the discrete-gamma rate model via ``-gamma``.
+    """
+    flags: list[str] = []
+    root = model.split("+", 1)[0].strip().upper() if model else ""
+    if root == "GTR" or not root:
+        flags.append("-gtr")
+    elif root in ("JC", "JC69"):
+        pass  # FastTree default
+    else:
+        log.warning(
+            "FastTree does not support nucleotide model %r — using GTR instead.",
+            model,
+        )
+        flags.append("-gtr")
+    upper = (model or "").upper()
+    if "+G" in upper or "+GAMMA" in upper:
+        flags.append("-gamma")
+    return flags
+
+
+def _fasttree_aa_flags(model: str) -> list[str]:
+    """Map a protein model string to FastTree command-line flags.
+
+    FastTree supports WAG (``-wag``), LG (``-lg``), or its default JTT.
+    Unknown models fall back to WAG with a warning. ``+G`` / ``+GAMMA``
+    suffixes enable discrete gamma via ``-gamma``.
+    """
+    flags: list[str] = []
+    root = model.split("+", 1)[0].strip().upper() if model else ""
+    if root == "LG":
+        flags.append("-lg")
+    elif root == "WAG":
+        flags.append("-wag")
+    elif root in ("", "JTT"):
+        pass  # FastTree default
+    else:
+        log.warning(
+            "FastTree does not support amino-acid model %r — using WAG instead.",
+            model,
+        )
+        flags.append("-wag")
+    upper = (model or "").upper()
+    if "+G" in upper or "+GAMMA" in upper:
+        flags.append("-gamma")
+    return flags
+
+
 def _run_fasttree(
     alignment_fasta: Path,
     output_dir: Path,
     prefix: str,
     seq_type: str,
+    model_nuc: str,
+    model_aa: str,
     options: str,
 ) -> Path:
     out_nwk = output_dir / f"{prefix}.nwk"
 
     cmd = ["FastTree"]
     if seq_type == "nucleotide":
-        cmd += ["-nt", "-gtr", "-gamma"]
+        cmd += ["-nt"] + _fasttree_nuc_flags(model_nuc)
     else:
-        cmd += ["-wag", "-gamma"]
+        cmd += _fasttree_aa_flags(model_aa)
 
     if options:
         cmd += options.split()
@@ -124,11 +209,20 @@ def _run_fasttree(
         result = subprocess.run(cmd, stdout=out_f, stderr=subprocess.PIPE, text=True)
 
     if result.returncode != 0:
-        log.error("FastTree stderr:\n%s", result.stderr[-2000:])
-        raise RuntimeError(f"FastTree failed with exit code {result.returncode}")
+        log.error("FastTree stderr:\n%s", (result.stderr or "")[-4000:])
+        raise RuntimeError(
+            f"FastTree failed with exit code {result.returncode}. If "
+            "FastTree was upgraded recently, its CLI flags may have changed "
+            "— see stderr above."
+        )
 
     if not out_nwk.exists() or out_nwk.stat().st_size == 0:
-        raise FileNotFoundError(f"FastTree did not produce output: {out_nwk}")
+        log.error("FastTree stderr:\n%s", (result.stderr or "")[-4000:])
+        raise FileNotFoundError(
+            f"FastTree exited 0 but produced no Newick at {out_nwk}. "
+            "This may indicate a change in FastTree's output behavior — see "
+            "stderr above."
+        )
 
     log.info("FastTree complete: %s", out_nwk)
     return out_nwk
@@ -173,12 +267,22 @@ def _run_iqtree(
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        log.error("IQ-TREE stderr:\n%s", result.stderr[-2000:])
-        raise RuntimeError(f"IQ-TREE failed with exit code {result.returncode}")
+        log.error("IQ-TREE stderr:\n%s", (result.stderr or "")[-4000:])
+        log.error("IQ-TREE stdout:\n%s", (result.stdout or "")[-1000:])
+        raise RuntimeError(
+            f"IQ-TREE failed with exit code {result.returncode}. If "
+            "IQ-TREE was upgraded recently, its CLI flags or model names "
+            "may have changed — see stderr above."
+        )
 
     treefile = Path(str(out_prefix) + ".treefile")
     if not treefile.exists():
-        raise FileNotFoundError(f"IQ-TREE did not produce expected tree file: {treefile}")
+        log.error("IQ-TREE stderr:\n%s", (result.stderr or "")[-4000:])
+        raise FileNotFoundError(
+            f"IQ-TREE exited 0 but did not produce the expected tree file "
+            f"{treefile}. This may indicate a change in IQ-TREE's output "
+            "conventions."
+        )
 
     # Copy to a consistently named .nwk file
     out_nwk = output_dir / f"{prefix}.nwk"

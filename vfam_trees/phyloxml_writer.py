@@ -132,20 +132,7 @@ def _write_clade(
         conf_el = ET.SubElement(clade_el, "confidence", type=confidence_type)
         conf_el.text = str(clade.confidence)
 
-    # <color> element for leaf clades (genus-based coloring)
-    if is_leaf and leaf_colors:
-        short_id = clade.name or ""
-        hex_color = leaf_colors.get(short_id, "")
-        if hex_color and len(hex_color) == 7 and hex_color.startswith("#"):
-            r_int = int(hex_color[1:3], 16)
-            g_int = int(hex_color[3:5], 16)
-            b_int = int(hex_color[5:7], 16)
-            color_el = ET.SubElement(clade_el, "color")
-            ET.SubElement(color_el, "red").text = str(r_int)
-            ET.SubElement(color_el, "green").text = str(g_int)
-            ET.SubElement(color_el, "blue").text = str(b_int)
-
-    # taxonomy + properties follow confidence / color
+    # taxonomy + properties follow confidence
     if is_leaf:
         short_id = clade.name or ""
         meta = leaf_metadata.get(short_id, {})
@@ -177,6 +164,12 @@ def _write_clade(
             value = meta.get(field, "unknown")
             if value:
                 _add_property(clade_el, f"{VIPR_PREFIX}:{field}", datatype, str(value))
+
+        # Genus-based font color for node label
+        if leaf_colors:
+            hex_color = leaf_colors.get(short_id, "")
+            if hex_color:
+                _add_property(clade_el, "style:font_color", "xsd:token", hex_color)
     else:
         label = clade.name or ""
         if label and not _is_same_species_pair(clade, leaf_metadata):

@@ -142,30 +142,49 @@ def filter_sequences(
 
 def remove_length_outliers(
     records: list[SeqRecord],
-    multiplier: float = 3.0,
-) -> tuple[list[SeqRecord], int]:
-    """Remove sequences longer than multiplier × median length.
+    hi_mult: float = 3.0,
+    lo_mult: float = 1.0 / 3.0,
+) -> tuple[list[SeqRecord], int, int]:
+    """Remove sequences whose length deviates from the median by large factors.
 
     Args:
         records: input sequences
-        multiplier: sequences longer than multiplier × median are removed
+        hi_mult: sequences longer than hi_mult × median are removed;
+                 set to 0 (or negative) to disable the upper bound
+        lo_mult: sequences shorter than lo_mult × median are removed;
+                 set to 0 (or negative) to disable the lower bound
 
     Returns:
-        (filtered records, number removed)
+        (filtered records, n_long_removed, n_short_removed)
     """
     if len(records) < 2:
-        return records, 0
+        return records, 0, 0
     lengths = [len(r.seq) for r in records]
     median_len = statistics.median(lengths)
-    cutoff = median_len * multiplier
-    passed = [r for r in records if len(r.seq) <= cutoff]
-    n_removed = len(records) - len(passed)
-    if n_removed:
+    hi_cutoff = median_len * hi_mult if hi_mult and hi_mult > 0 else None
+    lo_cutoff = median_len * lo_mult if lo_mult and lo_mult > 0 else None
+
+    passed: list[SeqRecord] = []
+    n_long = 0
+    n_short = 0
+    for r in records:
+        L = len(r.seq)
+        if hi_cutoff is not None and L > hi_cutoff:
+            n_long += 1
+        elif lo_cutoff is not None and L < lo_cutoff:
+            n_short += 1
+        else:
+            passed.append(r)
+
+    if n_long or n_short:
         log.info(
-            "Removed %d length outlier(s) (>%.0fx median; cutoff %d bp/aa)",
-            n_removed, multiplier, int(cutoff),
+            "Removed %d length outlier(s) for %d seqs (median=%d): "
+            "%d long (>%.2f×), %d short (<%.2f×)",
+            n_long + n_short, len(records), int(median_len),
+            n_long, hi_mult if hi_cutoff is not None else 0.0,
+            n_short, lo_mult if lo_cutoff is not None else 0.0,
         )
-    return passed, n_removed
+    return passed, n_long, n_short
 
 
 def _apply_length_filter(

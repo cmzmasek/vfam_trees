@@ -279,7 +279,7 @@ def _draw_tree_fig(
     """Return a matplotlib Figure of the tree, or None on error."""
     try:
         import matplotlib.pyplot as plt
-        import matplotlib.patches as mpatches
+        import matplotlib.text as _mtext
         from Bio import Phylo
     except ImportError:
         return None
@@ -289,20 +289,40 @@ def _draw_tree_fig(
         fig_h = max(6, n_leaves * 0.18)
 
         has_legend = bool(genus_to_color)
-        # Reserve right portion for legend when colors are present
         fig_w = 14 if has_legend else 11
         fig, ax = plt.subplots(figsize=(fig_w, min(fig_h, 24)))
 
-        Phylo.draw(tree, axes=ax, do_show=False)
+        # BioPython's default label_func is str(clade), which truncates names
+        # longer than 40 chars to "name[:37] + '...'".  Since our display names
+        # include species|strain|accession|host and are almost always >40 chars,
+        # we must override label_func to render the full name.
+        Phylo.draw(
+            tree, axes=ax, do_show=False,
+            label_func=lambda c: c.name or "",
+        )
+        _thin_tree_lines(ax)
         ax.axis("off")
         ax.set_title(f"{family} tree_{label}", fontsize=11, fontweight="bold")
         font_size = max(4, min(8, int(200 / max(n_leaves, 1))))
-        for txt in ax.texts:
-            txt.set_fontsize(font_size)
+
+        n_colored = 0
+        for artist in ax.get_children():
+            if not isinstance(artist, _mtext.Text):
+                continue
+            if artist is ax.title:
+                continue
+            artist.set_fontsize(font_size)
             if label_colors:
-                color = label_colors.get(txt.get_text().strip())
+                name = artist.get_text().strip()
+                color = label_colors.get(name)
                 if color:
-                    txt.set_color(color)
+                    artist.set_color(color)
+                    n_colored += 1
+
+        log.debug(
+            "tree_%s: colored %d / %d leaf labels in %s",
+            label, n_colored, n_leaves, family,
+        )
 
         if has_legend and genus_to_color:
             _draw_taxonomy_legend(ax, genus_to_color, subfamily_to_genera or {})
@@ -311,6 +331,17 @@ def _draw_tree_fig(
     except Exception as e:
         log.warning("Tree visualization skipped for %s: %s", family, e)
         return None
+
+
+def _thin_tree_lines(ax, scale: float = 0.5) -> None:
+    """Halve (or scale) the line width of every Line2D artist on the axes.
+
+    BioPython's Phylo.draw uses matplotlib's default linewidth (1.5 pt) for
+    the tree branches; that reads heavy in dense trees.  Call immediately
+    after Phylo.draw.
+    """
+    for line in ax.get_lines():
+        line.set_linewidth(line.get_linewidth() * scale)
 
 
 def _draw_taxonomy_legend(
@@ -359,31 +390,39 @@ def _draw_taxonomy_legend(
     )
 
 
-_REALM_BG: dict[str, str] = {
-    "monodnaviria":   "#f3e5f5",   # lavender  — ssDNA
-    "duplodnaviria":  "#e3f2fd",   # light blue — dsDNA (tailed phages)
-    "varidnaviria":   "#dceefb",   # steel blue — dsDNA (non-tailed)
-    "pararnavirae":   "#fff8e1",   # amber      — RT viruses
-    "negarnaviricota": "#fce4ec",  # pink       — –ssRNA
-    "riboviria":      "#e8f5e9",   # light green — +ssRNA / dsRNA
-}
-_REALM_LABEL: dict[str, str] = {
-    "monodnaviria":   "ssDNA",
-    "duplodnaviria":  "dsDNA (tailed)",
-    "varidnaviria":   "dsDNA (non-tailed)",
-    "pararnavirae":   "RT viruses",
-    "negarnaviricota": "–ssRNA",
-    "riboviria":      "+ssRNA / dsRNA",
-}
+# Viral-group → (background color, legend label).
+# Keyed by substring match against the lowercased NCBI lineage string.
+# Iteration order is deliberate: more specific keys (kingdoms, phyla) are
+# checked before broad realm keys so that, e.g., a Negarnaviricota virus is
+# tagged "–ssRNA" instead of the catch-all "Riboviria" (+ssRNA/dsRNA).
+# Multiple keys may map to the same (color, label) so new NCBI realm names
+# (e.g. ICTV 2023's "Floreoviria" for ssDNA) can be added without losing
+# coverage of older names.
+_REALM_ENTRIES: list[tuple[str, str, str]] = [
+    # (lineage substring, hex color, legend label)
+    ("pararnavirae",    "#fff8e1", "RT viruses"),        # kingdom under Riboviria
+    ("negarnaviricota", "#fce4ec", "–ssRNA"),            # phylum under Riboviria
+    ("duplodnaviria",   "#e3f2fd", "dsDNA (tailed)"),    # realm
+    ("varidnaviria",    "#dceefb", "dsDNA (non-tailed)"),# realm
+    ("monodnaviria",    "#f3e5f5", "ssDNA"),             # realm (legacy)
+    ("floreoviria",     "#f3e5f5", "ssDNA"),             # realm (ICTV 2023+)
+    ("singelaviria",    "#f3e5f5", "ssDNA"),             # realm (ICTV 2023+)
+    ("ribozyviria",     "#ede7f6", "deltavirus-like"),   # realm
+    ("riboviria",       "#e8f5e9", "+ssRNA / dsRNA"),    # realm (catch-all last)
+]
 _DEFAULT_BG = "#f5f5f5"
 
 
-def _lineage_to_bg(lineage_str: str) -> str:
+def _match_realm(lineage_str: str) -> tuple[str, str | None]:
+    """Return (bg_color, legend_label) for a lineage string.
+
+    legend_label is None when no entry matched (caller should use defaults).
+    """
     l = lineage_str.lower()
-    for key, color in _REALM_BG.items():
+    for key, color, label in _REALM_ENTRIES:
         if key in l:
-            return color
-    return _DEFAULT_BG
+            return color, label
+    return _DEFAULT_BG, None
 
 
 def _read_summary_lineages(output_dir: Path) -> dict[str, str]:
@@ -455,32 +494,50 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
     ax_flat = np.array(axes).flatten() if n > 1 else [axes]
 
     used_groups: dict[str, str] = {}  # label → color (for legend)
+
+    def _strip_axis_decor(ax) -> None:
+        # Hide spines/ticks/axis-labels without calling ax.axis("off"):
+        # axison=False would skip the facecolor patch during rendering.
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+
     for idx, (family, tree) in enumerate(entries):
         ax = ax_flat[idx]
         lineage = lineage_map.get(family, "")
-        bg_color = _lineage_to_bg(lineage)
-        l = lineage.lower()
-        for key, label in _REALM_LABEL.items():
-            if key in l:
-                used_groups[label] = _REALM_BG[key]
-                break
+        bg_color, group_label = _match_realm(lineage)
+        if group_label is not None:
+            used_groups[group_label] = bg_color
+        else:
+            log.warning(
+                "Overview PNG: no viral-group match for %s (lineage: %r) — "
+                "using default background.",
+                family, lineage,
+            )
+        ax.set_facecolor(bg_color)
+        _strip_axis_decor(ax)
         try:
             tree_copy = copy.deepcopy(tree)
             for clade in tree_copy.get_terminals():
                 clade.name = ""
             Phylo.draw(tree_copy, axes=ax, do_show=False)
+            _thin_tree_lines(ax)
             for txt in ax.texts:
                 txt.set_visible(False)
+            # Phylo.draw re-enables axis decor and may reset the patch;
+            # re-apply after it has drawn.
             ax.set_facecolor(bg_color)
-            ax.axis("off")
+            _strip_axis_decor(ax)
             ax.set_title(family, fontsize=6, pad=3, fontweight="bold")
         except Exception as e:
-            ax.set_facecolor(bg_color)
-            ax.axis("off")
             ax.set_title(family, fontsize=6)
             log.warning("Could not draw overview thumbnail for %s: %s", family, e)
 
-    # Hide unused axes
+    # Hide unused axes completely (no background needed)
     for idx in range(len(entries), len(ax_flat)):
         ax_flat[idx].axis("off")
 

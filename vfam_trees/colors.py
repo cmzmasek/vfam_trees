@@ -27,9 +27,11 @@ def assign_leaf_colors(
     leaf_taxa: dict[str, dict[str, str]] = {}
     for r in sel_records:
         meta = short_id_to_meta.get(r.id, {})
-        lineage = meta.get("lineage", [])
+        lineage = meta.get("lineage_ranked", [])
         taxa: dict[str, str] = {"subfamily": "", "genus": "", "subgenus": ""}
         for entry in lineage:
+            if not isinstance(entry, dict):
+                continue
             rank = (entry.get("rank") or "").lower()
             if rank in taxa:
                 taxa[rank] = entry.get("name", "")

@@ -88,7 +88,20 @@ def _run_mafft(
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        log.error("MAFFT stderr:\n%s", result.stderr)
-        raise RuntimeError(f"MAFFT failed with exit code {result.returncode}")
+        log.error("MAFFT stderr:\n%s", (result.stderr or "")[-4000:])
+        log.error("MAFFT stdout:\n%s", (result.stdout or "")[-1000:])
+        raise RuntimeError(
+            f"MAFFT failed with exit code {result.returncode}. If MAFFT was "
+            "upgraded recently, its CLI flags may have changed — see stderr "
+            "above."
+        )
+
+    if not output_fasta.exists() or output_fasta.stat().st_size == 0:
+        log.error("MAFFT stderr:\n%s", (result.stderr or "")[-4000:])
+        raise FileNotFoundError(
+            f"MAFFT exited 0 but produced no alignment at {output_fasta}. "
+            "This may indicate a change in MAFFT's output behavior — see "
+            "stderr above."
+        )
 
     log.debug("MAFFT stdout: %s", result.stdout[:500] if result.stdout else "(none)")

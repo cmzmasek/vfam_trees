@@ -253,8 +253,15 @@ def _build_species_query(
 ) -> str:
     base = f"txid{taxid}[Organism:exp]"
     if segment:
-        # Segmented virus: restrict to the specific segment by title
-        base += f' AND "{segment}"[Title] AND "complete sequence"[Title]'
+        # Segmented virus: restrict to the specific segment by title.
+        # Accept any common "complete" title phrasing — per-segment records are
+        # sometimes "complete cds" or "complete genome" rather than the strict
+        # "complete sequence".
+        base += (
+            f' AND "{segment}"[Title]'
+            ' AND ("complete sequence"[Title] OR "complete cds"[Title]'
+            ' OR "complete genome"[Title])'
+        )
     elif region == "whole_genome":
         # Unsegmented whole-genome search: require complete genome/sequence in title
         if seq_type == "nucleotide":

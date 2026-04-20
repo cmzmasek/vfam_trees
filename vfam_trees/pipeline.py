@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import hashlib
 import json
 import shutil
 import statistics
@@ -26,7 +27,10 @@ from .quality import filter_sequences, remove_length_outliers, deduplicate, writ
 from .rename import assign_short_ids, restore_fasta_names, restore_newick_names
 from .subsample import adaptive_cluster_species, proportional_merge
 from .msa import run_msa, get_mafft_version, validate_msa
-from .tree import run_tree, get_tree_tool_version, validate_newick
+from .tree import (
+    run_tree, get_tree_tool_version, validate_newick,
+    parse_iqtree_best_model, is_model_finder_spec,
+)
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
 from .report import generate_family_report, save_tree_images
@@ -35,6 +39,43 @@ from .cache import SequenceCache
 from .logger import setup_logger, get_logger
 
 log = get_logger(__name__)
+
+
+def _is_refseq_accession(accession: str) -> bool:
+    """Return True if *accession* follows the NCBI RefSeq ``XX_`` prefix format.
+
+    Examples: NC_045512.2, NZ_CP012345.1, YP_009724390.1 → True;
+    MN908947.3, OP123456 → False.
+    """
+    acc = (accession or "").strip()
+    return (
+        len(acc) >= 3
+        and acc[2] == "_"
+        and acc[0:2].isalpha()
+        and acc[0:2].isupper()
+    )
+
+
+def _compute_key(obj) -> str:
+    """Return a short hex digest summarising *obj* (sort_keys for stability)."""
+    payload = json.dumps(obj, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _write_checkpoint(path: Path, key_obj: dict) -> None:
+    """Write a checkpoint sidecar encoding the input key at completion time."""
+    path.write_text(json.dumps({"key": _compute_key(key_obj)}))
+
+
+def _check_checkpoint(path: Path, key_obj: dict) -> bool:
+    """Return True when the checkpoint exists and its stored key matches."""
+    if not path.exists():
+        return False
+    try:
+        stored = json.loads(path.read_text())
+    except Exception:
+        return False
+    return stored.get("key") == _compute_key(key_obj)
 
 
 def run_family(
@@ -362,6 +403,16 @@ def run_family(
         rec.id: meta for rec, meta in zip(renamed_records, all_metadata)
     }
 
+    # Identify RefSeq records so proportional_merge can prefer them when
+    # subsampling clusters within each species.
+    refseq_short_ids = {
+        short_id for short_id, meta in short_id_to_meta.items()
+        if _is_refseq_accession(meta.get("accession", ""))
+    }
+    if refseq_short_ids:
+        log.info("Detected %d RefSeq record(s) — will prefer them during subsampling",
+                 len(refseq_short_ids))
+
     # Rebuild species_data with renamed records
     renamed_iter = iter(renamed_records)
     for sp_name, data in species_data.items():
@@ -394,6 +445,7 @@ def run_family(
             species_data=species_data,
             short_id_to_meta=short_id_to_meta,
             short_to_display=short_to_display,
+            refseq_short_ids=refseq_short_ids,
             seq_type=seq_type,
             clustering_tool=clustering_tool,
             clustering_cfg=clustering_cfg,
@@ -475,6 +527,7 @@ def _run_target(
     species_data: dict,
     short_id_to_meta: dict[str, dict],
     short_to_display: dict[str, str],
+    refseq_short_ids: set[str],
     seq_type: str,
     clustering_tool: str,
     clustering_cfg: dict,
@@ -522,8 +575,10 @@ def _run_target(
     log.info("Clustering complete: %d total representatives across %d species",
              total_reps, len(species_reps))
 
-    # Proportional merge
-    sel_records = proportional_merge(species_reps, target_n)
+    # Proportional merge (prefers RefSeqs when subsampling within a species)
+    sel_records = proportional_merge(
+        species_reps, target_n, priority_ids=refseq_short_ids,
+    )
     log.info("Proportional merge: selected %d sequences for tree_%s", len(sel_records), label)
 
     if len(sel_records) < 4:
@@ -533,13 +588,25 @@ def _run_target(
         )
         return {}, [], None
 
-    # Outlier removal before MSA
-    sel_records, n_outliers = remove_length_outliers(sel_records)
-    if n_outliers:
-        log.info("Removed %d length outlier(s) from tree_%s input", n_outliers, label)
+    # Pre-MSA length-outlier removal (two-sided, config-driven)
+    length_outlier_cfg = family_cfg.get("length_outlier", {})
+    n_length_long = 0
+    n_length_short = 0
+    if length_outlier_cfg.get("enabled", True):
+        hi_mult = float(length_outlier_cfg.get("hi_mult", 3.0))
+        lo_mult = float(length_outlier_cfg.get("lo_mult", 0.333))
+        sel_records, n_length_long, n_length_short = remove_length_outliers(
+            sel_records, hi_mult=hi_mult, lo_mult=lo_mult,
+        )
+        if n_length_long or n_length_short:
+            log.info(
+                "tree_%s: length-outlier removal dropped %d long + %d short "
+                "(hi_mult=%.2f, lo_mult=%.2f)",
+                label, n_length_long, n_length_short, hi_mult, lo_mult,
+            )
     if len(sel_records) < 4:
         log.warning(
-            "Only %d sequence(s) after outlier removal for tree_%s (minimum 4) — skipping.",
+            "Only %d sequence(s) after length-outlier removal for tree_%s (minimum 4) — skipping.",
             len(sel_records), label,
         )
         return {}, [], None
@@ -564,7 +631,7 @@ def _run_target(
     tree_cfg = family_cfg[f"tree_{label}"]
     outlier_cfg = family_cfg.get("outlier_removal", {})
     do_outlier_removal = outlier_cfg.get("enabled", True)
-    outlier_factor = float(outlier_cfg.get("factor", 10.0))
+    outlier_factor = float(outlier_cfg.get("factor", 20.0))
     max_iterations = int(outlier_cfg.get("max_iterations", 3))
     outlier_min_seqs = int(outlier_cfg.get("min_seqs", 40))
 
@@ -578,9 +645,14 @@ def _run_target(
 
     for iteration in range(max_iterations + 1):
         # ------------------------------------------------------------------
-        # MSA — with checkpointing
+        # MSA — with checkpointing keyed on sequence set + MSA options
         # ------------------------------------------------------------------
-        if msa_checkpoint.exists() and msa_short_fasta.exists():
+        msa_key = {
+            "seq_ids": sorted(r.id for r in sel_records),
+            "tool":    msa_cfg["tool"],
+            "options": msa_options,
+        }
+        if _check_checkpoint(msa_checkpoint, msa_key) and msa_short_fasta.exists():
             log.info("Reusing cached MSA for tree_%s (iteration %d)", label, iteration)
         else:
             log.info("Running MAFFT (%s) on %d sequences for tree_%s (iteration %d) ...",
@@ -594,20 +666,28 @@ def _run_target(
                 threads=threads,
             )
             validate_msa(msa_short_fasta)
-            msa_checkpoint.touch()
+            _write_checkpoint(msa_checkpoint, msa_key)
             log.info("MAFFT complete for tree_%s (iteration %d)", label, iteration)
 
         # ------------------------------------------------------------------
-        # Tree inference — with checkpointing
+        # Tree inference — keyed on MSA content + tree tool/model/options
         # ------------------------------------------------------------------
-        if tree_checkpoint.exists() and expected_treefile.exists():
+        tree_model_for_check = (
+            tree_cfg.get("model_nuc") if seq_type == "nucleotide"
+            else tree_cfg.get("model_aa")
+        )
+        tree_key = {
+            "msa_hash": hashlib.sha256(msa_short_fasta.read_bytes()).hexdigest()[:16],
+            "tool":     tree_cfg["tool"],
+            "model":    tree_model_for_check,
+            "options":  tree_cfg.get("options", ""),
+        }
+        if _check_checkpoint(tree_checkpoint, tree_key) and expected_treefile.exists():
             log.info("Reusing cached tree for tree_%s (iteration %d)", label, iteration)
             treefile = expected_treefile
         else:
             log.info("Running %s (%s model) for tree_%s (iteration %d) ...",
-                     tree_cfg["tool"],
-                     tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa"),
-                     label, iteration)
+                     tree_cfg["tool"], tree_model_for_check, label, iteration)
             treefile = run_tree(
                 alignment_fasta=msa_short_fasta,
                 output_dir=tree_output_dir,
@@ -615,12 +695,12 @@ def _run_target(
                 tool=tree_cfg["tool"],
                 seq_type=seq_type,
                 model_nuc=tree_cfg.get("model_nuc", "GTR+G"),
-                model_aa=tree_cfg.get("model_aa", "WAG+G"),
+                model_aa=tree_cfg.get("model_aa", "LG+G"),
                 options=tree_cfg.get("options", ""),
                 threads=threads,
             )
             validate_newick(treefile)
-            tree_checkpoint.touch()
+            _write_checkpoint(tree_checkpoint, tree_key)
             log.info("Tree inference complete for tree_%s (iteration %d)", label, iteration)
 
         # ------------------------------------------------------------------
@@ -728,6 +808,15 @@ def _run_target(
 
     # Collect summary stats
     tree_model = tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa")
+    tool_norm = tree_cfg["tool"].lower().replace("-", "").replace("_", "")
+    if tool_norm in ("iqtree", "iqtree2") and is_model_finder_spec(tree_model or ""):
+        chosen = parse_iqtree_best_model(tree_output_dir / f"tree_{label}.iqtree")
+        if chosen:
+            log.info("IQ-TREE ModelFinder chose %s (requested: %s) for tree_%s",
+                     chosen, tree_model, label)
+            tree_model = chosen
+        else:
+            log.warning("Could not parse chosen model from IQ-TREE log for tree_%s", label)
     tree_seq_lengths = [len(r.seq) for r in sel_records]
     target_stats: dict = {
         "leaves":                len(sel_records),
@@ -744,6 +833,8 @@ def _run_target(
         "genus_to_color":        genus_to_color,
         "subfamily_to_genera":   subfamily_to_genera,
         "n_outliers_removed":    n_outliers_removed,
+        "n_length_outliers_long":  n_length_long,
+        "n_length_outliers_short": n_length_short,
         "n_genera":              len(genus_to_color),
         "n_subfamilies":         n_subfamilies,
     }
@@ -771,10 +862,9 @@ def _run_target(
         msa_options=msa_options,
         tree_tool=tree_cfg["tool"],
         tree_version=get_tree_tool_version(tree_cfg["tool"]),
-        tree_model=tree_cfg.get("model_nuc") if seq_type == "nucleotide" else tree_cfg.get("model_aa"),
+        tree_model=tree_model,
         tree_options=tree_cfg.get("options", ""),
     )
-    tool_norm = tree_cfg["tool"].lower().replace("-", "").replace("_", "")
     confidence_type = "SH_like" if tool_norm == "fasttree" else "SH_aLRT"
     write_phyloxml(
         newick_path=annotated_nwk,

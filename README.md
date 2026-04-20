@@ -10,15 +10,16 @@ Two trees are produced per family:
 ## Features
 
 - Automatic species discovery from NCBI Taxonomy
-- Per-species sequence download with RefSeq priority
+- Per-species sequence download with RefSeq priority; RefSeq records are also preferred during cross-species proportional subsampling so reference sequences remain in the final tree set
 - **Smart sequence type selection**: large DNA virus families automatically use protein marker genes (DNA polymerase, major capsid protein, hexon, etc.) instead of whole-genome nucleotide sequences; small DNA virus families use whole-genome nucleotide sequences
 - Adaptive quality filtering: `min_length = null` auto-sets the threshold to 50% of the per-species median (with fallback to 40% and 30% if too few sequences pass), plus a hard floor of 200 bp / 100 aa
 - Adaptive per-species clustering (MMseqs2) with binary search for optimal identity threshold
 - Proportional cross-species sampling to fill target tree sizes
 - Minimum sequence checks at multiple stages (post-QC, post-merge, post-outlier-removal); families and individual tree targets are skipped gracefully when too few sequences remain
-- Length outlier removal before alignment (sequences >3× median length excluded)
+- Length outlier removal before alignment: two-sided, drops sequences that are both much longer (`> hi_mult × median`, default 3×) **and** much shorter (`< lo_mult × median`, default ~1/3) than the median of the selected set; configurable per family via the `length_outlier:` block; counts (`n_length_outliers_long` / `n_length_outliers_short`) are recorded in `summary.tsv` per tree
 - Iterative post-tree branch-length outlier removal: after each tree, leaves with branch length exceeding `median + factor × MAD` (Median Absolute Deviation — robust to skewed distributions) are removed and MSA+tree is re-run (up to max_iterations; removal only proceeds when at least min_seqs sequences remain; configurable per family, on by default); detailed per-outlier log messages include branch length, ratio to median, and threshold
-- Separate MSA options for nucleotide vs. amino acid sequences (`options` / `options_aa`) in both msa_500 and msa_100 sections; IQ-TREE `TEST` model selects the best-fit substitution model automatically for amino acid tree_100 runs
+- Separate MSA options for nucleotide vs. amino acid sequences (`options_nuc` / `options_aa`) in both msa_500 and msa_100 sections; IQ-TREE `TEST` model selects the best-fit substitution model automatically for amino acid tree_100 runs — the chosen model (e.g. `LG+I+G4`, `Q.yeast+F+I+G4`) is parsed from the IQ-TREE log and reported in `summary.tsv`, the per-family PDF, and the PhyloXML description in place of `TEST`
+- FastTree respects `model_nuc` / `model_aa` from the config: `GTR` / `JC` for nucleotides, `LG` / `WAG` / `JTT` for amino acids (unsupported models fall back with a warning); the `+G` / `+GAMMA` suffix enables discrete-gamma rate variation
 - MAFFT multiple sequence alignment (separate options for tree_500 and tree_100, and for nucleotide vs. protein)
 - FastTree (tree_500) and IQ-TREE `--fast` (tree_100) tree inference
 - SH-like support values (FastTree) and SH-aLRT support values (IQ-TREE); stored in PhyloXML `<confidence>` elements and reported in the summary TSV
@@ -26,8 +27,8 @@ Two trees are produced per family:
 - LCA-based internal node annotation using NCBI ranked lineages
 - PhyloXML output with `<confidence type="SH_like|SH_aLRT">`, `<taxonomy>`, `<sequence>`, and `vipr:` metadata properties; leaf node labels are colored by genus using a `style:font_color` property
 - **Genus/subfamily leaf coloring**: leaves are colored in HLS color space — one hue band per subfamily, lightness varies across genera within a subfamily; colors are applied in PDF/PNG tree images, standalone tree images, and PhyloXML output; a structured legend (grouped by subfamily) is included in all tree figures
-- Segment keyword validation: for segmented RNA families, records not containing the expected segment keyword in their title are excluded
-- Checkpointing: MSA and tree steps are skipped if their outputs already exist (resume after interruption)
+- Segment keyword validation: for segmented RNA families, records not containing the expected segment keyword in their title are excluded. The segment query accepts any of "complete sequence", "complete genome", or "complete cds" in the record title, so per-segment CDS records are not missed
+- Checkpointing: MSA and tree steps are skipped only if their inputs still match — checkpoint sidecars store a content hash of the sequence set, MSA output, and relevant config (tool / model / options), so changing any of them automatically invalidates the cache and forces a rerun. Each iterative outlier-removal pass gets its own hash, so resuming a partially-completed run picks up in the right place
 - Validation of MAFFT and tree output files before continuing
 - Warning when NCBI returns a partial batch
 - Warning when a per-family YAML config contains unrecognized keys
@@ -163,7 +164,7 @@ Key parameters:
 
 ```yaml
 download:
-  max_per_species: 200          # cap on non-RefSeq sequences per species
+  max_per_species: 300          # cap on non-RefSeq sequences per species
 
 sequence:
   type: nucleotide              # nucleotide or protein
@@ -212,7 +213,13 @@ tree_100:
   tool: iqtree
   options: "--fast"             # SH-aLRT support; compatible with --fast
   model_nuc: GTR+G
-  model_aa: TEST               # TEST = IQ-TREE ModelFinder (selects best-fit model automatically)
+  model_aa: TEST               # TEST = IQ-TREE ModelFinder; the chosen best-fit model
+                               # is recorded in summary.tsv / PDF / PhyloXML instead of "TEST"
+
+length_outlier:
+  enabled: true                 # pre-MSA length-based outlier removal
+  hi_mult: 3.0                  # drop seqs longer than hi_mult × median (0 disables)
+  lo_mult: 0.333                # drop seqs shorter than lo_mult × median (0 disables)
 
 outlier_removal:
   enabled: true                 # iterative post-tree branch-length outlier removal

@@ -61,6 +61,10 @@ COLUMNS = [
     # diversity / outlier counts
     "tree500_n_outliers_removed",
     "tree100_n_outliers_removed",
+    "tree500_n_length_outliers_long",
+    "tree500_n_length_outliers_short",
+    "tree100_n_length_outliers_long",
+    "tree100_n_length_outliers_short",
     "tree500_n_genera",
     "tree100_n_genera",
     "tree500_n_subfamilies",
@@ -135,9 +139,11 @@ def compute_msa_stats(msa_fasta: Path) -> dict:
         return {"length": "", "gap_pct": ""}
 
     aln_len = len(records[0].seq)
+    if aln_len == 0:
+        return {"length": 0, "gap_pct": 0.0}
     total_chars = aln_len * len(records)
     total_gaps = sum(str(r.seq).count("-") for r in records)
-    gap_pct = round(100.0 * total_gaps / total_chars, 1) if total_chars else 0.0
+    gap_pct = round(100.0 * total_gaps / total_chars, 1)
     return {"length": aln_len, "gap_pct": gap_pct}
 
 
@@ -235,8 +241,10 @@ def build_summary_row(
         row[f"{prefix}_tree_tool"]            = stats.get("tree_tool", "")
         row[f"{prefix}_tree_model"]           = stats.get("tree_model", "")
         row[f"{prefix}_tree_options"]         = stats.get("tree_options", "")
-        row[f"{prefix}_n_outliers_removed"]   = stats.get("n_outliers_removed", "")
-        row[f"{prefix}_n_genera"]             = stats.get("n_genera", "")
-        row[f"{prefix}_n_subfamilies"]        = stats.get("n_subfamilies", "")
+        row[f"{prefix}_n_outliers_removed"]      = stats.get("n_outliers_removed", "")
+        row[f"{prefix}_n_length_outliers_long"]  = stats.get("n_length_outliers_long", "")
+        row[f"{prefix}_n_length_outliers_short"] = stats.get("n_length_outliers_short", "")
+        row[f"{prefix}_n_genera"]                = stats.get("n_genera", "")
+        row[f"{prefix}_n_subfamilies"]           = stats.get("n_subfamilies", "")
 
     return row

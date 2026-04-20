@@ -133,10 +133,18 @@ def run(
     """Run the full pipeline for one or more viral families.
 
     For each family the pipeline will:
-    discover species (NCBI taxonomy) → download per species →
-    quality filter → cluster per species → proportional merge →
-    align (MAFFT) → infer trees (FastTree / IQ-TREE) →
-    annotate internal nodes → write Newick + PhyloXML.
+    discover species (NCBI taxonomy) → download per species (RefSeq-priority) →
+    quality filter → adaptive per-species clustering → proportional merge
+    (RefSeqs preferred) → pre-MSA length-outlier removal →
+    align (MAFFT) → infer trees (FastTree for tree_500 / IQ-TREE for tree_100) →
+    iterative post-tree branch-length outlier removal (re-align + re-tree) →
+    annotate internal nodes (LCA taxonomy) → write Newick, PhyloXML,
+    PDF/PNG tree images, and per-family report.
+
+    MSA and tree-inference steps are content-hash-checkpointed, so reruns
+    skip stages whose inputs and config are unchanged. A cross-family
+    overview PNG (overview_tree_100.png) is generated automatically when
+    the run completes.
 
     Already-processed families are skipped unless --force is used.
     Per-family configs are auto-generated in configs/ if missing.
@@ -145,6 +153,7 @@ def run(
     Examples:
       vfam_trees run -f families.txt
       vfam_trees run -f families.txt -j 4 -t 4
+      vfam_trees run -f families.txt --dry-run
       vfam_trees run -f families.txt --force --verbose
       vfam_trees run -f families.txt -o /data/results -g /etc/vfam_global.yaml
     """
@@ -211,8 +220,9 @@ def run(
 def status(families: Path, output_dir: Path):
     """Show processing status for each family.
 
-    Reports one of: pending, done, skipped (with reason), or
-    error reading status.
+    Reports one of: pending, in-progress (with current stage inferred
+    from checkpoint files — downloading/QC, MSA, tree inference, or
+    annotating), done, skipped (with reason), or error reading status.
 
     \b
     Examples:
@@ -333,7 +343,7 @@ cache:
 # Override any of these here to change the default for all families.
 defaults:
   download:
-    max_per_species: 200
+    max_per_species: 300
 
   sequence:
     type: nucleotide    # nucleotide or protein
@@ -383,6 +393,24 @@ defaults:
     options: "--fast"
     model_nuc: GTR+G
     model_aa: TEST
+
+  # Pre-MSA sequence-length outlier removal (applied after clustering +
+  # proportional merge, before MAFFT).  Drops sequences whose length
+  # deviates from the median of the selected set by a large factor —
+  # guards against fragment cluster reps and mis-annotated concatenations
+  # distorting the alignment.
+  length_outlier:
+    enabled: true
+    hi_mult: 3.0       # drop seqs longer than hi_mult × median (0 disables)
+    lo_mult: 0.333     # drop seqs shorter than lo_mult × median (0 disables)
+
+  # Post-tree branch-length outlier removal (iterative).
+  # Drops leaves whose terminal branch length exceeds median + factor × MAD.
+  outlier_removal:
+    enabled: true
+    factor: 20.0
+    max_iterations: 3
+    min_seqs: 40
 """
 
 
@@ -449,7 +477,7 @@ def test(global_config: Path):
     Verifies:
       - Required Python packages (biopython, snakemake, taxopy, ...)
       - Required external tools (mafft, iqtree2, mmseqs, FastTree)
-      - Optional tools (cd-hit, cd-hit-est — only needed as fallback)
+      - Optional tools (cd-hit, cd-hit-est — only needed when clustering.tool: cdhit)
       - global.yaml exists and has ncbi.email set
       - Live connectivity to NCBI Entrez
 
@@ -490,7 +518,7 @@ def test(global_config: Path):
     click.echo("")
 
     # Optional tools
-    click.echo("Optional external tools (fallback only):")
+    click.echo("Optional external tools (only used when clustering.tool: cdhit):")
     for tool in OPTIONAL_TOOLS:
         path = shutil.which(tool)
         if path:

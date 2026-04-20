@@ -91,7 +91,7 @@ DNA_FAMILIES: dict[str, dict] = {
 
 DEFAULT_FAMILY_CONFIG: dict = {
     "download": {
-        "max_per_species": 200,
+        "max_per_species": 300,
     },
     "sequence": {
         "type": "nucleotide",
@@ -142,6 +142,11 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "options": "--fast",
         "model_nuc": "GTR+G",
         "model_aa": "TEST",
+    },
+    "length_outlier": {
+        "enabled": True,
+        "hi_mult": 3.0,
+        "lo_mult": 0.333,
     },
     "outlier_removal": {
         "enabled": True,
@@ -207,7 +212,7 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
     config_path = configs_dir / f"{family}.yaml"
     if config_path.exists():
         with open(config_path) as f:
-            file_cfg = yaml.safe_load(f)
+            file_cfg = yaml.safe_load(f) or {}
         _warn_unknown_keys(file_cfg, config_path)
         _warn_smart_default_conflicts(family, file_cfg, config_path)
         cfg = _merge_with_defaults(file_cfg, global_cfg, family)

@@ -77,13 +77,41 @@ def test_accepts_when_no_min_length():
 
 def test_remove_length_outliers_keeps_normal():
     records = [_rec("A" * 300), _rec("A" * 310), _rec("A" * 290)]
-    kept, n_removed = remove_length_outliers(records)
-    assert n_removed == 0
+    kept, n_long, n_short = remove_length_outliers(records)
+    assert n_long == 0
+    assert n_short == 0
     assert len(kept) == 3
 
 
-def test_remove_length_outliers_drops_extreme():
+def test_remove_length_outliers_drops_extreme_long():
     records = [_rec("A" * 300)] * 10 + [_rec("A" * 30000)]
-    kept, n_removed = remove_length_outliers(records)
-    assert n_removed == 1
+    kept, n_long, n_short = remove_length_outliers(records)
+    assert n_long == 1
+    assert n_short == 0
     assert len(kept) == 10
+
+
+def test_remove_length_outliers_drops_short():
+    # median = 300; lo_mult default = 1/3 → cutoff ~100, so a 50 bp seq is dropped
+    records = [_rec("A" * 300)] * 10 + [_rec("A" * 50)]
+    kept, n_long, n_short = remove_length_outliers(records)
+    assert n_long == 0
+    assert n_short == 1
+    assert len(kept) == 10
+
+
+def test_remove_length_outliers_two_sided():
+    records = [_rec("A" * 300)] * 10 + [_rec("A" * 30000), _rec("A" * 50)]
+    kept, n_long, n_short = remove_length_outliers(records)
+    assert n_long == 1
+    assert n_short == 1
+    assert len(kept) == 10
+
+
+def test_remove_length_outliers_lo_disabled():
+    # lo_mult=0 restores the old upper-bound-only behaviour
+    records = [_rec("A" * 300)] * 10 + [_rec("A" * 50)]
+    kept, n_long, n_short = remove_length_outliers(records, lo_mult=0)
+    assert n_long == 0
+    assert n_short == 0
+    assert len(kept) == 11

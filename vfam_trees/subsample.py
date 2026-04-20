@@ -92,6 +92,7 @@ def proportional_merge(
     species_reps: dict[str, list[SeqRecord]],
     target: int,
     seed: int = 42,
+    priority_ids: set[str] | None = None,
 ) -> list[SeqRecord]:
     """Select sequences proportionally across species to hit target count.
 
@@ -103,11 +104,16 @@ def proportional_merge(
         species_reps: mapping of species_name → list of representative SeqRecords
         target: desired total number of sequences
         seed: random seed for reproducibility
+        priority_ids: optional set of record IDs to prefer when subsampling
+                      within a species (e.g. RefSeq short IDs). When a
+                      species' quota is smaller than its rep count, priority
+                      records are taken first and the remainder is randomised.
 
     Returns:
         Flat list of selected SeqRecords (length ≤ target).
     """
     random.seed(seed)
+    priority_ids = priority_ids or set()
 
     non_empty = {sp: reps for sp, reps in species_reps.items() if reps}
     if not non_empty:
@@ -144,12 +150,35 @@ def proportional_merge(
                 diff += 1
 
     selected: list[SeqRecord] = []
+    n_priority_taken = 0
+    n_priority_total = 0
     for sp, reps in non_empty.items():
         quota = quotas.get(sp, 0)
         if len(reps) <= quota:
             selected.extend(reps)
+            n_priority_taken += sum(1 for r in reps if r.id in priority_ids)
+            n_priority_total += sum(1 for r in reps if r.id in priority_ids)
+        elif priority_ids:
+            prio = [r for r in reps if r.id in priority_ids]
+            rest = [r for r in reps if r.id not in priority_ids]
+            n_priority_total += len(prio)
+            if len(prio) >= quota:
+                chosen = random.sample(prio, quota)
+                selected.extend(chosen)
+                n_priority_taken += quota
+            else:
+                selected.extend(prio)
+                n_priority_taken += len(prio)
+                remaining = quota - len(prio)
+                selected.extend(random.sample(rest, remaining))
         else:
             selected.extend(random.sample(reps, quota))
+
+    if priority_ids and n_priority_total:
+        log.info(
+            "Proportional merge: kept %d / %d priority record(s) (e.g. RefSeqs)",
+            n_priority_taken, n_priority_total,
+        )
 
     log.info(
         "Proportional merge: %d species, %d total reps → %d selected (target %d)",
@@ -176,8 +205,10 @@ def _cluster_at(
     elif tool in ("cdhit", "cdhitest"):
         rep_ids = _cdhit_cluster(records, threshold, seq_type, work_dir)
     else:
-        log.warning("Unknown clustering tool '%s', falling back to mmseqs2", clustering_tool)
-        rep_ids = _mmseqs2_cluster(records, threshold, seq_type, work_dir)
+        raise ValueError(
+            f"Unsupported clustering tool: {clustering_tool!r}. "
+            "Supported: 'mmseqs2', 'cdhit'."
+        )
 
     id_to_rec = {rec.id: rec for rec in records}
     return [id_to_rec[rid] for rid in rep_ids if rid in id_to_rec]
@@ -210,13 +241,23 @@ def _mmseqs2_cluster(
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        log.warning("MMseqs2 failed at threshold %.4f, falling back to CD-HIT", threshold)
-        return _cdhit_cluster(records, threshold, seq_type, work_dir)
+        log.error("MMseqs2 stderr:\n%s", (result.stderr or "")[-2000:])
+        log.error("MMseqs2 stdout:\n%s", (result.stdout or "")[-1000:])
+        raise RuntimeError(
+            f"MMseqs2 easy-linclust failed at threshold {threshold:.4f} "
+            f"with exit code {result.returncode}. If MMseqs2 was upgraded "
+            "recently, the CLI or default options may have changed — see "
+            "stderr above. Consider setting clustering.tool: cdhit in the "
+            "family config if this persists."
+        )
 
     rep_fasta = Path(str(output_prefix) + "_rep_seq.fasta")
     if not rep_fasta.exists():
-        log.warning("MMseqs2 produced no output at threshold %.4f, falling back to CD-HIT", threshold)
-        return _cdhit_cluster(records, threshold, seq_type, work_dir)
+        raise FileNotFoundError(
+            f"MMseqs2 exited 0 but did not produce the expected "
+            f"representatives file {rep_fasta}. This likely indicates a "
+            "change in MMseqs2's output-file naming conventions."
+        )
 
     return [rec.id for rec in SeqIO.parse(rep_fasta, "fasta")]
 
@@ -245,9 +286,21 @@ def _cdhit_cluster(
 
     result = subprocess.run(cmd, capture_output=True, text=True)
 
-    if result.returncode != 0 or not output_fasta.exists():
-        log.error("CD-HIT failed at threshold %.4f — using all sequences", threshold)
-        return [rec.id for rec in records]
+    if result.returncode != 0:
+        log.error("%s stderr:\n%s", cmd[0], (result.stderr or "")[-2000:])
+        log.error("%s stdout:\n%s", cmd[0], (result.stdout or "")[-1000:])
+        raise RuntimeError(
+            f"{cmd[0]} failed at threshold {threshold:.4f} with exit code "
+            f"{result.returncode}. This may indicate a version "
+            "incompatibility — see stderr above."
+        )
+
+    if not output_fasta.exists():
+        raise FileNotFoundError(
+            f"{cmd[0]} exited 0 but did not produce expected output "
+            f"{output_fasta}. This may indicate a change in CD-HIT's output "
+            "conventions."
+        )
 
     return [rec.id for rec in SeqIO.parse(output_fasta, "fasta")]
 
