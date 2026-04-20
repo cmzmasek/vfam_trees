@@ -841,12 +841,11 @@ def _run_target(
         for oid in outlier_ids:
             display_name = short_to_display.get(oid, oid)
             bl = _bl_map.get(oid, float("nan"))
+            mads_above = (bl - _median) / _mad if _mad else float("nan")
             log.info(
                 "tree_%s iteration %d: removing outlier '%s' — branch length %.5f "
-                "(%.1f× median, threshold=%.5f)",
-                label, iteration, display_name, bl,
-                bl / _median if _median else float("nan"),
-                _threshold,
+                "(%.1f× MAD above median, threshold=%.5f)",
+                label, iteration, display_name, bl, mads_above, _threshold,
             )
 
         n_outliers_removed += len(outlier_ids)
