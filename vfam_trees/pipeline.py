@@ -34,7 +34,7 @@ from .tree import (
 )
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
-from .report import generate_family_report, save_tree_images
+from .report import generate_family_report, save_tree_images, save_tree_icon
 from .colors import assign_leaf_colors
 from .cache import SequenceCache
 from .logger import setup_logger, get_logger
@@ -537,6 +537,14 @@ def run_family(
     if summary_path is not None:
         write_summary_row(summary_path, summary_row)
 
+    viz_cfg = global_cfg.get("visualization") or {}
+    branch_linewidth = float(viz_cfg.get("branch_linewidth", 0.5))
+
+    icon_cfg = global_cfg.get("icon") or {}
+    icon_size = int(icon_cfg.get("size", 256))
+    icon_bg_color = icon_cfg.get("bg_color", "#EAF3F2")
+    icon_branch_color = icon_cfg.get("branch_color", "#000000")
+
     # PDF report
     generate_family_report(
         family=family,
@@ -547,6 +555,7 @@ def run_family(
         tree_support=tree_support,
         bio_trees=bio_trees,
         tree_leaf_colors=tree_leaf_colors,
+        branch_linewidth=branch_linewidth,
     )
 
     # Standalone tree images (PDF + PNG)
@@ -555,6 +564,18 @@ def run_family(
         output_dir=family_dir,
         bio_trees=bio_trees,
         tree_leaf_colors=tree_leaf_colors,
+        branch_linewidth=branch_linewidth,
+    )
+
+    # Icon PNG (tree_100 topology only, square, no labels)
+    save_tree_icon(
+        family=family,
+        output_dir=family_dir,
+        bio_trees=bio_trees,
+        icon_size=icon_size,
+        icon_bg_color=icon_bg_color,
+        icon_branch_color=icon_branch_color,
+        branch_linewidth=branch_linewidth,
     )
 
 

@@ -12,6 +12,7 @@ Two trees are produced per family:
 - Automatic species discovery from NCBI Taxonomy
 - Per-species sequence download with RefSeq priority; RefSeq records are also preferred during cross-species proportional subsampling so reference sequences remain in the final tree set
 - **Smart sequence type selection**: large DNA virus families automatically use protein marker genes (DNA polymerase, major capsid protein, hexon, etc.) instead of whole-genome nucleotide sequences; small DNA virus families use whole-genome nucleotide sequences
+- **Per-family icon PNG** (`<Family>_tree_icon.png`): square topology-only thumbnail of tree_100, no labels, uniform branch color; size, background color, and branch color configurable in `global.yaml` (defaults: 256×256 px, `#EAF3F2` background, black branches)
 - Adaptive quality filtering: `min_length = null` auto-sets the threshold to 50% of the per-species median (with fallback to 40% and 30% if too few sequences pass), plus a hard floor of 200 bp / 100 aa
 - Adaptive per-species clustering (MMseqs2) with binary search for optimal identity threshold
 - Proportional cross-species sampling to fill target tree sizes
@@ -332,6 +333,7 @@ For each family, results are written to `results/<Family>_<taxid>/` (e.g. `resul
 | `<Family>_metadata_500.tsv` | Sequence metadata (broad) |
 | `<Family>_metadata_100.tsv` | Sequence metadata (collapsed) |
 | `<Family>_id_map.tsv` | Short ID → display name mapping |
+| `<Family>_tree_icon.png` | Square topology-only icon of tree_100 (no labels, uniform branch color, configurable size/colors) |
 | `<Family>_report.pdf` | Per-family PDF report: stats table, post-QC length histogram, per-tree length histograms (tree_500 and tree_100), SH support histograms, tree_100 visualization with genus/subfamily color legend |
 | `<Family>.log` | Per-family log |
 

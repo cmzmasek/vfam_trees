@@ -340,6 +340,16 @@ cache:
   dir: ~/.vfam_cache    # path to cache root; ~ is expanded automatically
   ttl_days: 90          # null = never expire; set to re-download after N days
 
+# Visualization settings — applied to all tree PDF/PNG outputs.
+visualization:
+  branch_linewidth: 0.5        # branch line width in pt (BioPython default is ~1.5 pt)
+
+# Per-family icon PNG (tree_100 topology only, no labels, square).
+icon:
+  size: 256                    # output size in pixels (square)
+  bg_color: "#EAF3F2"          # background color (hex)
+  branch_color: "#000000"      # branch color (hex; uniform, no genus coloring)
+
 # Default values applied when per-family config is auto-generated.
 # Override any of these here to change the default for all families.
 defaults:

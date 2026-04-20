@@ -21,6 +21,7 @@ def generate_family_report(
     tree_support: dict[str, list[float]] | None = None,
     bio_trees: dict[str, Any] | None = None,
     tree_leaf_colors: dict[str, dict] | None = None,
+    branch_linewidth: float = 0.5,
 ) -> None:
     """Generate a per-family PDF report with stats and plots.
 
@@ -218,6 +219,7 @@ def generate_family_report(
                 label_colors=colors_100.get("display_to_color"),
                 genus_to_color=colors_100.get("genus_to_color"),
                 subfamily_to_genera=colors_100.get("subfamily_to_genera"),
+                branch_linewidth=branch_linewidth,
             )
             if fig is not None:
                 pdf.savefig(fig, bbox_inches="tight")
@@ -237,6 +239,7 @@ def save_tree_images(
     output_dir: Path,
     bio_trees: dict[str, Any],
     tree_leaf_colors: dict[str, dict] | None = None,
+    branch_linewidth: float = 0.5,
 ) -> None:
     """Save standalone PDF and PNG images of the tree_100 and tree_500 visualizations."""
     try:
@@ -262,6 +265,7 @@ def save_tree_images(
             label_colors=colors.get("display_to_color"),
             genus_to_color=colors.get("genus_to_color"),
             subfamily_to_genera=colors.get("subfamily_to_genera"),
+            branch_linewidth=branch_linewidth,
         )
         if fig is None:
             continue
@@ -278,6 +282,71 @@ def save_tree_images(
         plt.close(fig)
 
 
+def save_tree_icon(
+    family: str,
+    output_dir: Path,
+    bio_trees: dict[str, Any],
+    icon_size: int = 256,
+    icon_bg_color: str = "#EAF3F2",
+    icon_branch_color: str = "#000000",
+    branch_linewidth: float = 0.5,
+) -> None:
+    """Save a square topology-only icon PNG for tree_100.
+
+    No leaf labels, no legend, no border.  Branch color is uniform.
+    Size and colors are controlled by the global config ``icon:`` section.
+    """
+    try:
+        import copy
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.text as _mtext
+        from Bio import Phylo
+    except ImportError as e:
+        log.warning("Tree icon skipped — matplotlib/biopython not available: %s", e)
+        return
+
+    tree = bio_trees.get("100")
+    if tree is None:
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{family}_tree_icon.png"
+
+    _ICON_DPI = 100
+    size_in = icon_size / _ICON_DPI
+
+    try:
+        tree_copy = copy.deepcopy(tree)
+        for clade in tree_copy.get_terminals():
+            clade.name = ""
+
+        fig = plt.figure(figsize=(size_in, size_in), facecolor=icon_bg_color)
+        # small padding (4 % each side) so the tree doesn't touch the edge
+        ax = fig.add_axes([0.04, 0.04, 0.92, 0.92])
+        ax.set_facecolor(icon_bg_color)
+
+        Phylo.draw(tree_copy, axes=ax, do_show=False)
+
+        for line in ax.get_lines():
+            line.set_color(icon_branch_color)
+            line.set_linewidth(branch_linewidth)
+
+        for child in ax.get_children():
+            if isinstance(child, _mtext.Text):
+                child.set_visible(False)
+
+        ax.axis("off")
+
+        fig.savefig(str(out_path), dpi=_ICON_DPI, facecolor=icon_bg_color)
+        log.info("Tree icon written to %s", out_path)
+    except Exception as e:
+        log.warning("Tree icon skipped for %s: %s", family, e)
+    finally:
+        plt.close("all")
+
+
 def _draw_tree_fig(
     tree,
     family: str,
@@ -285,6 +354,7 @@ def _draw_tree_fig(
     label_colors: dict[str, str] | None = None,
     genus_to_color: dict[str, str] | None = None,
     subfamily_to_genera: dict[str, list[str]] | None = None,
+    branch_linewidth: float = 0.5,
 ):
     """Return a matplotlib Figure of the tree, or None on error."""
     try:
@@ -310,7 +380,7 @@ def _draw_tree_fig(
             tree, axes=ax, do_show=False,
             label_func=lambda c: c.name or "",
         )
-        _thin_tree_lines(ax)
+        _thin_tree_lines(ax, branch_linewidth)
         ax.axis("off")
         ax.set_title(f"{family} tree_{label}", fontsize=11, fontweight="bold")
         font_size = max(4, min(8, int(200 / max(n_leaves, 1))))
@@ -343,15 +413,15 @@ def _draw_tree_fig(
         return None
 
 
-def _thin_tree_lines(ax, scale: float = 0.5) -> None:
-    """Halve (or scale) the line width of every Line2D artist on the axes.
+def _thin_tree_lines(ax, linewidth: float = 0.5) -> None:
+    """Set an absolute linewidth on every Line2D artist on the axes.
 
-    BioPython's Phylo.draw uses matplotlib's default linewidth (1.5 pt) for
-    the tree branches; that reads heavy in dense trees.  Call immediately
-    after Phylo.draw.
+    BioPython's Phylo.draw uses matplotlib's default linewidth (~1.5 pt);
+    0.5 pt is the default here for cleaner dense-tree output.  Call
+    immediately after Phylo.draw.
     """
     for line in ax.get_lines():
-        line.set_linewidth(line.get_linewidth() * scale)
+        line.set_linewidth(linewidth)
 
 
 def _draw_taxonomy_legend(
