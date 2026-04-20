@@ -319,6 +319,7 @@ def save_tree_icon(
 
     try:
         tree_copy = copy.deepcopy(tree)
+        tree_copy.ladderize(reverse=True)
         for clade in tree_copy.get_terminals():
             clade.name = ""
 
@@ -376,6 +377,7 @@ def _draw_tree_fig(
         # longer than 40 chars to "name[:37] + '...'".  Since our display names
         # include species|strain|accession|host and are almost always >40 chars,
         # we must override label_func to render the full name.
+        tree.ladderize(reverse=True)
         Phylo.draw(
             tree, axes=ax, do_show=False,
             label_func=lambda c: c.name or "",
@@ -602,6 +604,7 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
         _strip_axis_decor(ax)
         try:
             tree_copy = copy.deepcopy(tree)
+            tree_copy.ladderize(reverse=True)
             for clade in tree_copy.get_terminals():
                 clade.name = ""
             Phylo.draw(tree_copy, axes=ax, do_show=False)
