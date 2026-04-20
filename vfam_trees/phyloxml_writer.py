@@ -73,6 +73,7 @@ def write_phyloxml(
             for clade in tree.find_clades():
                 if clade.confidence is not None:
                     clade.confidence = round(clade.confidence * 100)
+    tree.ladderize(reverse=True)
     tree.name = family
 
     root = ET.Element("phyloxml", xmlns=PHYLOXML_NS)
