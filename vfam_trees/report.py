@@ -328,7 +328,8 @@ def save_tree_icon(
         ax = fig.add_axes([0.04, 0.04, 0.92, 0.92])
         ax.set_facecolor(icon_bg_color)
 
-        Phylo.draw(tree_copy, axes=ax, do_show=False)
+        with plt.rc_context({"lines.linewidth": branch_linewidth}):
+            Phylo.draw(tree_copy, axes=ax, do_show=False)
 
         # Phylo.draw resets axes and figure facecolor — re-apply after drawing.
         ax.set_facecolor(icon_bg_color)
@@ -382,10 +383,11 @@ def _draw_tree_fig(
         # include species|strain|accession|host and are almost always >40 chars,
         # we must override label_func to render the full name.
         tree.ladderize(reverse=True)
-        Phylo.draw(
-            tree, axes=ax, do_show=False,
-            label_func=lambda c: c.name or "",
-        )
+        with plt.rc_context({"lines.linewidth": branch_linewidth}):
+            Phylo.draw(
+                tree, axes=ax, do_show=False,
+                label_func=lambda c: c.name or "",
+            )
         _thin_tree_lines(ax, branch_linewidth)
         ax.axis("off")
         ax.set_title(f"{family} tree_{label}", fontsize=11, fontweight="bold")
@@ -611,7 +613,8 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
             tree_copy.ladderize(reverse=True)
             for clade in tree_copy.get_terminals():
                 clade.name = ""
-            Phylo.draw(tree_copy, axes=ax, do_show=False)
+            with plt.rc_context({"lines.linewidth": 0.5}):
+                Phylo.draw(tree_copy, axes=ax, do_show=False)
             _thin_tree_lines(ax)
             for txt in ax.texts:
                 txt.set_visible(False)
