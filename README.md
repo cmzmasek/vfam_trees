@@ -5,7 +5,7 @@
 Two trees are produced per family:
 
 - **tree_500** — broad diversity tree (up to 500 sequences, FastTree / GTR+G or LG+G, SH-like support)
-- **tree_100** — collapsed representative tree (up to 100 sequences, IQ-TREE / GTR+G or TEST, SH-aLRT support)
+- **tree_100** — collapsed representative tree (up to 100 sequences, IQ-TREE / GTR+G or TEST; SH-aLRT support for nucleotide trees, UFBoot (`-B 1000`) support for protein trees)
 
 ## Features
 
@@ -21,11 +21,12 @@ Two trees are produced per family:
 - Separate MSA options for nucleotide vs. amino acid sequences (`options_nuc` / `options_aa`) in both msa_500 and msa_100 sections; IQ-TREE `TEST` model selects the best-fit substitution model automatically for amino acid tree_100 runs — the chosen model (e.g. `LG+I+G4`, `Q.yeast+F+I+G4`) is parsed from the IQ-TREE log and reported in `summary.tsv`, the per-family PDF, and the PhyloXML description in place of `TEST`
 - FastTree respects `model_nuc` / `model_aa` from the config: `GTR` / `JC` for nucleotides, `LG` / `WAG` / `JTT` for amino acids (unsupported models fall back with a warning); the `+G` / `+GAMMA` suffix enables discrete-gamma rate variation
 - MAFFT multiple sequence alignment (separate options for tree_500 and tree_100, and for nucleotide vs. protein)
-- FastTree (tree_500) and IQ-TREE `--fast` (tree_100) tree inference
-- SH-like support values (FastTree) and SH-aLRT support values (IQ-TREE); stored in PhyloXML `<confidence>` elements and reported in the summary TSV
+- Alignment column trimming with **trimAl** (`-automated1` by default, on by default) between MAFFT and tree inference — drops poorly-aligned / ambiguous columns to improve signal-to-noise, applied uniformly to both nucleotide and protein alignments; pre-trim length, trim tool, and trim options are recorded per tree in `summary.tsv`; disable or retune per family via the `msa_trim:` config block
+- FastTree (tree_500) and IQ-TREE (tree_100) tree inference; tree_100 has per-sequence-type options — `options_nuc: "--fast"` (SH-aLRT support, auto-added by the wrapper) and `options_aa: "-B 1000"` (UFBoot ultrafast bootstrap, more robust on divergent protein families)
+- Branch-support measure is picked automatically per tree and recorded as `tree{500,100}_support_type` in `summary.tsv` (`SH_like` / `SH_aLRT` / `UFBoot`); support-value stats are reported under generic `tree{500,100}_support_{min,q1,median,q3,max,iqr}` columns so a single schema covers all three measures; the PhyloXML `<confidence type="…">` attribute mirrors the same label
 - Taxonomy-guided tree rooting using LCA specificity scoring, with MAD and midpoint fallbacks
 - LCA-based internal node annotation using NCBI ranked lineages
-- PhyloXML output with `<confidence type="SH_like|SH_aLRT">`, `<taxonomy>`, `<sequence>`, and `vipr:` metadata properties; leaf node labels are colored by genus using a `style:font_color` property
+- PhyloXML output with `<confidence type="SH_like|SH_aLRT|UFBoot">` (type chosen per tree, matches the actual support measure computed), `<taxonomy>`, `<sequence>`, and `vipr:` metadata properties; leaf node labels are colored by genus using a `style:font_color` property
 - **Genus/subfamily leaf coloring**: leaves are colored in HLS color space — one hue band per subfamily, lightness varies across genera within a subfamily; colors are applied in PDF/PNG tree images, standalone tree images, and PhyloXML output; a structured legend (grouped by subfamily) is included in all tree figures
 - Segment keyword validation: for segmented RNA families, records not containing the expected segment keyword in their title are excluded. The segment query accepts any of "complete sequence", "complete genome", or "complete cds" in the record title, so per-segment CDS records are not missed
 - Checkpointing: MSA and tree steps are skipped only if their inputs still match — checkpoint sidecars store a content hash of the sequence set, MSA output, and relevant config (tool / model / options), so changing any of them automatically invalidates the cache and forces a rerun. Each iterative outlier-removal pass gets its own hash, so resuming a partially-completed run picks up in the right place
@@ -66,6 +67,7 @@ matplotlib >= 3.9    # PDF report and tree images; requires NumPy 2.x compatible
 | Tool | Purpose |
 |------|---------|
 | `mafft` | Multiple sequence alignment |
+| `trimal` | Alignment column trimming |
 | `FastTree` | Rapid ML tree inference (tree_500) |
 | `iqtree2` | ML tree inference (tree_100) |
 | `mmseqs` | Sequence clustering |
@@ -73,7 +75,7 @@ matplotlib >= 3.9    # PDF report and tree images; requires NumPy 2.x compatible
 All tools must be available on `$PATH`. Installation via conda is recommended:
 
 ```bash
-conda install -c bioconda mafft fasttree iqtree mmseqs2
+conda install -c bioconda mafft fasttree iqtree mmseqs2 trimal
 ```
 
 ## Installation
@@ -203,6 +205,11 @@ msa_100:
   options_nuc: "--retree 2"             # used for nucleotide sequences
   options_aa: "--auto"                  # used for amino acid sequences (MAFFT auto-selects strategy)
 
+msa_trim:
+  enabled: true                  # drop poorly-aligned columns before tree inference
+  tool: trimal
+  options: "-automated1"         # adaptive; works for both nucleotide and protein
+
 tree_500:
   tool: fasttree
   options: ""
@@ -211,7 +218,9 @@ tree_500:
 
 tree_100:
   tool: iqtree
-  options: "--fast"             # SH-aLRT support; compatible with --fast
+  options_nuc: "--fast"        # nucleotide: SH-aLRT support (auto-added by wrapper)
+  options_aa: "-B 1000"        # protein: UFBoot ultrafast bootstrap (stronger support
+                               # for divergent protein families; --fast is incompatible with -B)
   model_nuc: GTR+G
   model_aa: TEST               # TEST = IQ-TREE ModelFinder; the chosen best-fit model
                                # is recorded in summary.tsv / PDF / PhyloXML instead of "TEST"
@@ -310,8 +319,8 @@ For each family, results are written to `results/<Family>_<taxid>/` (e.g. `resul
 | `<Family>_tree_500.png` | Standalone PNG tree image (150 dpi) with genus/subfamily color legend |
 | `<Family>_tree_100.pdf` | Standalone PDF tree image with genus/subfamily color legend |
 | `<Family>_tree_100.png` | Standalone PNG tree image (150 dpi) with genus/subfamily color legend |
-| `<Family>_alignment_500.fasta` | Final MAFFT alignment used for tree_500 (reflects sequences after iterative outlier removal) |
-| `<Family>_alignment_100.fasta` | Final MAFFT alignment used for tree_100 (reflects sequences after iterative outlier removal) |
+| `<Family>_alignment_500.fasta` | Final alignment fed to tree_500 (MAFFT + trimAl when `msa_trim.enabled: true`; reflects sequences after iterative outlier removal) |
+| `<Family>_alignment_100.fasta` | Final alignment fed to tree_100 (MAFFT + trimAl when `msa_trim.enabled: true`; reflects sequences after iterative outlier removal) |
 | `<Family>_sequences_raw_500.fasta` | Sequences entering the MSA (after QC, clustering, and proportional merge; before post-tree outlier removal) |
 | `<Family>_sequences_raw_100.fasta` | Sequences entering the MSA (after QC, clustering, and proportional merge; before post-tree outlier removal) |
 | `<Family>_metadata_500.tsv` | Sequence metadata (broad) |

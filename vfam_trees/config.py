@@ -131,6 +131,11 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "options_nuc": "--retree 2",
         "options_aa": "--auto",
     },
+    "msa_trim": {
+        "enabled": True,
+        "tool": "trimal",
+        "options": "-automated1",
+    },
     "tree_500": {
         "tool": "fasttree",
         "options": "",
@@ -139,7 +144,12 @@ DEFAULT_FAMILY_CONFIG: dict = {
     },
     "tree_100": {
         "tool": "iqtree",
-        "options": "--fast",
+        # Nucleotide: --fast (SH-aLRT branch support auto-added by the
+        # IQ-TREE wrapper). Protein: UFBoot (-B 1000) produces stronger
+        # support on divergent protein families; --fast is incompatible
+        # with -B so a separate option is required.
+        "options_nuc": "--fast",
+        "options_aa": "-B 1000",
         "model_nuc": "GTR+G",
         "model_aa": "TEST",
     },

@@ -136,7 +136,8 @@ def run(
     discover species (NCBI taxonomy) → download per species (RefSeq-priority) →
     quality filter → adaptive per-species clustering → proportional merge
     (RefSeqs preferred) → pre-MSA length-outlier removal →
-    align (MAFFT) → infer trees (FastTree for tree_500 / IQ-TREE for tree_100) →
+    align (MAFFT) → trim alignment columns (trimAl) →
+    infer trees (FastTree for tree_500 / IQ-TREE for tree_100) →
     iterative post-tree branch-length outlier removal (re-align + re-tree) →
     annotate internal nodes (LCA taxonomy) → write Newick, PhyloXML,
     PDF/PNG tree images, and per-family report.
@@ -382,15 +383,30 @@ defaults:
     options_nuc: "--retree 2"
     options_aa: "--auto"
 
+  # Column trimming applied between MAFFT and tree inference (both tree_500
+  # and tree_100).  Removes poorly-aligned positions that add noise to the
+  # tree.  trimAl's -automated1 adapts its threshold to the alignment and
+  # works for both nucleotide and protein alignments.
+  msa_trim:
+    enabled: true
+    tool: trimal
+    options: "-automated1"
+
   tree_500:
     tool: fasttree
     options: ""
     model_nuc: GTR+G
     model_aa: LG+G
 
+  # IQ-TREE (tree_100) uses different options per sequence type.
+  # Nucleotide trees use --fast; the wrapper auto-adds -alrt 1000 for
+  # SH-aLRT branch support.  Protein trees use UFBoot (-B 1000) instead,
+  # which gives stronger support values on divergent protein families.
+  # --fast is incompatible with -B, hence the split.
   tree_100:
     tool: iqtree
-    options: "--fast"
+    options_nuc: "--fast"
+    options_aa: "-B 1000"
     model_nuc: GTR+G
     model_aa: TEST
 
@@ -459,7 +475,7 @@ def init(global_config: Path, force: bool):
 # test
 # ---------------------------------------------------------------------------
 
-REQUIRED_TOOLS = ["mafft", "iqtree2", "mmseqs", "FastTree"]
+REQUIRED_TOOLS = ["mafft", "iqtree2", "mmseqs", "FastTree", "trimal"]
 OPTIONAL_TOOLS = ["cd-hit", "cd-hit-est"]
 REQUIRED_PACKAGES = ["Bio", "click", "yaml", "snakemake", "requests"]
 
@@ -476,7 +492,7 @@ def test(global_config: Path):
 
     Verifies:
       - Required Python packages (biopython, snakemake, taxopy, ...)
-      - Required external tools (mafft, iqtree2, mmseqs, FastTree)
+      - Required external tools (mafft, iqtree2, mmseqs, FastTree, trimal)
       - Optional tools (cd-hit, cd-hit-est — only needed when clustering.tool: cdhit)
       - global.yaml exists and has ncbi.email set
       - Live connectivity to NCBI Entrez

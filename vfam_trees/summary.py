@@ -36,27 +36,35 @@ COLUMNS = [
     "seqlen_iqr",
     # tree_500
     "tree500_leaves",
-    "tree500_shlike_min",
-    "tree500_shlike_q1",
-    "tree500_shlike_median",
-    "tree500_shlike_q3",
-    "tree500_shlike_max",
-    "tree500_shlike_iqr",
+    "tree500_support_type",
+    "tree500_support_min",
+    "tree500_support_q1",
+    "tree500_support_median",
+    "tree500_support_q3",
+    "tree500_support_max",
+    "tree500_support_iqr",
     "tree500_cluster_thresh_min",
     "tree500_cluster_thresh_max",
     "tree500_msa_length",
+    "tree500_msa_length_pre_trim",
+    "tree500_trim_tool",
+    "tree500_trim_options",
     "tree500_msa_gap_pct",
     # tree_100
     "tree100_leaves",
-    "tree100_shalrt_min",
-    "tree100_shalrt_q1",
-    "tree100_shalrt_median",
-    "tree100_shalrt_q3",
-    "tree100_shalrt_max",
-    "tree100_shalrt_iqr",
+    "tree100_support_type",
+    "tree100_support_min",
+    "tree100_support_q1",
+    "tree100_support_median",
+    "tree100_support_q3",
+    "tree100_support_max",
+    "tree100_support_iqr",
     "tree100_cluster_thresh_min",
     "tree100_cluster_thresh_max",
     "tree100_msa_length",
+    "tree100_msa_length_pre_trim",
+    "tree100_trim_tool",
+    "tree100_trim_options",
     "tree100_msa_gap_pct",
     # diversity / outlier counts
     "tree500_n_outliers_removed",
@@ -217,23 +225,24 @@ def build_summary_row(
         "seqlen_iqr":         seqlen_stats.get("iqr", ""),
     }
 
-    for label, prefix, sup_col in (
-        ("500", "tree500", "shlike"),
-        ("100", "tree100", "shalrt"),
-    ):
+    for label, prefix in (("500", "tree500"), ("100", "tree100")):
         stats = tree_stats.get(label, {})
         sh = stats.get("support", {k: "" for k in ("min", "q1", "median", "q3", "max", "iqr")})
         msa = stats.get("msa", {"length": "", "gap_pct": ""})
-        row[f"{prefix}_leaves"]             = stats.get("leaves", "")
-        row[f"{prefix}_{sup_col}_min"]      = sh.get("min", "")
-        row[f"{prefix}_{sup_col}_q1"]       = sh.get("q1", "")
-        row[f"{prefix}_{sup_col}_median"]   = sh.get("median", "")
-        row[f"{prefix}_{sup_col}_q3"]       = sh.get("q3", "")
-        row[f"{prefix}_{sup_col}_max"]      = sh.get("max", "")
-        row[f"{prefix}_{sup_col}_iqr"]      = sh.get("iqr", "")
+        row[f"{prefix}_leaves"]            = stats.get("leaves", "")
+        row[f"{prefix}_support_type"]      = stats.get("support_type", "")
+        row[f"{prefix}_support_min"]       = sh.get("min", "")
+        row[f"{prefix}_support_q1"]        = sh.get("q1", "")
+        row[f"{prefix}_support_median"]    = sh.get("median", "")
+        row[f"{prefix}_support_q3"]        = sh.get("q3", "")
+        row[f"{prefix}_support_max"]       = sh.get("max", "")
+        row[f"{prefix}_support_iqr"]       = sh.get("iqr", "")
         row[f"{prefix}_cluster_thresh_min"]   = stats.get("cluster_thresh_min", "")
         row[f"{prefix}_cluster_thresh_max"]   = stats.get("cluster_thresh_max", "")
         row[f"{prefix}_msa_length"]           = msa.get("length", "")
+        row[f"{prefix}_msa_length_pre_trim"]  = stats.get("msa_length_pre_trim", "")
+        row[f"{prefix}_trim_tool"]            = stats.get("trim_tool", "")
+        row[f"{prefix}_trim_options"]         = stats.get("trim_options", "")
         row[f"{prefix}_msa_gap_pct"]          = msa.get("gap_pct", "")
         row[f"{prefix}_seq_type"]             = stats.get("seq_type", "")
         row[f"{prefix}_msa_tool"]             = stats.get("msa_tool", "")

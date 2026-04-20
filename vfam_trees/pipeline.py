@@ -27,6 +27,7 @@ from .quality import filter_sequences, remove_length_outliers, deduplicate, writ
 from .rename import assign_short_ids, restore_fasta_names, restore_newick_names
 from .subsample import adaptive_cluster_species, proportional_merge
 from .msa import run_msa, get_mafft_version, validate_msa
+from .trim import run_trim, get_trimal_version
 from .tree import (
     run_tree, get_tree_tool_version, validate_newick,
     parse_iqtree_best_model, is_model_finder_spec,
@@ -60,6 +61,43 @@ def _compute_key(obj) -> str:
     """Return a short hex digest summarising *obj* (sort_keys for stability)."""
     payload = json.dumps(obj, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _resolve_tree_options(tree_cfg: dict, seq_type: str) -> str:
+    """Return the tree-tool options string for *seq_type*.
+
+    Prefers the per-sequence-type keys (``options_nuc`` / ``options_aa``)
+    introduced in 1.0.15 and falls back to the legacy single ``options``
+    key so pre-existing family YAMLs continue to work unchanged.
+    """
+    key = "options_aa" if seq_type == "protein" else "options_nuc"
+    if key in tree_cfg:
+        return tree_cfg.get(key, "") or ""
+    return tree_cfg.get("options", "") or ""
+
+
+def _support_type_for(tool: str, options: str) -> str:
+    """Return a short label naming the branch-support measure produced by
+    *tool* under *options* — one of 'SH_like', 'SH_aLRT', 'UFBoot',
+    'SH_aLRT_UFBoot'.
+
+    The IQ-TREE wrapper auto-injects ``-alrt 1000`` whenever no bootstrap
+    flag is present, so plain or ``--fast`` runs yield SH-aLRT.
+    """
+    tool_norm = tool.lower().replace("-", "").replace("_", "")
+    if tool_norm == "fasttree":
+        return "SH_like"
+    parts = options.split() if options else []
+    has_ufboot = "-B" in parts or "--ufboot" in parts or "-bb" in parts
+    has_alrt = "-alrt" in parts
+    has_bootstrap = "-b" in parts
+    if has_ufboot and has_alrt:
+        return "SH_aLRT_UFBoot"
+    if has_ufboot:
+        return "UFBoot"
+    if has_bootstrap:
+        return "Bootstrap"
+    return "SH_aLRT"
 
 
 def _write_checkpoint(path: Path, key_obj: dict) -> None:
@@ -629,6 +667,12 @@ def _run_target(
         else msa_cfg.get("options_nuc", "")
     )
     tree_cfg = family_cfg[f"tree_{label}"]
+    tree_options = _resolve_tree_options(tree_cfg, seq_type)
+    support_type = _support_type_for(tree_cfg["tool"], tree_options)
+    trim_cfg = family_cfg.get("msa_trim", {})
+    trim_enabled = bool(trim_cfg.get("enabled", True))
+    trim_tool = trim_cfg.get("tool", "trimal")
+    trim_options = trim_cfg.get("options", "-automated1")
     outlier_cfg = family_cfg.get("outlier_removal", {})
     do_outlier_removal = outlier_cfg.get("enabled", True)
     outlier_factor = float(outlier_cfg.get("factor", 20.0))
@@ -636,6 +680,9 @@ def _run_target(
     outlier_min_seqs = int(outlier_cfg.get("min_seqs", 40))
 
     msa_short_fasta = target_work / f"alignment_{label}_short.fasta"
+    msa_trimmed_fasta = target_work / f"alignment_{label}_short.trim.fasta"
+    # File fed to the tree step — trimmed when enabled, raw MAFFT output otherwise.
+    tree_input_fasta = msa_trimmed_fasta if trim_enabled else msa_short_fasta
     msa_checkpoint = target_work / ".msa_done"
     tree_output_dir = target_work / "tree"
     expected_treefile = tree_output_dir / f"tree_{label}.nwk"
@@ -645,15 +692,21 @@ def _run_target(
 
     for iteration in range(max_iterations + 1):
         # ------------------------------------------------------------------
-        # MSA — with checkpointing keyed on sequence set + MSA options
+        # MSA (+ optional column trimming) — keyed on sequence set,
+        # MAFFT options, and trim settings, so any change invalidates the cache.
         # ------------------------------------------------------------------
         msa_key = {
-            "seq_ids": sorted(r.id for r in sel_records),
-            "tool":    msa_cfg["tool"],
-            "options": msa_options,
+            "seq_ids":      sorted(r.id for r in sel_records),
+            "msa_tool":     msa_cfg["tool"],
+            "msa_options":  msa_options,
+            "trim_enabled": trim_enabled,
+            "trim_tool":    trim_tool if trim_enabled else None,
+            "trim_options": trim_options if trim_enabled else None,
         }
-        if _check_checkpoint(msa_checkpoint, msa_key) and msa_short_fasta.exists():
-            log.info("Reusing cached MSA for tree_%s (iteration %d)", label, iteration)
+        _needed_files = [msa_short_fasta, tree_input_fasta] if trim_enabled else [msa_short_fasta]
+        if _check_checkpoint(msa_checkpoint, msa_key) and all(p.exists() for p in _needed_files):
+            log.info("Reusing cached MSA%s for tree_%s (iteration %d)",
+                     " + trim" if trim_enabled else "", label, iteration)
         else:
             log.info("Running MAFFT (%s) on %d sequences for tree_%s (iteration %d) ...",
                      msa_options, len(sel_records), label, iteration)
@@ -666,21 +719,40 @@ def _run_target(
                 threads=threads,
             )
             validate_msa(msa_short_fasta)
-            _write_checkpoint(msa_checkpoint, msa_key)
             log.info("MAFFT complete for tree_%s (iteration %d)", label, iteration)
 
+            if trim_enabled:
+                log.info("Running %s (%s) on tree_%s alignment (iteration %d) ...",
+                         trim_tool, trim_options, label, iteration)
+                run_trim(
+                    input_fasta=msa_short_fasta,
+                    output_fasta=msa_trimmed_fasta,
+                    tool=trim_tool,
+                    options=trim_options,
+                )
+                validate_msa(msa_trimmed_fasta)
+                pre_len = compute_msa_stats(msa_short_fasta).get("length", 0) or 0
+                post_len = compute_msa_stats(msa_trimmed_fasta).get("length", 0) or 0
+                frac = (post_len / pre_len) if pre_len else 0.0
+                log.info(
+                    "Trim reduced tree_%s alignment from %d → %d columns (%.1f%% kept)",
+                    label, pre_len, post_len, 100.0 * frac,
+                )
+            _write_checkpoint(msa_checkpoint, msa_key)
+
         # ------------------------------------------------------------------
-        # Tree inference — keyed on MSA content + tree tool/model/options
+        # Tree inference — keyed on tree-input MSA content + tool/model/options
+        # (trimmed alignment when msa_trim is enabled)
         # ------------------------------------------------------------------
         tree_model_for_check = (
             tree_cfg.get("model_nuc") if seq_type == "nucleotide"
             else tree_cfg.get("model_aa")
         )
         tree_key = {
-            "msa_hash": hashlib.sha256(msa_short_fasta.read_bytes()).hexdigest()[:16],
+            "msa_hash": hashlib.sha256(tree_input_fasta.read_bytes()).hexdigest()[:16],
             "tool":     tree_cfg["tool"],
             "model":    tree_model_for_check,
-            "options":  tree_cfg.get("options", ""),
+            "options":  tree_options,
         }
         if _check_checkpoint(tree_checkpoint, tree_key) and expected_treefile.exists():
             log.info("Reusing cached tree for tree_%s (iteration %d)", label, iteration)
@@ -689,14 +761,14 @@ def _run_target(
             log.info("Running %s (%s model) for tree_%s (iteration %d) ...",
                      tree_cfg["tool"], tree_model_for_check, label, iteration)
             treefile = run_tree(
-                alignment_fasta=msa_short_fasta,
+                alignment_fasta=tree_input_fasta,
                 output_dir=tree_output_dir,
                 prefix=f"tree_{label}",
                 tool=tree_cfg["tool"],
                 seq_type=seq_type,
                 model_nuc=tree_cfg.get("model_nuc", "GTR+G"),
                 model_aa=tree_cfg.get("model_aa", "LG+G"),
-                options=tree_cfg.get("options", ""),
+                options=tree_options,
                 threads=threads,
             )
             validate_newick(treefile)
@@ -772,7 +844,7 @@ def _run_target(
         sel_metadata = [short_id_to_meta.get(r.id, {}) for r in sel_records]
         id_map = {r.id: short_to_display.get(r.id, r.id) for r in sel_records}
 
-    restore_fasta_names(msa_short_fasta, family_dir / f"{family}_alignment_{label}.fasta", id_map)
+    restore_fasta_names(tree_input_fasta, family_dir / f"{family}_alignment_{label}.fasta", id_map)
 
     # Taxonomy annotation + rooting
     log.info("Inferring internal node taxonomy and rooting tree_%s ...", label)
@@ -825,9 +897,13 @@ def _run_target(
         "seq_type":              seq_type,
         "msa_tool":              msa_cfg["tool"],
         "msa_options":           msa_options,
+        "trim_enabled":          trim_enabled,
+        "trim_tool":             trim_tool if trim_enabled else "",
+        "trim_options":          trim_options if trim_enabled else "",
         "tree_tool":             tree_cfg["tool"],
         "tree_model":            tree_model or "",
-        "tree_options":          tree_cfg.get("options", ""),
+        "tree_options":          tree_options,
+        "support_type":          support_type,
         "seq_lengths":           tree_seq_lengths,
         "display_to_color":      display_to_color,
         "genus_to_color":        genus_to_color,
@@ -838,6 +914,9 @@ def _run_target(
         "n_genera":              len(genus_to_color),
         "n_subfamilies":         n_subfamilies,
     }
+    if trim_enabled:
+        pre_stats = compute_msa_stats(msa_short_fasta)
+        target_stats["msa_length_pre_trim"] = pre_stats.get("length", "")
     support_vals: list[float] = []
     if bio_tree is not None:
         target_stats["support"] = compute_support_stats(bio_tree)
@@ -845,7 +924,7 @@ def _run_target(
             c.confidence for c in bio_tree.find_clades()
             if not c.is_terminal() and c.confidence is not None
         ]
-    target_stats["msa"] = compute_msa_stats(msa_short_fasta)
+    target_stats["msa"] = compute_msa_stats(tree_input_fasta)
 
     # PhyloXML
     log.info("Writing PhyloXML for tree_%s ...", label)
@@ -863,9 +942,9 @@ def _run_target(
         tree_tool=tree_cfg["tool"],
         tree_version=get_tree_tool_version(tree_cfg["tool"]),
         tree_model=tree_model,
-        tree_options=tree_cfg.get("options", ""),
+        tree_options=tree_options,
     )
-    confidence_type = "SH_like" if tool_norm == "fasttree" else "SH_aLRT"
+    confidence_type = support_type
     write_phyloxml(
         newick_path=annotated_nwk,
         output_xml=family_dir / f"{family}_tree_{label}.xml",

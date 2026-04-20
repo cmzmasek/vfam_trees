@@ -86,7 +86,7 @@ def generate_family_report(
         ]
         for label in ("500", "100"):
             prefix = f"tree{label}"
-            sup = "shlike" if label == "500" else "shalrt"
+            sup_type  = str(summary_row.get(f"{prefix}_support_type", "")) or "—"
             tree_opts = str(summary_row.get(f"{prefix}_tree_options", "")).strip()
             msa_opts  = str(summary_row.get(f"{prefix}_msa_options", "")).strip()
             tsl = compute_seqlen_stats(tree_seq_lengths.get(label, []))
@@ -105,8 +105,9 @@ def generate_family_report(
                 [f"Tree {label} — MSA length",       str(summary_row.get(f"{prefix}_msa_length", ""))],
                 [f"Tree {label} — MSA gap %",        str(summary_row.get(f"{prefix}_msa_gap_pct", ""))],
                 [f"Tree {label} — cluster thresh",   f"{summary_row.get(f'{prefix}_cluster_thresh_min', '')}–{summary_row.get(f'{prefix}_cluster_thresh_max', '')}"],
-                [f"Tree {label} — SH support median", str(summary_row.get(f"{prefix}_{sup}_median", ""))],
-                [f"Tree {label} — SH support IQR",    str(summary_row.get(f"{prefix}_{sup}_iqr", ""))],
+                [f"Tree {label} — support type",     sup_type],
+                [f"Tree {label} — support median",   str(summary_row.get(f"{prefix}_support_median", ""))],
+                [f"Tree {label} — support IQR",      str(summary_row.get(f"{prefix}_support_iqr", ""))],
             ]
 
         tbl = ax.table(
@@ -175,7 +176,14 @@ def generate_family_report(
                                      squeeze=False)
             panel = 0
             colors = {"500": "#3c6e9f", "100": "#e07b39"}
-            labels = {"500": "SH-like (FastTree)", "100": "SH-aLRT (IQ-TREE)"}
+            tool_labels = {
+                "500": str(summary_row.get("tree500_tree_tool", "")).strip(),
+                "100": str(summary_row.get("tree100_tree_tool", "")).strip(),
+            }
+            sup_labels = {
+                "500": str(summary_row.get("tree500_support_type", "")).replace("_", "-"),
+                "100": str(summary_row.get("tree100_support_type", "")).replace("_", "-"),
+            }
             for key in ("500", "100"):
                 vals = tree_support.get(key, [])
                 if not vals:
@@ -185,7 +193,9 @@ def generate_family_report(
                         edgecolor="white", linewidth=0.5)
                 ax.set_xlabel("Support value", fontsize=11)
                 ax.set_ylabel("Number of internal nodes", fontsize=11)
-                ax.set_title(f"{family} tree_{key}\n{labels[key]} (n={len(vals)})",
+                tool = tool_labels[key] or ("FastTree" if key == "500" else "IQ-TREE")
+                sup  = sup_labels[key]  or ("SH-like" if key == "500" else "SH-aLRT")
+                ax.set_title(f"{family} tree_{key}\n{sup} ({tool}) (n={len(vals)})",
                              fontsize=11)
                 ax.set_xlim(0, 100)
                 ax.spines["top"].set_visible(False)
