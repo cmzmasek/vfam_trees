@@ -371,6 +371,8 @@ defaults:
       - uncultured
       - unverified
       - vector
+      - recombinant
+      - patent
 
   clustering:
     tool: mmseqs2

@@ -145,6 +145,8 @@ DEFAULT_FAMILY_CONFIG: dict = {
             "uncultured",
             "unverified",
             "vector",
+            "recombinant",
+            "patent",
         ],
     },
     "clustering": {
