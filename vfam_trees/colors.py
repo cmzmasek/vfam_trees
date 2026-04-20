@@ -79,10 +79,17 @@ def assign_leaf_colors(
             subfamily_to_genera["(unclassified)"] = genera_in_group
 
         n = len(genera_in_group)
+        no_subfamilies = len(subfamily_genera) == 0
         for g_idx, genus in enumerate(genera_in_group):
-            # Vary lightness 0.35–0.60 across genera within the same subfamily hue
-            lightness = 0.35 + 0.25 * (g_idx / max(n - 1, 1)) if n > 1 else 0.45
-            r_f, g_f, b_f = colorsys.hls_to_rgb(base_hue, lightness, 0.80)
+            if no_subfamilies:
+                # No subfamily level: spread genera across the full hue wheel
+                # so each genus gets a visually distinct color.
+                hue = g_idx / max(n, 1)
+                r_f, g_f, b_f = colorsys.hls_to_rgb(hue, 0.45, 0.80)
+            else:
+                # Within a subfamily hue band: vary lightness 0.35–0.60
+                lightness = 0.35 + 0.25 * (g_idx / max(n - 1, 1)) if n > 1 else 0.45
+                r_f, g_f, b_f = colorsys.hls_to_rgb(base_hue, lightness, 0.80)
             genus_to_color[genus] = "#{:02x}{:02x}{:02x}".format(
                 int(r_f * 255), int(g_f * 255), int(b_f * 255)
             )
