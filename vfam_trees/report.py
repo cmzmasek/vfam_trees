@@ -330,6 +330,10 @@ def save_tree_icon(
 
         Phylo.draw(tree_copy, axes=ax, do_show=False)
 
+        # Phylo.draw resets axes and figure facecolor — re-apply after drawing.
+        ax.set_facecolor(icon_bg_color)
+        fig.set_facecolor(icon_bg_color)
+
         for line in ax.get_lines():
             line.set_color(icon_branch_color)
             line.set_linewidth(branch_linewidth)
