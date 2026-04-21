@@ -300,10 +300,17 @@ def init_configs(families: Path, global_config: Path, configs_dir: Path, force: 
       vfam_trees init-configs -f families.txt --force
       vfam_trees init-configs -f families.txt -c /data/configs
     """
-    from .config import load_global_config, load_family_config
+    from .config import load_global_config, load_family_config, make_minimal_global_cfg
 
     family_list = _read_family_list(families)
-    global_cfg = load_global_config(global_config)
+    if global_config.exists():
+        global_cfg = load_global_config(global_config)
+    else:
+        click.echo(
+            f"Notice: no global config found at {global_config} — "
+            "using hardcoded defaults for all families."
+        )
+        global_cfg = make_minimal_global_cfg()
 
     for family in family_list:
         config_path = configs_dir / f"{family}.yaml"

@@ -15,6 +15,7 @@ from vfam_trees.config import (
     _merge_with_defaults,
     _warn_smart_default_conflicts,
     load_family_config,
+    make_minimal_global_cfg,
 )
 
 
@@ -167,3 +168,42 @@ def test_load_missing_config_auto_generates_segment(tmp_path):
     cfg, auto = load_family_config("Hantaviridae", cfg_dir, MINIMAL_GLOBAL)
     assert auto is True
     assert cfg["sequence"]["segment"] == SEGMENTED_FAMILIES["Hantaviridae"]
+
+
+# ---------------------------------------------------------------------------
+# make_minimal_global_cfg — fallback when no global.yaml present
+# ---------------------------------------------------------------------------
+
+def test_make_minimal_global_cfg_returns_empty_defaults():
+    cfg = make_minimal_global_cfg()
+    assert cfg["defaults"] == {}
+
+
+def test_make_minimal_global_cfg_produces_full_defaults_via_load(tmp_path):
+    # When init-configs uses the minimal global cfg, generated per-family
+    # configs should match DEFAULT_FAMILY_CONFIG exactly.
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    cfg, auto = load_family_config("Flaviviridae", cfg_dir, make_minimal_global_cfg())
+    assert auto is True
+    excludes = cfg["quality"]["exclude_organisms"]
+    for term in DEFAULT_FAMILY_CONFIG["quality"]["exclude_organisms"]:
+        assert term in excludes
+
+
+def test_make_minimal_global_cfg_global_yaml_overrides_take_precedence(tmp_path):
+    # When global.yaml IS present its values win over DEFAULT_FAMILY_CONFIG.
+    old_global = {
+        "ncbi": {"email": "test@test.com"},
+        "defaults": {
+            "quality": {
+                "exclude_organisms": ["synthetic construct", "metagenome"]
+            }
+        },
+    }
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    cfg, _ = load_family_config("Flaviviridae", cfg_dir, old_global)
+    excludes = cfg["quality"]["exclude_organisms"]
+    # global.yaml list wins — newer defaults NOT silently injected
+    assert excludes == ["synthetic construct", "metagenome"]

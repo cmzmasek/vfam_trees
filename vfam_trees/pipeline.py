@@ -34,7 +34,7 @@ from .tree import (
 )
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
-from .report import generate_family_report, save_tree_images, save_tree_icon
+from .report import generate_family_report, save_tree_images, save_tree_icon, save_sequence_length_plot
 from .colors import assign_leaf_colors
 from .cache import SequenceCache
 from .logger import setup_logger, get_logger
@@ -226,6 +226,7 @@ def run_family(
     #         Results cached per species to avoid re-downloading
     # -------------------------------------------------------------------------
     species_data: dict[str, dict] = {}  # species_name → {records, metadata}
+    species_pre_length_lengths: dict[str, list[int]] = {}  # species_name → lengths after ambiguity filter
     n_species_relaxed = 0  # species that needed a relaxed min_length threshold
     # Aggregate QC exclusion counts across all species
     family_qc_stats: dict[str, int] = {
@@ -347,6 +348,9 @@ def run_family(
         # Accumulate QC stats
         for k in family_qc_stats:
             family_qc_stats[k] += sp_qc_stats.get(k, 0)
+        pre_lengths = sp_qc_stats.get("pre_length_lengths", [])
+        if pre_lengths:
+            species_pre_length_lengths[sp_name] = pre_lengths
 
         if not filtered:
             log.info("No sequences passed quality filter for %s", sp_name)
@@ -359,6 +363,10 @@ def run_family(
         filtered = [r for r in filtered if r.id in acc_to_meta]
 
         species_data[sp_name] = {"records": filtered, "metadata": filtered_meta}
+
+    # Sequence length violin plot (per species, after ambiguity filter, before length filter)
+    if species_pre_length_lengths:
+        save_sequence_length_plot(family, family_dir, species_pre_length_lengths)
 
     # Fetch ranked taxonomy lineages from NCBI (cached per family)
     taxid_cache = work_dir / "taxonomy_cache.json"
@@ -567,6 +575,13 @@ def run_family(
         branch_linewidth=branch_linewidth,
     )
 
+    # Persist tree_100 leaf colors so generate_overview_png can read them back
+    colors_100 = tree_leaf_colors.get("100", {}).get("display_to_color")
+    if colors_100:
+        colors_path = family_dir / f"{family}_colors_100.json"
+        with open(colors_path, "w") as _f:
+            json.dump(colors_100, _f)
+
     # Icon PNG (tree_100 topology only, square, no labels)
     save_tree_icon(
         family=family,
@@ -576,6 +591,7 @@ def run_family(
         icon_bg_color=icon_bg_color,
         icon_branch_color=icon_branch_color,
         branch_linewidth=branch_linewidth,
+        leaf_colors=tree_leaf_colors.get("100", {}).get("display_to_color"),
     )
 
 

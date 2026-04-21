@@ -88,7 +88,7 @@ def filter_sequences(
             log.info("min_length %d raised to hard floor %d", min_length, floor)
         else:
             log.info("Using min_length=%d", min_length)
-        passed, n_short, n_ambig, n_undefined = _apply_length_filter(
+        passed, n_short, n_ambig, n_undefined, pre_length_lengths = _apply_length_filter(
             passed_organism, effective, ambig_chars, max_ambiguous
         )
         log.info(
@@ -101,6 +101,7 @@ def filter_sequences(
             "n_excluded_length": n_short,
             "n_excluded_ambiguity": n_ambig,
             "n_undefined": n_undefined,
+            "pre_length_lengths": pre_length_lengths,
         }
         return passed, None, qc_stats
 
@@ -108,13 +109,14 @@ def filter_sequences(
     fraction_used = _AUTO_FRACTIONS[-1]
     passed: list[SeqRecord] = []
     n_short = n_ambig = n_undefined = 0
+    pre_length_lengths: list[int] = []
     for fraction in _AUTO_FRACTIONS:
         effective = max(int(median_len * fraction), floor)
         log.info(
             "Auto min_length set to %d (%.0f%% of median %d)",
             effective, fraction * 100, median_len,
         )
-        passed, n_short, n_ambig, n_undefined = _apply_length_filter(
+        passed, n_short, n_ambig, n_undefined, pre_length_lengths = _apply_length_filter(
             passed_organism, effective, ambig_chars, max_ambiguous
         )
         log.info(
@@ -136,6 +138,7 @@ def filter_sequences(
         "n_excluded_length": n_short,
         "n_excluded_ambiguity": n_ambig,
         "n_undefined": n_undefined,
+        "pre_length_lengths": pre_length_lengths,
     }
     return passed, fraction_used, qc_stats
 
@@ -192,27 +195,34 @@ def _apply_length_filter(
     min_length: int,
     ambig_chars: set,
     max_ambiguous: float,
-) -> tuple[list[SeqRecord], int, int, int]:
-    """Filter records by length and ambiguity. Returns (passed, n_short, n_ambig, n_undefined)."""
+) -> tuple[list[SeqRecord], int, int, int, list[int]]:
+    """Filter records by ambiguity then length.
+
+    Returns (passed, n_short, n_ambig, n_undefined, pre_length_lengths).
+    pre_length_lengths: lengths of sequences that passed the ambiguity check,
+    before the minimum-length check is applied.
+    """
     passed = []
     n_short = 0
     n_ambig = 0
     n_undefined = 0
+    pre_length_lengths: list[int] = []
     for rec in records:
         try:
             seq_str = str(rec.seq).upper()
         except Exception:
             n_undefined += 1
             continue
-        if len(seq_str) < min_length:
-            n_short += 1
-            continue
         ambig_frac = sum(1 for c in seq_str if c in ambig_chars) / max(len(seq_str), 1)
         if ambig_frac > max_ambiguous:
             n_ambig += 1
             continue
+        pre_length_lengths.append(len(seq_str))
+        if len(seq_str) < min_length:
+            n_short += 1
+            continue
         passed.append(rec)
-    return passed, n_short, n_ambig, n_undefined
+    return passed, n_short, n_ambig, n_undefined, pre_length_lengths
 
 
 def deduplicate(records: list[SeqRecord]) -> list[SeqRecord]:

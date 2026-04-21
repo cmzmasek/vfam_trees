@@ -282,6 +282,33 @@ def save_tree_images(
         plt.close(fig)
 
 
+def _draw_gradient_bg(ax, base_color: str) -> None:
+    """Fill an axes with a top-lighter → base-color vertical gradient.
+
+    Uses imshow at zorder=-10 so tree lines render on top.  The lightness of
+    the top color is raised by 0.15 in HLS space; saturation is preserved.
+    """
+    import colorsys
+    import numpy as np
+
+    hex_c = base_color.lstrip("#")
+    r0, g0, b0 = (int(hex_c[i:i+2], 16) / 255 for i in (0, 2, 4))
+    h, l, s = colorsys.rgb_to_hls(r0, g0, b0)
+    r1, g1, b1 = colorsys.hls_to_rgb(h, min(1.0, l + 0.15), s)
+
+    H = 256
+    grad = np.zeros((H, 1, 3), dtype=np.float32)
+    for i in range(H):
+        t = i / (H - 1)
+        grad[i, 0] = [r1*(1-t)+r0*t, g1*(1-t)+g0*t, b1*(1-t)+b0*t]
+
+    ax.imshow(
+        grad, aspect="auto", extent=[0, 1, 0, 1],
+        transform=ax.transAxes, origin="upper",
+        interpolation="bilinear", zorder=-10,
+    )
+
+
 def save_tree_icon(
     family: str,
     output_dir: Path,
@@ -290,10 +317,14 @@ def save_tree_icon(
     icon_bg_color: str = "#EAF3F2",
     icon_branch_color: str = "#000000",
     branch_linewidth: float = 0.5,
+    leaf_colors: dict[str, str] | None = None,
 ) -> None:
     """Save a square topology-only icon PNG for tree_100.
 
-    No leaf labels, no legend, no border.  Branch color is uniform.
+    No leaf labels, no legend, no border.  Terminal branches are colored by
+    genus when leaf_colors is provided (display_name → hex color); otherwise
+    icon_branch_color is used uniformly.  Background is a subtle top-lighter
+    gradient derived from icon_bg_color.
     Size and colors are controlled by the global config ``icon:`` section.
     """
     try:
@@ -303,6 +334,7 @@ def save_tree_icon(
         import matplotlib.pyplot as plt
         import matplotlib.text as _mtext
         from Bio import Phylo
+        from Bio.Phylo.BaseTree import BranchColor
     except ImportError as e:
         log.warning("Tree icon skipped — matplotlib/biopython not available: %s", e)
         return
@@ -320,24 +352,39 @@ def save_tree_icon(
     try:
         tree_copy = copy.deepcopy(tree)
         tree_copy.ladderize(reverse=True)
+
+        # Apply genus colors to terminal branches before clearing names
+        if leaf_colors:
+            for clade in tree_copy.get_terminals():
+                hex_c = (leaf_colors.get(clade.name) or "").lstrip("#")
+                if len(hex_c) == 6:
+                    r, g, b = int(hex_c[:2], 16), int(hex_c[2:4], 16), int(hex_c[4:], 16)
+                    clade.color = BranchColor(r, g, b)
+
         for clade in tree_copy.get_terminals():
             clade.name = ""
 
-        fig = plt.figure(figsize=(size_in, size_in), facecolor=icon_bg_color)
-        # small padding (4 % each side) so the tree doesn't touch the edge
-        ax = fig.add_axes([0.04, 0.04, 0.92, 0.92])
-        ax.set_facecolor(icon_bg_color)
+        fig = plt.figure(figsize=(size_in, size_in))
+        # Background gradient axes covering the full figure
+        bg_ax = fig.add_axes([0, 0, 1, 1], zorder=0)
+        _draw_gradient_bg(bg_ax, icon_bg_color)
+        bg_ax.axis("off")
 
-        with plt.rc_context({"lines.linewidth": branch_linewidth}):
+        # Tree axes with small padding; transparent so gradient shows through
+        ax = fig.add_axes([0.04, 0.04, 0.92, 0.92], zorder=1)
+        ax.set_facecolor("none")
+
+        with plt.rc_context({"lines.linewidth": branch_linewidth,
+                             "lines.color": icon_branch_color}):
             Phylo.draw(tree_copy, axes=ax, do_show=False)
 
-        # Phylo.draw resets axes and figure facecolor — re-apply after drawing.
-        ax.set_facecolor(icon_bg_color)
-        fig.set_facecolor(icon_bg_color)
+        # Phylo.draw may reset facecolor — keep axes transparent
+        ax.set_facecolor("none")
 
         for line in ax.get_lines():
-            line.set_color(icon_branch_color)
             line.set_linewidth(branch_linewidth)
+            if not leaf_colors:
+                line.set_color(icon_branch_color)
 
         for child in ax.get_children():
             if isinstance(child, _mtext.Text):
@@ -345,7 +392,7 @@ def save_tree_icon(
 
         ax.axis("off")
 
-        fig.savefig(str(out_path), dpi=_ICON_DPI, facecolor=icon_bg_color)
+        fig.savefig(str(out_path), dpi=_ICON_DPI)
         log.info("Tree icon written to %s", out_path)
     except Exception as e:
         log.warning("Tree icon skipped for %s: %s", family, e)
@@ -555,6 +602,86 @@ def _read_summary_lineages(output_dir: Path) -> dict[str, str]:
     return result
 
 
+def save_sequence_length_plot(
+    family: str,
+    output_dir: Path,
+    species_lengths: dict[str, list[int]],
+) -> None:
+    """Save a per-species sequence-length box+dot plot PDF for a family.
+
+    Each species with ≥5 sequences gets a box plot (median, IQR, whiskers);
+    all species have their individual lengths overlaid as jittered dots.
+    Data represents lengths after organism exclusion and ambiguity filtering,
+    before the minimum-length filter.  Species are ordered alphabetically.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError as e:
+        log.warning("Sequence length plot skipped — matplotlib not available: %s", e)
+        return
+
+    if not species_lengths:
+        log.warning("No species length data for %s — skipping sequence length plot.", family)
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{family}_seqlen_plot.pdf"
+
+    species_sorted = sorted(species_lengths.keys())
+    n = len(species_sorted)
+
+    _BOX_MIN = 5  # minimum sequences to draw a box plot
+
+    rng = np.random.default_rng(seed=0)
+    fig_w = max(8, n * 0.6)
+    fig, ax = plt.subplots(figsize=(fig_w, 6))
+
+    for idx, sp in enumerate(species_sorted, start=1):
+        lengths = species_lengths[sp]
+        if len(lengths) >= _BOX_MIN:
+            ax.boxplot(
+                lengths,
+                positions=[idx],
+                widths=0.5,
+                patch_artist=True,
+                boxprops=dict(facecolor="#cde0f5", color="#1a3a5c", linewidth=0.8),
+                medianprops=dict(color="#1a3a5c", linewidth=1.5),
+                whiskerprops=dict(color="#1a3a5c", linewidth=0.8),
+                capprops=dict(color="#1a3a5c", linewidth=0.8),
+                flierprops=dict(marker=""),  # suppress default outlier markers
+                manage_ticks=False,
+            )
+        jitter = rng.uniform(-0.18, 0.18, size=len(lengths))
+        ax.scatter(
+            np.array([idx] * len(lengths)) + jitter,
+            lengths,
+            color="#3c6e9f", s=12, alpha=0.5, zorder=3, linewidths=0,
+        )
+
+    ax.set_xticks(range(1, n + 1))
+    label_fontsize = max(4, min(8, int(200 / max(n, 1))))
+    ax.set_xticklabels(species_sorted, rotation=45, ha="right", fontsize=label_fontsize)
+    ax.set_ylabel("Sequence length (bp/aa)", fontsize=11)
+    ax.set_title(
+        f"{family} — sequence length per species\n"
+        "(after ambiguity filter, before length filter)",
+        fontsize=11, fontweight="bold",
+    )
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    try:
+        fig.savefig(str(out_path), bbox_inches="tight")
+        log.info("Sequence length plot written to %s", out_path)
+    except Exception as e:
+        log.warning("Could not write sequence length plot for %s: %s", family, e)
+    plt.close(fig)
+
+
 def generate_overview_png(output_dir: Path, output_path: Path) -> None:
     """Thumbnail grid of every tree_100 found under output_dir.
 
@@ -579,12 +706,21 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
 
     lineage_map = _read_summary_lineages(output_dir)
 
-    entries: list[tuple[str, object]] = []
+    entries: list[tuple[str, object, dict]] = []
     for nwk_path in nwk_files:
         family = nwk_path.stem.replace("_tree_100", "")
+        colors: dict[str, str] = {}
+        colors_path = nwk_path.parent / f"{family}_colors_100.json"
+        if colors_path.exists():
+            try:
+                import json as _json
+                with open(colors_path) as _f:
+                    colors = _json.load(_f)
+            except Exception:
+                pass
         try:
             tree = next(iter(Phylo.parse(str(nwk_path), "newick")))
-            entries.append((family, tree))
+            entries.append((family, tree, colors))
         except Exception as e:
             log.warning("Could not parse %s for overview: %s", nwk_path, e)
 
@@ -616,7 +752,9 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
         ax.set_xlabel("")
         ax.set_ylabel("")
 
-    for idx, (family, tree) in enumerate(entries):
+    from Bio.Phylo.BaseTree import BranchColor
+
+    for idx, (family, tree, family_colors) in enumerate(entries):
         ax = ax_flat[idx]
         lineage = lineage_map.get(family, "")
         bg_color, group_label = _match_realm(lineage)
@@ -628,11 +766,16 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
                 "using default background.",
                 family, lineage,
             )
-        ax.set_facecolor(bg_color)
         _strip_axis_decor(ax)
         try:
             tree_copy = copy.deepcopy(tree)
             tree_copy.ladderize(reverse=True)
+            if family_colors:
+                for clade in tree_copy.get_terminals():
+                    hex_c = (family_colors.get(clade.name) or "").lstrip("#")
+                    if len(hex_c) == 6:
+                        r, g, b = int(hex_c[:2], 16), int(hex_c[2:4], 16), int(hex_c[4:], 16)
+                        clade.color = BranchColor(r, g, b)
             for clade in tree_copy.get_terminals():
                 clade.name = ""
             with plt.rc_context({"lines.linewidth": 0.5}):
@@ -640,9 +783,9 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
             _thin_tree_lines(ax)
             for txt in ax.texts:
                 txt.set_visible(False)
-            # Phylo.draw re-enables axis decor and may reset the patch;
-            # re-apply after it has drawn.
-            ax.set_facecolor(bg_color)
+            # Draw gradient background behind tree lines; keep axes transparent.
+            _draw_gradient_bg(ax, bg_color)
+            ax.set_facecolor("none")
             _strip_axis_decor(ax)
             ax.set_title(family, fontsize=6, pad=3, fontweight="bold")
         except Exception as e:

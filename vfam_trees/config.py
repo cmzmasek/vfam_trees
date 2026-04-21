@@ -345,6 +345,16 @@ def _generate_default_family_config(family: str, global_cfg: dict) -> dict:
     return cfg
 
 
+def make_minimal_global_cfg() -> dict:
+    """Return a minimal global config built entirely from hardcoded defaults.
+
+    Used when no global.yaml is present (e.g. init-configs without a prior
+    init run).  The empty ``defaults`` dict means _generate_default_family_config
+    will use DEFAULT_FAMILY_CONFIG unchanged.
+    """
+    return {"ncbi": {}, "defaults": {}}
+
+
 def _write_family_config(cfg: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     header = (

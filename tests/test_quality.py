@@ -71,6 +71,52 @@ def test_accepts_when_no_min_length():
     assert len(passed) == 1
 
 
+def test_pre_length_lengths_present_in_stats():
+    records = [_rec(GOOD_SEQ)]
+    _, _, stats = filter_sequences(
+        records, seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=[],
+    )
+    assert "pre_length_lengths" in stats
+    assert stats["pre_length_lengths"] == [len(GOOD_SEQ)]
+
+
+def test_pre_length_lengths_excludes_ambiguous():
+    ambig = _rec("N" * 320, acc="AMB")
+    clean = _rec(GOOD_SEQ, acc="OK")
+    _, _, stats = filter_sequences(
+        [ambig, clean], seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=[],
+    )
+    # Ambiguous sequence must not appear in pre_length_lengths
+    assert len(stats["pre_length_lengths"]) == 1
+    assert stats["pre_length_lengths"][0] == len(GOOD_SEQ)
+
+
+def test_pre_length_lengths_includes_too_short():
+    short = _rec("A" * 210, acc="SHORT")   # above floor (200) but below min_length
+    good  = _rec(GOOD_SEQ, acc="GOOD")
+    _, _, stats = filter_sequences(
+        [short, good], seq_type="nucleotide", min_length=1000,
+        max_ambiguous=0.01, exclude_organisms=[],
+    )
+    # Both passed ambiguity; both should appear in pre_length_lengths
+    assert sorted(stats["pre_length_lengths"]) == sorted([210, len(GOOD_SEQ)])
+    assert stats["n_excluded_length"] == 2
+
+
+def test_ambiguity_filter_before_length_filter():
+    # A sequence that is both too ambiguous AND too short must be counted
+    # as ambiguity-excluded, not length-excluded (ambiguity check runs first).
+    both_bad = _rec("N" * 50, acc="BAD")   # < 200 bp floor AND 100% ambiguous
+    _, _, stats = filter_sequences(
+        [both_bad], seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=[],
+    )
+    assert stats["n_excluded_ambiguity"] == 1
+    assert stats["n_excluded_length"] == 0
+
+
 # ---------------------------------------------------------------------------
 # remove_length_outliers
 # ---------------------------------------------------------------------------
