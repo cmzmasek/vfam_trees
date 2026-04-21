@@ -353,6 +353,28 @@ def save_tree_icon(
         plt.close("all")
 
 
+# Internal node labels are only shown for these ranks.
+# Species-level annotations (and unranked nodes) are suppressed on internal
+# nodes to reduce clutter; leaf labels are always shown in full.
+_SHOW_INTERNAL_RANKS = frozenset({"genus", "subgenus", "subfamily", "family"})
+
+
+def _internal_label(clade) -> str:
+    """Return the display label for a clade (used as label_func in Phylo.draw).
+
+    Leaf nodes: always return the full name.
+    Internal nodes: only return the name when the stored taxonomy rank is one
+    of genus, subgenus, subfamily, or family — suppressing species-level and
+    unranked annotations.
+    """
+    if clade.is_terminal():
+        return clade.name or ""
+    rank = getattr(clade, "_taxonomy_rank", "")
+    if rank in _SHOW_INTERNAL_RANKS:
+        return clade.name or ""
+    return ""
+
+
 def _draw_tree_fig(
     tree,
     family: str,
@@ -386,7 +408,7 @@ def _draw_tree_fig(
         with plt.rc_context({"lines.linewidth": branch_linewidth}):
             Phylo.draw(
                 tree, axes=ax, do_show=False,
-                label_func=lambda c: c.name or "",
+                label_func=_internal_label,
             )
         _thin_tree_lines(ax, branch_linewidth)
         ax.axis("off")
