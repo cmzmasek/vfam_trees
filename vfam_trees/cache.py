@@ -7,11 +7,14 @@ Cache layout
     txid{taxid}_{region}_{segment}_{max}/
       sequences.gb               GenBank flat file
       manifest.json              download metadata
+      _no_results                sentinel: NCBI returned 0 sequences (JSON timestamp)
       .lock                      present only during active download
 
 The cache key encodes every parameter that affects what NCBI returns, so
 changing region, segment, or max_per_species automatically triggers a fresh
-download.
+download.  Negative results (0 sequences found) are also cached so that
+repeated runs do not re-query NCBI for species with no data.  The sentinel
+file uses the same TTL as positive entries.
 """
 from __future__ import annotations
 
@@ -103,6 +106,63 @@ class SequenceCache:
                 return None
 
         return gb_file
+
+    def get_empty(
+        self,
+        taxid: int,
+        db: str,
+        region: str,
+        segment: str | None,
+        max_per_species: int,
+    ) -> bool:
+        """Return True if a valid negative-result sentinel exists for this key.
+
+        A sentinel is invalid if it is older than ``ttl_days`` (when set).
+        """
+        sentinel = self._entry_dir(taxid, db, region, segment, max_per_species) / "_no_results"
+        if not sentinel.exists():
+            return False
+        if self.ttl_days is not None:
+            try:
+                data = json.loads(sentinel.read_text())
+                downloaded = datetime.fromisoformat(data["downloaded"])
+                age = datetime.now(timezone.utc) - downloaded
+                if age > timedelta(days=self.ttl_days):
+                    log.debug(
+                        "Negative cache entry expired (age %.1f d > ttl %d d): %s",
+                        age.total_seconds() / 86400,
+                        self.ttl_days,
+                        sentinel,
+                    )
+                    return False
+            except Exception as exc:
+                log.debug("Cannot read negative sentinel %s: %s — treating as miss", sentinel, exc)
+                return False
+        return True
+
+    def store_empty(
+        self,
+        taxid: int,
+        db: str,
+        region: str,
+        segment: str | None,
+        max_per_species: int,
+        family: str = "",
+    ) -> None:
+        """Write a negative-result sentinel for this key."""
+        entry_dir = self._entry_dir(taxid, db, region, segment, max_per_species)
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        sentinel = entry_dir / "_no_results"
+        payload = {
+            "downloaded": datetime.now(timezone.utc).isoformat(),
+            "taxid":      taxid,
+            "family":     family,
+        }
+        try:
+            sentinel.write_text(json.dumps(payload))
+            log.debug("Stored negative result in cache: %s", sentinel)
+        except Exception as exc:
+            log.warning("Could not write negative cache sentinel (%s)", exc)
 
     def store(
         self,
@@ -229,7 +289,7 @@ class SequenceCache:
         return False
 
     def clear_family(self, family: str) -> int:
-        """Delete all cache entries whose manifest lists *family*.
+        """Delete all cache entries whose manifest or sentinel lists *family*.
 
         Returns the number of entries removed.
         """
@@ -241,6 +301,15 @@ class SequenceCache:
                 continue
             if manifest.get("family") == family:
                 to_remove.append(manifest_path.parent)
+        for sentinel_path in self.cache_dir.rglob("_no_results"):
+            try:
+                data = json.loads(sentinel_path.read_text())
+            except Exception:
+                continue
+            if data.get("family") == family:
+                entry_dir = sentinel_path.parent
+                if entry_dir not in to_remove:
+                    to_remove.append(entry_dir)
         for entry_dir in to_remove:
             shutil.rmtree(entry_dir)
             log.info("Cleared cache entry for %s: %s", family, entry_dir)
@@ -249,24 +318,31 @@ class SequenceCache:
     def clear_all(self) -> int:
         """Delete every entry in the cache.  Returns the number removed."""
         removed = 0
-        for manifest_path in list(self.cache_dir.rglob("manifest.json")):
-            entry_dir = manifest_path.parent
-            if entry_dir.exists():
+        seen: set[Path] = set()
+        for marker in list(self.cache_dir.rglob("manifest.json")) + \
+                      list(self.cache_dir.rglob("_no_results")):
+            entry_dir = marker.parent
+            if entry_dir not in seen and entry_dir.exists():
+                seen.add(entry_dir)
                 shutil.rmtree(entry_dir)
                 removed += 1
         return removed
 
     def stats(self) -> dict:
-        """Return basic cache statistics (entry count and total size)."""
-        total      = 0
-        size_bytes = 0
+        """Return basic cache statistics (entry count, negative count, total size)."""
+        total         = 0
+        n_empty       = 0
+        size_bytes    = 0
         for gb in self.cache_dir.rglob("sequences.gb"):
             total      += 1
             size_bytes += gb.stat().st_size
+        for _ in self.cache_dir.rglob("_no_results"):
+            n_empty += 1
         return {
-            "entries":  total,
-            "size_mb":  round(size_bytes / 1_048_576, 1),
-            "cache_dir": str(self.cache_dir),
+            "entries":         total,
+            "empty_entries":   n_empty,
+            "size_mb":         round(size_bytes / 1_048_576, 1),
+            "cache_dir":       str(self.cache_dir),
         }
 
     # ------------------------------------------------------------------

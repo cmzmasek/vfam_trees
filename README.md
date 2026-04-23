@@ -26,9 +26,18 @@ Two trees are produced per family:
 - FastTree (tree_500) and IQ-TREE (tree_100) tree inference; tree_100 has per-sequence-type options — `options_nuc: "--fast"` (SH-aLRT support, auto-added by the wrapper) and `options_aa: "-B 1000"` (UFBoot ultrafast bootstrap, more robust on divergent protein families)
 - Branch-support measure is picked automatically per tree and recorded as `tree{500,100}_support_type` in `summary.tsv` (`SH_like` / `SH_aLRT` / `UFBoot`); support-value stats are reported under generic `tree{500,100}_support_{min,q1,median,q3,max,iqr}` columns so a single schema covers all three measures; the PhyloXML `<confidence type="…">` attribute mirrors the same label
 - Taxonomy-guided tree rooting using LCA specificity scoring, with MAD and midpoint fallbacks
+- Configurable LCA depth filter (`taxonomy.lca_min_rank`): exclude leaves whose lineage does not reach a given rank (e.g. `genus`, `species`) from internal-node LCA voting, preventing shallow lineages from dragging ancestor labels back toward the root
 - LCA-based internal node annotation using NCBI ranked lineages
-- PhyloXML output with `<confidence type="SH_like|SH_aLRT|UFBoot">` (type chosen per tree, matches the actual support measure computed), `<taxonomy>`, `<sequence>`, and `vipr:` metadata properties; leaf node labels are colored by genus using a `style:font_color` property
-- **Genus/subfamily leaf coloring**: leaves are colored in HLS color space — one hue band per subfamily, lightness varies across genera within a subfamily; colors are applied in PDF/PNG tree images, standalone tree images, and PhyloXML output; a structured legend (grouped by subfamily) is included in all tree figures
+- Optional **genus inference** (`coloring.genus_inference`) for leaves whose NCBI lineage lacks a formal `genus` rank — three modes: `none` (default, color only formal genera), `suffix` (treat any single-word taxon ending in "virus" as genus, per ICTV convention), `deepest` (suffix first, then deepest rank above species)
+- PhyloXML output with:
+  - `<phylogeny rooted="true" rerootable="false">` — prevents downstream viewers from re-rooting the carefully rooted output
+  - `<confidence type="SH_like|SH_aLRT|UFBoot">` (type chosen per tree, matches the actual support measure computed)
+  - `<taxonomy>` with NCBI taxon id + scientific name and `<sequence>` with accession + title
+  - `vipr:` metadata properties on external nodes: `vipr:Host`, `vipr:Collection_Date`, `vipr:Location`, `vipr:Strain` (values omitted when absent or `"unknown"`)
+  - `vipr:Year` — 4-digit year parsed from `collection_date` (handles `2024-01-01`, `2025`, `Sep-2023`, `01-Jan-2020`, etc.; absent when no year can be parsed)
+  - `vipr:Species`, `vipr:Genus`, `vipr:Subgenus`, `vipr:Subfamily` taxonomic rank properties for downstream visualization colorization; emitted only when the rank is present in the NCBI lineage
+  - `style:font_color` property with the genus-based leaf color
+- **Genus/subfamily leaf coloring**: leaves are colored in HLS color space — one hue band per subfamily, lightness varies across genera within a subfamily; when only a single subfamily is present, genera are spread across the full hue wheel for better visual distinction; colors are applied in PDF/PNG tree images, standalone tree images, and PhyloXML output; a structured legend (grouped by subfamily) is included in all tree figures
 - Segment keyword validation: for segmented RNA families, records not containing the expected segment keyword in their title are excluded. The segment query accepts any of "complete sequence", "complete genome", or "complete cds" in the record title, so per-segment CDS records are not missed
 - Checkpointing: MSA and tree steps are skipped only if their inputs still match — checkpoint sidecars store a content hash of the sequence set, MSA output, and relevant config (tool / model / options), so changing any of them automatically invalidates the cache and forces a rerun. Each iterative outlier-removal pass gets its own hash, so resuming a partially-completed run picks up in the right place
 - Validation of MAFFT and tree output files before continuing
@@ -41,12 +50,14 @@ Two trees are produced per family:
   - Per-tree sequence length histograms for tree_500 and tree_100 (sequences actually used to build each tree)
   - SH support value histograms for both trees
   - tree_100 visualization with genus/subfamily color legend
-- Standalone PDF and PNG tree images for both tree_100 and tree_500, with genus/subfamily color legend
+- Standalone PDF and PNG tree images for both tree_100 and tree_500, with genus/subfamily color legend. Each tree is exported in two layouts:
+  - **Rooted rectangular** (`<Family>_tree_{100,500}.pdf/png`): taxonomy-annotated internal labels (genus / subgenus / subfamily / family only); support values below 50% are suppressed to reduce visual noise
+  - **Unrooted radial** (`<Family>_tree_{100,500}_ur.pdf/png`): equal-angle layout with leaf labels drawn radially (rotated outward); no internal labels, no support values; same genus coloring as the rooted layout
 - **Overview PNG** (`overview_tree_100.png`): thumbnail grid of all tree_100 trees across all processed families, automatically generated at the end of `vfam_trees run`; thumbnails are shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) using NCBI lineage data; regenerate at any time with `vfam_trees overview`
 - Output directories named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 - Pre-configured support for 35+ segmented RNA virus families and 27 DNA virus families
 - Per-run summary TSV with SH support statistics, MSA statistics, QC breakdown, clustering thresholds, outlier removal counts, and genus/subfamily diversity counts; skipped families are always included
-- Optional shared sequence download cache keyed by query parameters, with configurable TTL and per-entry lock files for safe parallel use
+- Optional shared sequence download cache keyed by query parameters, with configurable TTL and per-entry lock files for safe parallel use; **negative results are also cached** via a per-entry `_no_results` sentinel so species with zero GenBank hits are not re-queried on every run (same TTL as positive entries)
 - **Pipeline stage tracking**: `vfam_trees status` reports the current processing stage for in-progress families (downloading/QC, MSA, tree inference, annotating) in addition to done/pending/skipped
 - **Dry-run mode**: `vfam_trees run --dry-run` previews per-family configuration parameters (sequence type, region, tree tools and models) without executing the pipeline
 
@@ -180,10 +191,13 @@ sequence:
 quality:
   min_length: null              # null = auto (50% of per-species median, floor 200 bp/100 aa)
   max_ambiguous: 0.01           # maximum fraction of ambiguous bases/residues
-  exclude_organisms:
-    - synthetic construct
-    - metagenome
+  exclude_organisms:            # case-insensitive substring match against
+    - synthetic construct       # ORGANISM + SOURCE + DEFINITION (joined with newline
+    - metagenome                # so terms cannot straddle field boundaries)
     - uncultured
+    - "MAG:"                    # metagenome-assembled genomes (NCBI DEFINITION prefix)
+    - recombinant
+    - patent
 
 clustering:
   tool: mmseqs2
@@ -236,7 +250,21 @@ outlier_removal:
   factor: 20.0                  # threshold = median + factor × MAD (Median Absolute Deviation)
   max_iterations: 3             # maximum MSA+tree iterations
   min_seqs: 40                  # only remove outliers when ≥ min_seqs sequences remain after removal
+
+coloring:
+  genus_inference: none         # none: only formal NCBI genus-rank entries are colored
+                                # suffix: single-word taxa ending in "virus" treated as genus
+                                #         (recovers ICTV genus names that NCBI still has at "no rank")
+                                # deepest: suffix first, then deepest lineage entry above species rank
+
+taxonomy:
+  lca_min_rank: none            # none: every leaf contributes to internal-node LCA voting
+                                # subfamily / genus / species: exclude leaves whose lineage does
+                                #   not reach this rank, so shallow lineages cannot drag ancestor
+                                #   labels back toward the root
 ```
+
+These two keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.
 
 #### DNA virus families
 
@@ -322,10 +350,14 @@ For each family, results are written to `results/<Family>_<taxid>/` (e.g. `resul
 | `<Family>_tree_100.xml` | PhyloXML tree (collapsed, up to 100 sequences) |
 | `<Family>_tree_500.nwk` | Newick tree (broad) |
 | `<Family>_tree_100.nwk` | Newick tree (collapsed) |
-| `<Family>_tree_500.pdf` | Standalone PDF tree image with genus/subfamily color legend |
-| `<Family>_tree_500.png` | Standalone PNG tree image (150 dpi) with genus/subfamily color legend |
-| `<Family>_tree_100.pdf` | Standalone PDF tree image with genus/subfamily color legend |
-| `<Family>_tree_100.png` | Standalone PNG tree image (150 dpi) with genus/subfamily color legend |
+| `<Family>_tree_500.pdf` | Rooted rectangular PDF tree image (support < 50% suppressed; genus/subfamily color legend) |
+| `<Family>_tree_500.png` | Rooted rectangular PNG tree image (150 dpi; support < 50% suppressed) |
+| `<Family>_tree_500_ur.pdf` | Unrooted radial PDF tree image (leaf labels radial, no internal labels, no support values) |
+| `<Family>_tree_500_ur.png` | Unrooted radial PNG tree image (150 dpi) |
+| `<Family>_tree_100.pdf` | Rooted rectangular PDF tree image (support < 50% suppressed; genus/subfamily color legend) |
+| `<Family>_tree_100.png` | Rooted rectangular PNG tree image (150 dpi; support < 50% suppressed) |
+| `<Family>_tree_100_ur.pdf` | Unrooted radial PDF tree image |
+| `<Family>_tree_100_ur.png` | Unrooted radial PNG tree image (150 dpi) |
 | `<Family>_alignment_500.fasta` | Final alignment fed to tree_500 (MAFFT + trimAl when `msa_trim.enabled: true`; reflects sequences after iterative outlier removal) |
 | `<Family>_alignment_100.fasta` | Final alignment fed to tree_100 (MAFFT + trimAl when `msa_trim.enabled: true`; reflects sequences after iterative outlier removal) |
 | `<Family>_sequences_raw_500.fasta` | Sequences entering the MSA (after QC, clustering, and proportional merge; before post-tree outlier removal) |

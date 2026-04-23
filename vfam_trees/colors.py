@@ -3,11 +3,43 @@ from __future__ import annotations
 
 import colorsys
 
+# Ranks at or below species level — not useful as genus proxies.
+_SPECIES_OR_BELOW = frozenset({
+    "species", "subspecies", "strain", "isolate", "serotype", "biotype", "genotype",
+})
+
+
+def _infer_genus_from_lineage(lineage_ranked: list[dict], mode: str) -> str:
+    """Return a genus-proxy name when no formal genus rank is in the lineage.
+
+    mode="suffix"  — match any single-word name ending in "virus" (ICTV genus
+                     convention), regardless of NCBI's rank annotation.
+    mode="deepest" — suffix first, then deepest entry above species level.
+    mode="none"    — always return "" (no inference).
+    """
+    if mode == "none" or not lineage_ranked:
+        return ""
+    for entry in lineage_ranked:
+        name = entry.get("name", "")
+        lower = name.lower()
+        if lower.endswith("virus") and " " not in name.strip():
+            return name
+    if mode == "suffix":
+        return ""
+    # deepest: use the deepest entry that is above species level
+    for entry in reversed(lineage_ranked):
+        rank = (entry.get("rank") or "").lower()
+        name = entry.get("name", "")
+        if name and rank not in _SPECIES_OR_BELOW:
+            return name
+    return ""
+
 
 def assign_leaf_colors(
     sel_records,
     short_id_to_meta: dict,
     short_to_display: dict,
+    genus_inference: str = "none",
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, list[str]]]:
     """Assign colors to tree leaves by genus, grouped by subfamily where available.
 
@@ -35,6 +67,8 @@ def assign_leaf_colors(
             rank = (entry.get("rank") or "").lower()
             if rank in taxa:
                 taxa[rank] = entry.get("name", "")
+        if not taxa["genus"] and genus_inference != "none":
+            taxa["genus"] = _infer_genus_from_lineage(lineage, genus_inference)
         leaf_taxa[r.id] = taxa
 
     # ------------------------------------------------------------------
@@ -79,7 +113,7 @@ def assign_leaf_colors(
             subfamily_to_genera["(unclassified)"] = genera_in_group
 
         n = len(genera_in_group)
-        no_subfamilies = len(subfamily_genera) == 0
+        no_subfamilies = len(subfamily_genera) <= 1
         for g_idx, genus in enumerate(genera_in_group):
             if no_subfamilies:
                 # No subfamily level: spread genera across the full hue wheel

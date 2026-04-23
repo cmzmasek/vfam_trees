@@ -5,9 +5,11 @@ from Bio.Seq import Seq
 from vfam_trees.quality import filter_sequences, remove_length_outliers
 
 
-def _rec(seq, taxid="12345", acc="ACC1", organism="Test virus"):
-    r = SeqRecord(Seq(seq), id=acc, description="")
+def _rec(seq, taxid="12345", acc="ACC1", organism="Test virus",
+         source="", description=""):
+    r = SeqRecord(Seq(seq), id=acc, description=description)
     r.annotations["organism"] = organism
+    r.annotations["source"] = source
     r.features = []
     r.dbxrefs = [f"taxon:{taxid}"]
     return r
@@ -40,6 +42,44 @@ def test_excludes_by_organism():
     )
     assert len(passed) == 1
     assert stats["n_excluded_organism"] == 1
+
+
+def test_excludes_by_source():
+    records = [
+        _rec(GOOD_SEQ, organism="Real virus", source="metagenome"),
+        _rec(GOOD_SEQ, organism="Real virus", source="Homo sapiens"),
+    ]
+    passed, _, stats = filter_sequences(
+        records, seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=["metagenome"],
+    )
+    assert len(passed) == 1
+    assert stats["n_excluded_organism"] == 1
+
+
+def test_excludes_by_definition():
+    records = [
+        _rec(GOOD_SEQ, organism="Real virus",
+             description="MAG: virus isolate xyz, complete genome"),
+        _rec(GOOD_SEQ, organism="Real virus",
+             description="Virus strain ABC, complete genome"),
+    ]
+    passed, _, stats = filter_sequences(
+        records, seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=["MAG:"],
+    )
+    assert len(passed) == 1
+    assert stats["n_excluded_organism"] == 1
+
+
+def test_mag_colon_not_matched_by_unrelated_name():
+    # "Magnolia" does not contain "MAG:" so should pass
+    records = [_rec(GOOD_SEQ, organism="Magnolia virus 1")]
+    passed, _, _ = filter_sequences(
+        records, seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=["MAG:"],
+    )
+    assert len(passed) == 1
 
 
 def test_excludes_by_ambiguity():

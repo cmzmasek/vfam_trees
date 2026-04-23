@@ -258,6 +258,11 @@ def run_family(
 
         # Tier 2: global shared cache
         elif seq_cache is not None:
+            # Fast path: skip lock acquisition entirely for known-empty species.
+            if seq_cache.get_empty(sp_taxid, db, region, segment, max_per_species):
+                log.info("[%d/%d] Cached empty result: %s — skipping.", i, len(species_list), sp_name)
+                continue
+
             with seq_cache.download_lock(sp_taxid, db, region, segment, max_per_species) as got_lock:
                 # Re-check after acquiring the lock — a concurrent job may have
                 # downloaded this species while we were waiting.
@@ -265,6 +270,10 @@ def run_family(
                 if cached is not None:
                     log.info("[%d/%d] Global cache hit: %s", i, len(species_list), sp_name)
                     shutil.copy2(cached, gb_file)
+                elif seq_cache.get_empty(sp_taxid, db, region, segment, max_per_species):
+                    log.info("[%d/%d] Cached empty result (concurrent): %s — skipping.",
+                             i, len(species_list), sp_name)
+                    continue
                 else:
                     if not got_lock:
                         log.warning(
@@ -282,8 +291,9 @@ def run_family(
                         segment=segment,
                     )
                     if n == 0:
-                        log.info("[%d/%d] No sequences found for %s — skipping.",
+                        log.info("[%d/%d] No sequences found for %s — caching empty result.",
                                  i, len(species_list), sp_name)
+                        seq_cache.store_empty(sp_taxid, db, region, segment, max_per_species, family=family)
                         continue
                     seq_cache.store(sp_taxid, db, region, segment, max_per_species, gb_file, n, family=family)
 
@@ -885,11 +895,13 @@ def _run_target(
     # Taxonomy annotation + rooting
     log.info("Inferring internal node taxonomy and rooting tree_%s ...", label)
     annotated_nwk = target_work / f"tree_{label}_annotated.nwk"
+    lca_min_rank = family_cfg.get("taxonomy", {}).get("lca_min_rank", "none")
     bio_tree = annotate_tree(
         newick_path=treefile,
         id_map=short_to_display,
         metadata=sel_metadata,
         output_nwk=annotated_nwk,
+        lca_min_rank=lca_min_rank,
     )
     log.info("Taxonomy annotation complete for tree_%s", label)
 
@@ -909,8 +921,9 @@ def _run_target(
         restore_newick_names(source_nwk, output_nwk, short_to_display)
 
     # Assign leaf colors by genus / subfamily
+    genus_inference = family_cfg.get("coloring", {}).get("genus_inference", "none")
     display_to_color, short_to_color, genus_to_color, subfamily_to_genera = assign_leaf_colors(
-        sel_records, short_id_to_meta, short_to_display
+        sel_records, short_id_to_meta, short_to_display, genus_inference=genus_inference
     )
     n_subfamilies = sum(1 for k in subfamily_to_genera if k != "(unclassified)")
 

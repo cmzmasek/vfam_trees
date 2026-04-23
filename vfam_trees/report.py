@@ -260,26 +260,51 @@ def save_tree_images(
         if tree is None:
             continue
         colors = tree_leaf_colors.get(label, {})
+        display_to_color   = colors.get("display_to_color")
+        genus_to_color     = colors.get("genus_to_color")
+        subfamily_to_genera = colors.get("subfamily_to_genera")
+
+        # Rooted rectangular tree
         fig = _draw_tree_fig(
             tree, family, label,
-            label_colors=colors.get("display_to_color"),
-            genus_to_color=colors.get("genus_to_color"),
-            subfamily_to_genera=colors.get("subfamily_to_genera"),
+            label_colors=display_to_color,
+            genus_to_color=genus_to_color,
+            subfamily_to_genera=subfamily_to_genera,
             branch_linewidth=branch_linewidth,
         )
-        if fig is None:
-            continue
-        stem = f"{family}_tree_{label}"
-        for path, kwargs in [
-            (output_dir / f"{stem}.pdf", {}),
-            (output_dir / f"{stem}.png", {"dpi": 150}),
-        ]:
-            try:
-                fig.savefig(str(path), bbox_inches="tight", **kwargs)
-                log.info("Tree image written to %s", path)
-            except Exception as e:
-                log.warning("Could not write %s: %s", path, e)
-        plt.close(fig)
+        if fig is not None:
+            stem = f"{family}_tree_{label}"
+            for path, kwargs in [
+                (output_dir / f"{stem}.pdf", {}),
+                (output_dir / f"{stem}.png", {"dpi": 150}),
+            ]:
+                try:
+                    fig.savefig(str(path), bbox_inches="tight", **kwargs)
+                    log.info("Tree image written to %s", path)
+                except Exception as e:
+                    log.warning("Could not write %s: %s", path, e)
+            plt.close(fig)
+
+        # Unrooted radial tree
+        fig_ur = _draw_unrooted_tree_fig(
+            tree, family, label,
+            label_colors=display_to_color,
+            genus_to_color=genus_to_color,
+            subfamily_to_genera=subfamily_to_genera,
+            branch_linewidth=branch_linewidth,
+        )
+        if fig_ur is not None:
+            stem_ur = f"{family}_tree_{label}_ur"
+            for path, kwargs in [
+                (output_dir / f"{stem_ur}.pdf", {}),
+                (output_dir / f"{stem_ur}.png", {"dpi": 150}),
+            ]:
+                try:
+                    fig_ur.savefig(str(path), bbox_inches="tight", **kwargs)
+                    log.info("Tree image written to %s", path)
+                except Exception as e:
+                    log.warning("Could not write %s: %s", path, e)
+            plt.close(fig_ur)
 
 
 def _draw_gradient_bg(ax, base_color: str) -> None:
@@ -433,6 +458,7 @@ def _draw_tree_fig(
 ):
     """Return a matplotlib Figure of the tree, or None on error."""
     try:
+        import copy
         import matplotlib.pyplot as plt
         import matplotlib.text as _mtext
         from Bio import Phylo
@@ -440,6 +466,8 @@ def _draw_tree_fig(
         return None
 
     try:
+        # Work on a copy — ladderize() below would otherwise mutate the caller's tree.
+        tree = copy.deepcopy(tree)
         n_leaves = sum(1 for _ in tree.get_terminals())
         fig_h = max(6, n_leaves * 0.18)
 
@@ -451,11 +479,18 @@ def _draw_tree_fig(
         # longer than 40 chars to "name[:37] + '...'".  Since our display names
         # include species|strain|accession|host and are almost always >40 chars,
         # we must override label_func to render the full name.
+        def _confidence_label(clade):
+            conf = clade.confidence
+            if conf is None or conf < 50:
+                return None
+            return str(int(conf))
+
         tree.ladderize(reverse=True)
         with plt.rc_context({"lines.linewidth": branch_linewidth}):
             Phylo.draw(
                 tree, axes=ax, do_show=False,
                 label_func=_internal_label,
+                branch_labels=_confidence_label,
             )
         _thin_tree_lines(ax, branch_linewidth)
         ax.axis("off")
@@ -487,6 +522,125 @@ def _draw_tree_fig(
         return fig
     except Exception as e:
         log.warning("Tree visualization skipped for %s: %s", family, e)
+        return None
+
+
+def _draw_unrooted_tree_fig(
+    tree,
+    family: str,
+    label: str = "100",
+    label_colors: dict[str, str] | None = None,
+    genus_to_color: dict[str, str] | None = None,
+    subfamily_to_genera: dict[str, list[str]] | None = None,
+    branch_linewidth: float = 0.5,
+):
+    """Return a matplotlib Figure with an equal-angle unrooted (radial) tree layout.
+
+    Leaf labels are drawn radially (rotated outward); internal nodes and support
+    values are suppressed.
+    """
+    try:
+        import copy
+        import math
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+
+    try:
+        tree = copy.deepcopy(tree)
+
+        def _leaf_count(clade):
+            return 1 if clade.is_terminal() else sum(_leaf_count(c) for c in clade.clades)
+
+        root = tree.root
+        n_total = _leaf_count(root)
+        if n_total < 2:
+            return None
+
+        # Equal-angle layout: each clade gets a sector proportional to its leaf count.
+        xy: dict[int, tuple[float, float]] = {}    # id(clade) → (x, y)
+        angle_of: dict[int, float] = {}            # id(clade) → midpoint angle (radians)
+
+        def _layout(clade, a_start, a_end, px, py):
+            mid = (a_start + a_end) * 0.5
+            bl = clade.branch_length or 1.0
+            x = px + bl * math.cos(mid)
+            y = py + bl * math.sin(mid)
+            xy[id(clade)] = (x, y)
+            angle_of[id(clade)] = mid
+            if clade.is_terminal():
+                return
+            total = sum(_leaf_count(c) for c in clade.clades)
+            cur = a_start
+            for child in clade.clades:
+                span = (a_end - a_start) * _leaf_count(child) / total
+                _layout(child, cur, cur + span, x, y)
+                cur += span
+
+        xy[id(root)] = (0.0, 0.0)
+        total_root = sum(_leaf_count(c) for c in root.clades)
+        cur = 0.0
+        for child in root.clades:
+            span = 2 * math.pi * _leaf_count(child) / total_root
+            _layout(child, cur, cur + span, 0.0, 0.0)
+            cur += span
+
+        sz = max(10, min(30, n_total * 0.10))
+        has_legend = bool(genus_to_color)
+        fig_w = sz + 3 if has_legend else sz
+        fig, ax = plt.subplots(figsize=(fig_w, sz))
+        ax.set_aspect("equal")
+        ax.axis("off")
+        ax.set_title(f"{family} tree_{label} (unrooted)", fontsize=11, fontweight="bold")
+
+        # Draw branches
+        def _draw_branches(clade):
+            if id(clade) not in xy:
+                return
+            px, py = xy[id(clade)]
+            for child in clade.clades:
+                if id(child) in xy:
+                    cx, cy = xy[id(child)]
+                    ax.plot([px, cx], [py, cy], "-", color="#444444",
+                            linewidth=branch_linewidth, solid_capstyle="round")
+                    _draw_branches(child)
+
+        _draw_branches(root)
+
+        # Compute a small radial label offset relative to tree span
+        all_x = [p[0] for p in xy.values()]
+        all_y = [p[1] for p in xy.values()]
+        span = max(max(all_x) - min(all_x), max(all_y) - min(all_y), 1e-9)
+        offset = span * 0.02
+
+        font_size = max(4, min(8, int(200 / max(n_total, 1))))
+
+        for clade in root.find_clades():
+            if not clade.is_terminal() or id(clade) not in xy:
+                continue
+            x, y = xy[id(clade)]
+            ang = angle_of[id(clade)]
+            deg = math.degrees(ang) % 360
+            if 90 < deg <= 270:
+                ha = "right"
+                rotation = deg + 180
+            else:
+                ha = "left"
+                rotation = deg
+            tx = x + offset * math.cos(ang)
+            ty = y + offset * math.sin(ang)
+            name = clade.name or ""
+            color = (label_colors or {}).get(name, "#000000")
+            ax.text(tx, ty, name, fontsize=font_size, ha=ha, va="center",
+                    rotation=rotation, rotation_mode="anchor", color=color)
+
+        if has_legend and genus_to_color:
+            _draw_taxonomy_legend(ax, genus_to_color, subfamily_to_genera or {})
+
+        plt.tight_layout()
+        return fig
+    except Exception as e:
+        log.warning("Unrooted tree visualization skipped for %s: %s", family, e)
         return None
 
 

@@ -133,3 +133,73 @@ def test_ttl_not_expired(tmp_path):
     gb = _make_gb(tmp_path)
     sc.store(1001, "nuccore", "whole_genome", None, 200, gb, 5)
     assert sc.get(1001, "nuccore", "whole_genome", None, 200) is not None
+
+
+# ---------------------------------------------------------------------------
+# store_empty / get_empty
+# ---------------------------------------------------------------------------
+
+def test_store_empty_and_get_empty(sc):
+    sc.store_empty(5001, "nuccore", "whole_genome", None, 200, family="Testviridae")
+    assert sc.get_empty(5001, "nuccore", "whole_genome", None, 200) is True
+
+
+def test_get_empty_returns_false_when_not_stored(sc):
+    assert sc.get_empty(9999, "nuccore", "whole_genome", None, 200) is False
+
+
+def test_store_empty_sentinel_contains_family(sc):
+    sc.store_empty(5001, "nuccore", "whole_genome", None, 200, family="Flaviviridae")
+    sentinel = sc._entry_dir(5001, "nuccore", "whole_genome", None, 200) / "_no_results"
+    data = json.loads(sentinel.read_text())
+    assert data["family"] == "Flaviviridae"
+    assert "downloaded" in data
+
+
+def test_empty_ttl_expiry(tmp_path):
+    from datetime import datetime, timezone, timedelta
+    sc = SequenceCache(tmp_path / "cache", ttl_days=1)
+    sc.store_empty(5001, "nuccore", "whole_genome", None, 200)
+    sentinel = sc._entry_dir(5001, "nuccore", "whole_genome", None, 200) / "_no_results"
+    data = json.loads(sentinel.read_text())
+    old_time = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    data["downloaded"] = old_time
+    sentinel.write_text(json.dumps(data))
+    assert sc.get_empty(5001, "nuccore", "whole_genome", None, 200) is False
+
+
+def test_empty_ttl_not_expired(tmp_path):
+    sc = SequenceCache(tmp_path / "cache", ttl_days=30)
+    sc.store_empty(5001, "nuccore", "whole_genome", None, 200)
+    assert sc.get_empty(5001, "nuccore", "whole_genome", None, 200) is True
+
+
+def test_clear_family_removes_empty_entries(sc, tmp_path):
+    gb = _make_gb(tmp_path)
+    sc.store(1001, "nuccore", "whole_genome", None, 200, gb, 5, family="Flaviviridae")
+    sc.store_empty(1002, "nuccore", "whole_genome", None, 200, family="Flaviviridae")
+    sc.store_empty(2001, "nuccore", "whole_genome", None, 200, family="Herpesviridae")
+    removed = sc.clear_family("Flaviviridae")
+    assert removed == 2
+    assert sc.get_empty(1002, "nuccore", "whole_genome", None, 200) is False
+    assert sc.get_empty(2001, "nuccore", "whole_genome", None, 200) is True
+
+
+def test_clear_all_removes_empty_entries(sc, tmp_path):
+    gb = _make_gb(tmp_path)
+    sc.store(1001, "nuccore", "whole_genome", None, 200, gb, 5)
+    sc.store_empty(2001, "nuccore", "whole_genome", None, 200)
+    removed = sc.clear_all()
+    assert removed == 2
+    assert sc.stats()["entries"] == 0
+    assert sc.stats()["empty_entries"] == 0
+
+
+def test_stats_counts_empty_entries(sc, tmp_path):
+    gb = _make_gb(tmp_path)
+    sc.store(1001, "nuccore", "whole_genome", None, 200, gb, 5)
+    sc.store_empty(2001, "nuccore", "whole_genome", None, 200)
+    sc.store_empty(3001, "nuccore", "whole_genome", None, 200)
+    st = sc.stats()
+    assert st["entries"] == 1
+    assert st["empty_entries"] == 2

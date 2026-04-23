@@ -12,11 +12,41 @@ from .logger import get_logger
 log = get_logger(__name__)
 
 
+# Numeric depth for each NCBI rank; higher = more specific.
+# "no rank" and "clade" are treated as 0 (unresolved).
+_RANK_DEPTH: dict[str, int] = {
+    "realm": 1, "subrealm": 2, "kingdom": 3, "phylum": 4, "subphylum": 5,
+    "class": 6, "order": 7, "family": 8, "subfamily": 9,
+    "genus": 10, "subgenus": 11,
+    "species": 12, "subspecies": 13, "strain": 14,
+}
+
+
+def _lineage_reaches_rank(lineage_ranked: list[dict], min_rank: str) -> bool:
+    """Return True if lineage contains at least one entry at or below min_rank.
+
+    "Below" means more specific (higher _RANK_DEPTH value).  Unknown ranks and
+    "no rank" / "clade" entries are treated as depth 0 and never satisfy any
+    non-trivial minimum.  min_rank="none" always returns True.
+    """
+    if not min_rank or min_rank == "none":
+        return True
+    min_depth = _RANK_DEPTH.get(min_rank.lower(), 0)
+    if min_depth == 0:
+        return True
+    for entry in lineage_ranked:
+        rank = (entry.get("rank") or "").lower()
+        if _RANK_DEPTH.get(rank, 0) >= min_depth:
+            return True
+    return False
+
+
 def annotate_tree(
     newick_path: Path,
     id_map: dict[str, str],
     metadata: list[dict],
     output_nwk: Path,
+    lca_min_rank: str = "none",
 ) -> BioTree | None:
     """Load tree, root it optimally, annotate internal nodes with LCA taxonomy.
 
@@ -48,6 +78,27 @@ def annotate_tree(
         for meta in metadata
         if meta.get("short_id") and meta.get("lineage")
     }
+
+    # Optionally exclude leaves whose lineage is too shallow to contribute
+    # meaningful LCA signal (controlled by lca_min_rank config key).
+    if lca_min_rank and lca_min_rank != "none":
+        sid_to_ranked: dict[str, list[dict]] = {
+            meta["short_id"]: meta.get("lineage_ranked", [])
+            for meta in metadata
+            if meta.get("short_id")
+        }
+        n_before = len(short_id_to_lineage)
+        short_id_to_lineage = {
+            sid: lin for sid, lin in short_id_to_lineage.items()
+            if _lineage_reaches_rank(sid_to_ranked.get(sid, []), lca_min_rank)
+        }
+        n_excluded = n_before - len(short_id_to_lineage)
+        if n_excluded:
+            log.info(
+                "lca_min_rank=%r: excluded %d/%d leaves from LCA vote "
+                "(lineage does not reach %s level)",
+                lca_min_rank, n_excluded, n_before, lca_min_rank,
+            )
 
     # Build authoritative name → rank map from NCBI ranked lineages
     name_to_rank: dict[str, str] = {}

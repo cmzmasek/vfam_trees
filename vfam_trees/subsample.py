@@ -125,6 +125,40 @@ def proportional_merge(
         log.info("Total representatives (%d) ≤ target (%d), using all.", total_reps, target)
         return [rec for reps in non_empty.values() for rec in reps]
 
+    # When there are more species than slots, we cannot give every species a
+    # slot.  Prefer species with more representatives (ties broken alphabetically
+    # for reproducibility) and give each one exactly one slot.
+    if len(non_empty) > target:
+        sorted_species = sorted(
+            non_empty.keys(),
+            key=lambda s: (-len(non_empty[s]), s),
+        )
+        chosen_species = sorted_species[:target]
+        selected: list[SeqRecord] = []
+        n_priority_taken = 0
+        n_priority_total = sum(
+            1 for reps in non_empty.values() for r in reps if r.id in priority_ids
+        )
+        for sp in chosen_species:
+            reps = non_empty[sp]
+            prio = [r for r in reps if r.id in priority_ids]
+            if prio:
+                selected.append(random.choice(prio))
+                n_priority_taken += 1
+            else:
+                selected.append(random.choice(reps))
+        if priority_ids and n_priority_total:
+            log.info(
+                "Proportional merge: kept %d / %d priority record(s) (e.g. RefSeqs)",
+                n_priority_taken, n_priority_total,
+            )
+        log.info(
+            "Proportional merge: %d species (%d total reps) but target %d — "
+            "selected 1 rep from %d largest species",
+            len(non_empty), total_reps, target, len(chosen_species),
+        )
+        return selected
+
     # Compute per-species quota proportional to cluster count
     quotas: dict[str, int] = {}
     for sp, reps in non_empty.items():

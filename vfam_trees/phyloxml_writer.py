@@ -1,6 +1,7 @@
 """Generate PhyloXML output with vipr: metadata properties."""
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from xml.dom import minidom
@@ -34,11 +35,22 @@ _PHYLOXML_VALID_RANKS = frozenset([
 
 # Fields written as vipr: properties (species and taxon_id are handled via <taxonomy>)
 METADATA_FIELDS = [
-    ("host", "xsd:string"),
-    ("collection_date", "xsd:string"),
-    ("location", "xsd:string"),
-    ("strain", "xsd:string"),
+    ("host",            "xsd:string", "Host"),
+    ("collection_date", "xsd:string", "Collection_Date"),
+    ("location",        "xsd:string", "Location"),
+    ("strain",          "xsd:string", "Strain"),
 ]
+
+
+_YEAR_RE = re.compile(r'\b(1[89]\d{2}|20\d{2})\b')
+
+
+def _extract_year(date_str: str) -> str:
+    """Return the 4-digit year from a collection_date string, or ''."""
+    if not date_str:
+        return ""
+    m = _YEAR_RE.search(date_str)
+    return m.group(1) if m else ""
 
 
 def write_phyloxml(
@@ -77,7 +89,7 @@ def write_phyloxml(
     tree.name = family
 
     root = ET.Element("phyloxml", xmlns=PHYLOXML_NS)
-    phylogeny_el = ET.SubElement(root, "phylogeny", rooted="true")
+    phylogeny_el = ET.SubElement(root, "phylogeny", rooted="true", rerootable="false")
     name_el = ET.SubElement(phylogeny_el, "name")
     name_el.text = phylogeny_name or family
     desc_el = ET.SubElement(phylogeny_el, "description")
@@ -137,8 +149,11 @@ def _write_clade(
     if is_leaf:
         short_id = clade.name or ""
         meta = leaf_metadata.get(short_id, {})
-        # Species and taxon_id go into the proper <taxonomy> element
+        # Species and taxon_id go into the proper <taxonomy> element.
+        # Treat the "unknown" placeholder (emitted by extract_metadata) as absent.
         species = meta.get("species", "")
+        if species == "unknown":
+            species = ""
         taxon_id = meta.get("taxon_id", "")
         if species or taxon_id:
             taxonomy_el = ET.SubElement(clade_el, "taxonomy")
@@ -161,10 +176,34 @@ def _write_clade(
                 seqname_el.text = seq_name
 
         # Remaining fields as vipr: properties
-        for field, datatype in METADATA_FIELDS:
-            value = meta.get(field, "unknown")
-            if value:
-                _add_property(clade_el, f"{VIPR_PREFIX}:{field}", datatype, str(value))
+        for field, datatype, ref_name in METADATA_FIELDS:
+            value = meta.get(field, "")
+            # Skip the placeholder "unknown" emitted by extract_metadata — emit the
+            # property only when the underlying GenBank field carried a real value.
+            if value and value != "unknown":
+                _add_property(clade_el, f"{VIPR_PREFIX}:{ref_name}", datatype, str(value))
+
+        year = _extract_year(meta.get("collection_date", ""))
+        if year:
+            _add_property(clade_el, "vipr:Year", "xsd:string", year)
+
+        # Taxonomic rank properties for downstream colorization
+        species_val = meta.get("species", "")
+        if species_val and species_val != "unknown":
+            _add_property(clade_el, "vipr:Species", "xsd:string", species_val)
+        lineage = meta.get("lineage_ranked", [])
+        _taxa: dict[str, str] = {"genus": "", "subgenus": "", "subfamily": ""}
+        for _entry in lineage:
+            if isinstance(_entry, dict):
+                _rank = (_entry.get("rank") or "").lower()
+                if _rank in _taxa:
+                    _taxa[_rank] = _entry.get("name", "")
+        if _taxa["genus"]:
+            _add_property(clade_el, "vipr:Genus", "xsd:string", _taxa["genus"])
+        if _taxa["subgenus"]:
+            _add_property(clade_el, "vipr:Subgenus", "xsd:string", _taxa["subgenus"])
+        if _taxa["subfamily"]:
+            _add_property(clade_el, "vipr:Subfamily", "xsd:string", _taxa["subfamily"])
 
         # Genus-based font color for node label
         if leaf_colors:

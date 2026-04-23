@@ -141,7 +141,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "exclude_organisms": [
             "synthetic construct",
             "metagenome",
-            "MAG",
+            "MAG:",
             "uncultured",
             "unverified",
             "vector",
@@ -202,6 +202,25 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "factor": 20.0,
         "max_iterations": 3,
         "min_seqs": 40,
+    },
+    "coloring": {
+        # Genus inference strategy when no formal genus rank is present in the
+        # NCBI lineage.  "none" keeps the current behaviour (grey).
+        # "suffix"  — treat any single-word name ending in "virus" as a genus
+        #             proxy (catches NCBI "no rank" nodes that are biologically
+        #             genus-level).
+        # "deepest" — suffix first, then fall back to the deepest lineage entry
+        #             that is above species level (e.g. an unranked clade or a
+        #             subfamily node), maximally aggressive.
+        "genus_inference": "none",
+    },
+    "taxonomy": {
+        # Minimum rank a leaf lineage must reach to participate in internal-node
+        # LCA annotation.  Leaves whose lineage ends above this rank are excluded
+        # from the LCA vote (they stay in the tree but do not blur internal
+        # annotations).  "none" keeps the current behaviour (all leaves vote).
+        # Typical values: "genus", "species", "subfamily".
+        "lca_min_rank": "none",
     },
 }
 

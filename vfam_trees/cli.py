@@ -374,7 +374,7 @@ defaults:
     exclude_organisms:
       - synthetic construct
       - metagenome
-      - MAG
+      - "MAG:"
       - uncultured
       - unverified
       - vector
@@ -446,6 +446,30 @@ defaults:
     factor: 20.0
     max_iterations: 3
     min_seqs: 40
+
+  # Leaf color inference strategy for sequences that have no formal genus rank
+  # in their NCBI lineage.
+  #   none    — unclassified sequences are drawn in grey (default, conservative).
+  #   suffix  — treat any single-word name ending in "virus" as a genus proxy,
+  #             regardless of NCBI's rank annotation (e.g. "Flavivirus" marked
+  #             as "no rank" still gets its own color band).
+  #   deepest — suffix match first; if that fails, use the deepest lineage entry
+  #             above species level as a grouping key (maximally aggressive —
+  #             useful for poorly annotated families).
+  coloring:
+    genus_inference: none
+
+  # Minimum lineage depth a leaf must reach to participate in the LCA vote
+  # used for internal-node taxonomy annotation.  Leaves whose lineage ends
+  # above this rank are excluded from the vote — they remain in the tree but
+  # do not blur internal-node annotations (e.g. a sequence filed only at
+  # subfamily level will not drag a genus-level internal node up to subfamily).
+  #   none      — all leaves vote (default, current behaviour).
+  #   subfamily — exclude leaves whose lineage ends at subfamily or above.
+  #   genus     — exclude leaves whose lineage does not reach genus level.
+  #   species   — require species-level lineage to participate.
+  taxonomy:
+    lca_min_rank: none
 """
 
 

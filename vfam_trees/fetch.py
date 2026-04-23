@@ -76,9 +76,8 @@ def get_family_taxid(family: str) -> int | None:
 def _get_family_taxid(family: str) -> int | None:
     for attempt in range(MAX_RETRIES):
         try:
-            handle = Entrez.esearch(db="taxonomy", term=f'"{family}"[Scientific Name]')
-            result = Entrez.read(handle)
-            handle.close()
+            with Entrez.esearch(db="taxonomy", term=f'"{family}"[Scientific Name]') as handle:
+                result = Entrez.read(handle)
             ids = result.get("IdList", [])
             return int(ids[0]) if ids else None
         except Exception as e:
@@ -91,9 +90,8 @@ def _get_family_taxid(family: str) -> int | None:
 def _taxonomy_search(query: str, max_records: int) -> list[str]:
     for attempt in range(MAX_RETRIES):
         try:
-            handle = Entrez.esearch(db="taxonomy", term=query, retmax=max_records)
-            result = Entrez.read(handle)
-            handle.close()
+            with Entrez.esearch(db="taxonomy", term=query, retmax=max_records) as handle:
+                result = Entrez.read(handle)
             return result.get("IdList", [])
         except Exception as e:
             log.warning("Taxonomy search attempt %d failed: %s", attempt + 1, e)
@@ -130,9 +128,8 @@ def fetch_taxonomy_lineages(taxids) -> dict[str, list[dict]]:
     for batch in _batched(ids, 500):
         for attempt in range(MAX_RETRIES):
             try:
-                handle = Entrez.efetch(db="taxonomy", id=",".join(batch), retmode="xml")
-                records = Entrez.read(handle)
-                handle.close()
+                with Entrez.efetch(db="taxonomy", id=",".join(batch), retmode="xml") as handle:
+                    records = Entrez.read(handle)
                 for rec in records:
                     taxid = str(rec["TaxId"])
                     lineage = [
@@ -159,9 +156,8 @@ def _fetch_taxon_names(taxids: list[str]) -> list[dict]:
     for batch in _batched(taxids, 500):
         for attempt in range(MAX_RETRIES):
             try:
-                handle = Entrez.efetch(db="taxonomy", id=",".join(batch), retmode="xml")
-                records = Entrez.read(handle)
-                handle.close()
+                with Entrez.efetch(db="taxonomy", id=",".join(batch), retmode="xml") as handle:
+                    records = Entrez.read(handle)
                 for rec in records:
                     species.append({
                         "taxid": int(rec["TaxId"]),
@@ -340,9 +336,8 @@ def extract_metadata(record: SeqRecord) -> dict:
 def _search_ids(db: str, query: str, max_records: int) -> list[str]:
     for attempt in range(MAX_RETRIES):
         try:
-            handle = Entrez.esearch(db=db, term=query, retmax=max_records)
-            result = Entrez.read(handle)
-            handle.close()
+            with Entrez.esearch(db=db, term=query, retmax=max_records) as handle:
+                result = Entrez.read(handle)
             return result["IdList"]
         except Exception as e:
             log.warning("Search attempt %d failed: %s", attempt + 1, e)
@@ -354,9 +349,8 @@ def _search_ids(db: str, query: str, max_records: int) -> list[str]:
 def _fetch_batch(db: str, ids: list[str]) -> str:
     for attempt in range(MAX_RETRIES):
         try:
-            handle = Entrez.efetch(db=db, id=",".join(ids), rettype="gb", retmode="text")
-            data = handle.read()
-            handle.close()
+            with Entrez.efetch(db=db, id=",".join(ids), rettype="gb", retmode="text") as handle:
+                data = handle.read()
             time.sleep(0.34)
             # Warn if NCBI returned fewer records than requested
             n_returned = data.count("\nLOCUS ") + (1 if data.startswith("LOCUS ") else 0)

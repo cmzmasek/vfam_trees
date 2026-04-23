@@ -38,7 +38,7 @@ def filter_sequences(
                     with fallback to 40%, 30% if no sequences pass)
         max_ambiguous: maximum fraction of ambiguous characters
         exclude_organisms: list of substrings matched case-insensitively
-                           against the organism name in annotations
+                           against the ORGANISM, SOURCE, and DEFINITION fields
 
     Returns:
         Tuple of (filtered records, fraction_used, qc_stats).
@@ -59,13 +59,19 @@ def filter_sequences(
 
     exclude_lower = [t.lower() for t in (exclude_organisms or [])]
 
-    # Organism exclusion — applied before length filtering to keep median accurate
+    # Organism exclusion — applied before length filtering to keep median accurate.
+    # Terms are matched against ORGANISM, SOURCE, and DEFINITION (case-insensitive
+    # substring), joined with a newline to prevent cross-field false matches.
     passed_organism = []
     n_excluded_organism = 0
     for rec in records:
-        organism = rec.annotations.get("organism", "").lower()
-        if any(term in organism for term in exclude_lower):
-            log.debug("Excluding organism: %s", rec.annotations.get("organism", ""))
+        search_text = "\n".join([
+            rec.annotations.get("organism", ""),
+            rec.annotations.get("source", ""),
+            rec.description,
+        ]).lower()
+        if any(term in search_text for term in exclude_lower):
+            log.debug("Excluding record: %s", rec.annotations.get("organism", ""))
             n_excluded_organism += 1
         else:
             passed_organism.append(rec)

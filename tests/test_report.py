@@ -2,8 +2,14 @@
 import types
 
 import pytest
+from Bio.Phylo.BaseTree import Clade, Tree
 
-from vfam_trees.report import _internal_label, _SHOW_INTERNAL_RANKS
+from vfam_trees.report import (
+    _draw_tree_fig,
+    _draw_unrooted_tree_fig,
+    _internal_label,
+    _SHOW_INTERNAL_RANKS,
+)
 
 
 def _make_clade(name, is_term, rank=None):
@@ -59,3 +65,45 @@ class TestInternalLabel:
 
     def test_show_ranks_contents(self):
         assert _SHOW_INTERNAL_RANKS == {"genus", "subgenus", "subfamily", "family"}
+
+
+def _make_unladdered_tree():
+    """Return a tree whose child ordering will change under ladderize(reverse=True)."""
+    # Left child has 1 leaf, right child has 3 leaves → ladderize(reverse=True)
+    # reorders so the larger subtree comes first.
+    small = Clade(name="small", clades=[Clade(name="l0", branch_length=0.1)])
+    big = Clade(name="big", clades=[
+        Clade(name="l1", branch_length=0.1),
+        Clade(name="l2", branch_length=0.1),
+        Clade(name="l3", branch_length=0.1),
+    ])
+    root = Clade(clades=[small, big])
+    return Tree(root=root)
+
+
+class TestDrawingFunctionsDoNotMutateInput:
+    def test_draw_tree_fig_does_not_ladderize_input(self):
+        tree = _make_unladdered_tree()
+        original_order = [c.name for c in tree.root.clades]
+        assert original_order == ["small", "big"]
+
+        fig = _draw_tree_fig(tree, family="F", label="100")
+        try:
+            # Caller's tree must retain its original child order
+            assert [c.name for c in tree.root.clades] == original_order
+        finally:
+            if fig is not None:
+                import matplotlib.pyplot as plt
+                plt.close(fig)
+
+    def test_draw_unrooted_tree_fig_does_not_ladderize_input(self):
+        tree = _make_unladdered_tree()
+        original_order = [c.name for c in tree.root.clades]
+
+        fig = _draw_unrooted_tree_fig(tree, family="F", label="100")
+        try:
+            assert [c.name for c in tree.root.clades] == original_order
+        finally:
+            if fig is not None:
+                import matplotlib.pyplot as plt
+                plt.close(fig)
