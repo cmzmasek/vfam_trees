@@ -153,6 +153,7 @@ def remove_length_outliers(
     records: list[SeqRecord],
     hi_mult: float = 3.0,
     lo_mult: float = 1.0 / 3.0,
+    protected_ids: set[str] | None = None,
 ) -> tuple[list[SeqRecord], int, int]:
     """Remove sequences whose length deviates from the median by large factors.
 
@@ -162,12 +163,15 @@ def remove_length_outliers(
                  set to 0 (or negative) to disable the upper bound
         lo_mult: sequences shorter than lo_mult × median are removed;
                  set to 0 (or negative) to disable the lower bound
+        protected_ids: record IDs that must never be dropped even if flagged —
+                       a warning is logged instead.
 
     Returns:
         (filtered records, n_long_removed, n_short_removed)
     """
     if len(records) < 2:
         return records, 0, 0
+    protected = protected_ids or set()
     lengths = [len(r.seq) for r in records]
     median_len = statistics.median(lengths)
     hi_cutoff = median_len * hi_mult if hi_mult and hi_mult > 0 else None
@@ -178,10 +182,23 @@ def remove_length_outliers(
     n_short = 0
     for r in records:
         L = len(r.seq)
-        if hi_cutoff is not None and L > hi_cutoff:
-            n_long += 1
-        elif lo_cutoff is not None and L < lo_cutoff:
-            n_short += 1
+        too_long = hi_cutoff is not None and L > hi_cutoff
+        too_short = lo_cutoff is not None and L < lo_cutoff
+        if too_long or too_short:
+            if r.id in protected:
+                log.warning(
+                    "RefSeq '%s' looks like a length outlier "
+                    "(length=%d, median=%d, hi_cutoff=%s, lo_cutoff=%s) — "
+                    "KEEPING (RefSeq protected)",
+                    r.id, L, int(median_len),
+                    f"{hi_cutoff:.0f}" if hi_cutoff is not None else "disabled",
+                    f"{lo_cutoff:.0f}" if lo_cutoff is not None else "disabled",
+                )
+                passed.append(r)
+            elif too_long:
+                n_long += 1
+            else:
+                n_short += 1
         else:
             passed.append(r)
 

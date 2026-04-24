@@ -201,3 +201,50 @@ def test_remove_length_outliers_lo_disabled():
     assert n_long == 0
     assert n_short == 0
     assert len(kept) == 11
+
+
+def test_remove_length_outliers_protects_refseq_long(caplog):
+    # Extreme-long sequence flagged but protected → kept, warning logged
+    normal = [_rec("A" * 300, acc=f"N{i}") for i in range(10)]
+    refseq = _rec("A" * 30000, acc="NC_000001")
+    records = normal + [refseq]
+    with caplog.at_level("WARNING"):
+        kept, n_long, n_short = remove_length_outliers(
+            records, protected_ids={"NC_000001"},
+        )
+    assert n_long == 0
+    assert n_short == 0
+    assert len(kept) == 11
+    assert "NC_000001" in {r.id for r in kept}
+    assert any("NC_000001" in m and "protected" in m for m in caplog.messages)
+
+
+def test_remove_length_outliers_protects_refseq_short(caplog):
+    normal = [_rec("A" * 300, acc=f"N{i}") for i in range(10)]
+    refseq = _rec("A" * 50, acc="NC_000002")
+    records = normal + [refseq]
+    with caplog.at_level("WARNING"):
+        kept, n_long, n_short = remove_length_outliers(
+            records, protected_ids={"NC_000002"},
+        )
+    assert n_long == 0
+    assert n_short == 0
+    assert len(kept) == 11
+    assert "NC_000002" in {r.id for r in kept}
+    assert any("NC_000002" in m and "protected" in m for m in caplog.messages)
+
+
+def test_remove_length_outliers_non_protected_still_dropped():
+    # Mix a protected RefSeq and an unprotected outlier — only the latter drops
+    normal = [_rec("A" * 300, acc=f"N{i}") for i in range(10)]
+    refseq = _rec("A" * 30000, acc="NC_000001")
+    unprotected = _rec("A" * 30000, acc="UNPROT1")
+    records = normal + [refseq, unprotected]
+    kept, n_long, n_short = remove_length_outliers(
+        records, protected_ids={"NC_000001"},
+    )
+    assert n_long == 1
+    assert n_short == 0
+    kept_ids = {r.id for r in kept}
+    assert "NC_000001" in kept_ids
+    assert "UNPROT1" not in kept_ids

@@ -731,6 +731,7 @@ def _run_target(
         lo_mult = float(length_outlier_cfg.get("lo_mult", 0.333))
         sel_records, n_length_long, n_length_short = remove_length_outliers(
             sel_records, hi_mult=hi_mult, lo_mult=lo_mult,
+            protected_ids=refseq_short_ids,
         )
         if n_length_long or n_length_short:
             log.info(
@@ -885,10 +886,46 @@ def _run_target(
             )
             break
 
-        outlier_ids = _find_branch_length_outliers(treefile, outlier_factor)
-        if not outlier_ids:
+        all_outlier_ids = _find_branch_length_outliers(treefile, outlier_factor)
+        if not all_outlier_ids:
             log.info("No branch-length outliers found for tree_%s (iteration %d) — stopping.",
                      label, iteration)
+            break
+
+        # RefSeqs are never removed — flag them with a warning instead.
+        protected_outliers = all_outlier_ids & refseq_short_ids
+        outlier_ids = all_outlier_ids - refseq_short_ids
+
+        # Stats header (shared by warning + removal logs)
+        _bl_stats = _branch_length_stats(treefile)
+        _median   = _bl_stats["median"]
+        _mad      = _bl_stats["mad"]
+        _threshold = _median + outlier_factor * _mad
+        _bl_map   = _bl_stats["bl_map"]
+
+        log.info(
+            "tree_%s iteration %d: branch-length stats — median=%.5f, MAD=%.5f, "
+            "threshold (median + %.1f×MAD)=%.5f",
+            label, iteration, _median, _mad, outlier_factor, _threshold,
+        )
+
+        for oid in protected_outliers:
+            display_name = short_to_display.get(oid, oid)
+            bl = _bl_map.get(oid, float("nan"))
+            mads_above = (bl - _median) / _mad if _mad else float("nan")
+            log.warning(
+                "tree_%s iteration %d: RefSeq '%s' looks like a branch-length "
+                "outlier — branch length %.5f (%.1f× MAD above median, "
+                "threshold=%.5f) — KEEPING (RefSeq protected)",
+                label, iteration, display_name, bl, mads_above, _threshold,
+            )
+
+        if not outlier_ids:
+            log.info(
+                "Only protected (RefSeq) outliers remain for tree_%s "
+                "(iteration %d) — stopping.",
+                label, iteration,
+            )
             break
 
         # Only remove outliers that still leave at least outlier_min_seqs sequences
@@ -901,18 +938,6 @@ def _run_target(
             )
             break
 
-        # Log detailed stats for each removed sequence
-        _bl_stats = _branch_length_stats(treefile)
-        _median   = _bl_stats["median"]
-        _mad      = _bl_stats["mad"]
-        _threshold = _median + outlier_factor * _mad
-        _bl_map   = _bl_stats["bl_map"]
-
-        log.info(
-            "tree_%s iteration %d: branch-length stats — median=%.5f, MAD=%.5f, "
-            "threshold (median + %.1f×MAD)=%.5f",
-            label, iteration, _median, _mad, outlier_factor, _threshold,
-        )
         for oid in outlier_ids:
             display_name = short_to_display.get(oid, oid)
             bl = _bl_map.get(oid, float("nan"))
