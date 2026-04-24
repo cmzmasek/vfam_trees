@@ -56,7 +56,8 @@ Two trees are produced per family:
 - **Overview PNG** (`overview_tree_100.png`): thumbnail grid of all tree_100 trees across all processed families, automatically generated at the end of `vfam_trees run`; thumbnails are shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) using NCBI lineage data; regenerate at any time with `vfam_trees overview`
 - Output directories named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 - Pre-configured support for 35+ segmented RNA virus families and 27 DNA virus families
-- Per-run summary TSV with SH support statistics, MSA statistics, QC breakdown, clustering thresholds, outlier removal counts, and genus/subfamily diversity counts; skipped families are always included
+- Per-run summary TSV with SH support statistics, MSA statistics, QC breakdown, clustering thresholds, outlier removal counts, and genus/subfamily diversity counts; skipped families are always included. A second lightweight `status.tsv` is written alongside it, with one row per family analyzed (success or skip) and the columns `family`, `ncbi_taxid`, `molecule_region`, `status` (`OK` on success, skip reason otherwise), `lineage`, `baltimore_class`
+- Optional external family-annotation TSV (`annotation_tsv` in `global.yaml`, default `virus_families_annotation.tsv` next to the config) joins extra per-family columns into `summary.tsv` and `status.tsv`; currently supplies `baltimore_class` (Roman numeral I–VII per Baltimore 1971). Missing file or missing family → column left empty, no error
 - Optional shared sequence download cache keyed by query parameters, with configurable TTL and per-entry lock files for safe parallel use; **negative results are also cached** via a per-entry `_no_results` sentinel so species with zero GenBank hits are not re-queried on every run (same TTL as positive entries)
 - **Pipeline stage tracking**: `vfam_trees status` reports the current processing stage for in-progress families (downloading/QC, MSA, tree inference, annotating) in addition to done/pending/skipped
 - **Dry-run mode**: `vfam_trees run --dry-run` previews per-family configuration parameters (sequence type, region, tree tools and models) without executing the pipeline
@@ -162,6 +163,24 @@ vfam_trees cache clear Asfarviridae
 vfam_trees cache clear --all          # wipe entire cache
 vfam_trees cache stats                # show entry count and size
 ```
+
+#### Family-annotation TSV
+
+External per-family metadata can be joined into the summary / status TSVs by pointing `annotation_tsv` in `global.yaml` at a TSV:
+
+```yaml
+annotation_tsv: virus_families_annotation.tsv
+```
+
+Relative paths are resolved against the `global.yaml` directory. The file must have a `family` column (case-insensitive match) plus any extra columns to be picked up — currently `baltimore_class` is the only one read by the pipeline (Roman numeral I–VII). Example:
+
+```tsv
+family	baltimore_class	host_range	segmented	genome_size
+Flaviviridae	IV	Vertebrates	No	~11 kb
+Poxviridae	I	Vertebrates	No	~130–375 kb
+```
+
+If the file is missing, the key is unset, or a given family is not in the table, the `baltimore_class` column is simply left empty — no error.
 
 ### 2. Per-family configs (`configs/<Family>.yaml`)
 
@@ -373,7 +392,8 @@ At the cross-family level, in `results/`:
 
 | File | Description |
 |------|-------------|
-| `summary.tsv` | One row per family: species counts, QC exclusion breakdown, post-QC sequence length stats, clustering thresholds, MSA tool/options, tree program/model/options, per-tree leaf counts, SH support stats, outlier removal counts, genus/subfamily diversity counts |
+| `summary.tsv` | One row per family (success or skip): species counts, QC exclusion breakdown, post-QC sequence length stats, clustering thresholds, MSA tool/options, tree program/model/options, per-tree leaf counts, SH support stats, outlier removal counts, genus/subfamily diversity counts, and `baltimore_class` from the optional annotation TSV |
+| `status.tsv` | One row per family (success or skip): `family`, `ncbi_taxid`, `molecule_region`, `status` (`OK` on success, skip reason otherwise), `lineage`, `baltimore_class` |
 | `overview_tree_100.png` | Thumbnail grid of all tree_100 trees; thumbnails shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) |
 
 ## License

@@ -21,7 +21,8 @@ from .fetch import (
 )
 from .summary import (
     compute_support_stats, compute_msa_stats, compute_seqlen_stats,
-    build_summary_row, write_summary_row,
+    build_summary_row, write_summary_row, load_family_annotations,
+    build_status_row, write_status_row,
 )
 from .quality import filter_sequences, remove_length_outliers, deduplicate, write_fasta
 from .rename import assign_short_ids, restore_fasta_names, restore_newick_names
@@ -124,6 +125,7 @@ def run_family(
     threads: int = 1,
     log_level: str = "INFO",
     summary_path: Path | None = None,
+    status_path: Path | None = None,
 ) -> None:
     """Execute the full pipeline for a single viral family."""
     global_cfg = load_global_config(global_config_path)
@@ -131,6 +133,17 @@ def run_family(
         email=global_cfg["ncbi"]["email"],
         api_key=global_cfg["ncbi"].get("api_key") or None,
     )
+
+    # External family-level annotations (Baltimore class, etc.) for the summary.
+    # Path is taken from global config; default looks for the file next to it.
+    ann_cfg = global_cfg.get("annotation_tsv")
+    if ann_cfg:
+        ann_path = Path(ann_cfg).expanduser()
+        if not ann_path.is_absolute():
+            ann_path = global_config_path.parent / ann_path
+    else:
+        ann_path = global_config_path.parent / "virus_families_annotation.tsv"
+    family_annotation = load_family_annotations(ann_path).get(family.lower(), {})
 
     # Fetch family-level taxonomy (taxid + ranked lineage) for the summary.
     # Done first so the taxid can be embedded in the output directory name.
@@ -214,8 +227,20 @@ def run_family(
                     tree_stats={},
                     n_species_relaxed=0,
                     total_seqs_qc=0,
+                    family_annotation=family_annotation,
                 )
                 write_summary_row(summary_path, row)
+            if status_path is not None:
+                write_status_row(status_path, build_status_row(
+                    family=family,
+                    family_taxid=family_taxid,
+                    family_lineage=family_lineage,
+                    seq_type=seq_type,
+                    region=region,
+                    segment=segment,
+                    status="no species found in NCBI taxonomy",
+                    family_annotation=family_annotation,
+                ))
             return
         with open(species_cache, "w") as f:
             json.dump(species_list, f, indent=2)
@@ -429,8 +454,20 @@ def run_family(
                 n_species_relaxed=n_species_relaxed,
                 total_seqs_qc=total_seqs,
                 qc_stats=family_qc_stats,
+                family_annotation=family_annotation,
             )
             write_summary_row(summary_path, row)
+        if status_path is not None:
+            write_status_row(status_path, build_status_row(
+                family=family,
+                family_taxid=family_taxid,
+                family_lineage=family_lineage,
+                seq_type=seq_type,
+                region=region,
+                segment=segment,
+                status=f"too few sequences after QC ({total_seqs} < 4)",
+                family_annotation=family_annotation,
+            ))
         return
     log.info(
         "Download complete: %d sequences across %d / %d species passed quality filters",
@@ -551,9 +588,21 @@ def run_family(
         n_species_relaxed=n_species_relaxed,
         total_seqs_qc=total_seqs,
         qc_stats=family_qc_stats,
+        family_annotation=family_annotation,
     )
     if summary_path is not None:
         write_summary_row(summary_path, summary_row)
+    if status_path is not None:
+        write_status_row(status_path, build_status_row(
+            family=family,
+            family_taxid=family_taxid,
+            family_lineage=family_lineage,
+            seq_type=seq_type,
+            region=region,
+            segment=segment,
+            status="OK",
+            family_annotation=family_annotation,
+        ))
 
     viz_cfg = global_cfg.get("visualization") or {}
     branch_linewidth = float(viz_cfg.get("branch_linewidth", 0.5))

@@ -16,6 +16,7 @@ COLUMNS = [
     "family",
     "ncbi_taxid",
     "lineage",
+    "baltimore_class",
     "molecule_region",
     "species_discovered",
     "species_with_seqs",
@@ -47,9 +48,13 @@ COLUMNS = [
     "tree500_cluster_thresh_max",
     "tree500_msa_length",
     "tree500_msa_length_pre_trim",
+    "tree500_msa_tool",
+    "tree500_msa_options",
     "tree500_trim_tool",
     "tree500_trim_options",
     "tree500_msa_gap_pct",
+    "tree500_tree_tool",
+    "tree500_tree_options",
     # tree_100
     "tree100_leaves",
     "tree100_support_type",
@@ -63,9 +68,13 @@ COLUMNS = [
     "tree100_cluster_thresh_max",
     "tree100_msa_length",
     "tree100_msa_length_pre_trim",
+    "tree100_msa_tool",
+    "tree100_msa_options",
     "tree100_trim_tool",
     "tree100_trim_options",
     "tree100_msa_gap_pct",
+    "tree100_tree_tool",
+    "tree100_tree_options",
     # diversity / outlier counts
     "tree500_n_outliers_removed",
     "tree100_n_outliers_removed",
@@ -78,6 +87,38 @@ COLUMNS = [
     "tree500_n_subfamilies",
     "tree100_n_subfamilies",
 ]
+
+
+STATUS_COLUMNS = [
+    "family",
+    "ncbi_taxid",
+    "molecule_region",
+    "status",
+    "lineage",
+    "baltimore_class",
+]
+
+
+def load_family_annotations(path: Path) -> dict[str, dict]:
+    """Read a family-annotation TSV into a case-insensitive family → row mapping.
+
+    Expected columns: 'family' plus any annotation columns (e.g. 'baltimore_class').
+    Returns {family_name_lower: {col: value, ...}}.  If the file is missing or
+    has no 'family' column, returns an empty dict.
+    """
+    if not path.exists():
+        return {}
+    annotations: dict[str, dict] = {}
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        if reader.fieldnames is None or "family" not in reader.fieldnames:
+            log.warning("Annotation file %s missing 'family' column — ignoring", path)
+            return {}
+        for row in reader:
+            fam = (row.get("family") or "").strip()
+            if fam:
+                annotations[fam.lower()] = row
+    return annotations
 
 
 def compute_seqlen_stats(lengths: list[int]) -> dict:
@@ -181,6 +222,47 @@ def write_summary_row(summary_path: Path, row: dict) -> None:
     log.info("Summary updated: %s", summary_path)
 
 
+def build_status_row(
+    family: str,
+    family_taxid: int | None,
+    family_lineage: list[dict],
+    seq_type: str,
+    region: str,
+    segment: str | None,
+    status: str,
+    family_annotation: dict | None = None,
+) -> dict:
+    """Assemble a single row for status.tsv.
+
+    status is 'OK' when the full pipeline (including tree inference) succeeded,
+    otherwise the skip reason.
+    """
+    lineage_str = "; ".join(e["name"] for e in family_lineage) if family_lineage else ""
+    ann = family_annotation or {}
+    return {
+        "family":           family,
+        "ncbi_taxid":       family_taxid if family_taxid is not None else "",
+        "molecule_region":  format_molecule_region(seq_type, region, segment),
+        "status":           status,
+        "lineage":          lineage_str,
+        "baltimore_class":  (ann.get("baltimore_class") or "").strip(),
+    }
+
+
+def write_status_row(status_path: Path, row: dict) -> None:
+    """Append one row to the status TSV, writing the header if the file is new."""
+    is_new = not status_path.exists() or status_path.stat().st_size == 0
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(status_path, "a", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=STATUS_COLUMNS, delimiter="\t", extrasaction="ignore"
+        )
+        if is_new:
+            writer.writeheader()
+        writer.writerow(row)
+    log.info("Status updated: %s", status_path)
+
+
 def build_summary_row(
     family: str,
     family_taxid: int | None,
@@ -195,18 +277,23 @@ def build_summary_row(
     n_species_relaxed: int = 0,
     total_seqs_qc: int = 0,
     qc_stats: dict | None = None,
+    family_annotation: dict | None = None,
 ) -> dict:
     """Assemble a summary row dict from collected pipeline stats.
 
     tree_stats should be keyed by label ("500", "100"), each value a dict with:
         leaves, support (branch-support stats dict), msa (msa stats dict).
+    family_annotation, when supplied, contributes external fields such as
+        baltimore_class (Roman numeral I–VII per Baltimore 1971).
     """
     lineage_str = "; ".join(e["name"] for e in family_lineage) if family_lineage else ""
+    ann = family_annotation or {}
 
     row: dict = {
         "family":             family,
         "ncbi_taxid":         family_taxid if family_taxid is not None else "",
         "lineage":            lineage_str,
+        "baltimore_class":    (ann.get("baltimore_class") or "").strip(),
         "molecule_region":    format_molecule_region(seq_type, region, segment),
         "species_discovered":        n_species_discovered,
         "species_with_seqs":         n_species_with_seqs,

@@ -69,4 +69,5 @@ rule run_family:
             threads=threads,
             log_level=LOG_LEVEL,
             summary_path=Path(OUTPUT_DIR) / "summary.tsv",
+            status_path=Path(OUTPUT_DIR) / "status.tsv",
         )

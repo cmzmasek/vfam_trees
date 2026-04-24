@@ -4,11 +4,15 @@ import csv
 from Bio.Phylo.BaseTree import Clade, Tree
 
 from vfam_trees.summary import (
+    STATUS_COLUMNS,
+    build_status_row,
     build_summary_row,
     compute_msa_stats,
     compute_seqlen_stats,
     compute_support_stats,
     format_molecule_region,
+    load_family_annotations,
+    write_status_row,
     write_summary_row,
 )
 
@@ -169,6 +173,134 @@ class TestBuildSummaryRow:
         assert row["tree100_leaves"] == 95
         assert row["tree500_tree_tool"] == "fasttree"
         assert row["tree100_tree_tool"] == "iqtree"
+
+
+class TestLoadFamilyAnnotations:
+    def test_missing_file_returns_empty_dict(self, tmp_path):
+        assert load_family_annotations(tmp_path / "nope.tsv") == {}
+
+    def test_basic_load_case_insensitive_key(self, tmp_path):
+        p = tmp_path / "ann.tsv"
+        p.write_text(
+            "family\tbaltimore_class\thost_range\n"
+            "Flaviviridae\tIV\tVertebrates\n"
+            "Poxviridae\tI\tVertebrates\n"
+        )
+        ann = load_family_annotations(p)
+        # Keys are lowercased
+        assert "flaviviridae" in ann
+        assert ann["flaviviridae"]["baltimore_class"] == "IV"
+        assert ann["poxviridae"]["baltimore_class"] == "I"
+
+    def test_blank_family_rows_skipped(self, tmp_path):
+        p = tmp_path / "ann.tsv"
+        p.write_text(
+            "family\tbaltimore_class\n"
+            "\tX\n"
+            "Flaviviridae\tIV\n"
+        )
+        ann = load_family_annotations(p)
+        assert list(ann.keys()) == ["flaviviridae"]
+
+    def test_missing_family_column_returns_empty(self, tmp_path):
+        p = tmp_path / "ann.tsv"
+        p.write_text("name\tbaltimore_class\nFlaviviridae\tIV\n")
+        assert load_family_annotations(p) == {}
+
+
+class TestBaltimoreInSummaryRow:
+    def test_baltimore_populated_from_annotation(self):
+        row = build_summary_row(
+            family="Flaviviridae", family_taxid=11050, family_lineage=[],
+            seq_type="nucleotide", region="whole_genome", segment=None,
+            n_species_discovered=0, n_species_with_seqs=0, seqlen_stats={},
+            tree_stats={},
+            family_annotation={"baltimore_class": "IV", "host_range": "Vertebrates"},
+        )
+        assert row["baltimore_class"] == "IV"
+
+    def test_baltimore_empty_when_no_annotation(self):
+        row = build_summary_row(
+            family="X", family_taxid=None, family_lineage=[],
+            seq_type="nucleotide", region="whole_genome", segment=None,
+            n_species_discovered=0, n_species_with_seqs=0, seqlen_stats={},
+            tree_stats={},
+        )
+        assert row["baltimore_class"] == ""
+
+    def test_baltimore_column_follows_lineage(self):
+        from vfam_trees.summary import COLUMNS
+        assert COLUMNS.index("baltimore_class") == COLUMNS.index("lineage") + 1
+
+
+class TestStatusRow:
+    def test_column_order_exact(self):
+        assert STATUS_COLUMNS == [
+            "family", "ncbi_taxid", "molecule_region", "status",
+            "lineage", "baltimore_class",
+        ]
+
+    def test_ok_status_row(self):
+        row = build_status_row(
+            family="Flaviviridae", family_taxid=11050,
+            family_lineage=[{"name": "Viruses"}, {"name": "Riboviria"}],
+            seq_type="nucleotide", region="whole_genome", segment=None,
+            status="OK",
+            family_annotation={"baltimore_class": "IV"},
+        )
+        assert row["family"] == "Flaviviridae"
+        assert row["ncbi_taxid"] == 11050
+        assert row["molecule_region"] == "nucleotide, whole genome"
+        assert row["status"] == "OK"
+        assert "Riboviria" in row["lineage"]
+        assert row["baltimore_class"] == "IV"
+
+    def test_skip_reason_row(self):
+        row = build_status_row(
+            family="X", family_taxid=None, family_lineage=[],
+            seq_type="nucleotide", region="whole_genome", segment=None,
+            status="no species found in NCBI taxonomy",
+        )
+        assert row["ncbi_taxid"] == ""
+        assert row["status"] == "no species found in NCBI taxonomy"
+        assert row["lineage"] == ""
+        assert row["baltimore_class"] == ""
+
+    def test_empty_annotation_yields_empty_baltimore(self):
+        row = build_status_row(
+            family="Unknown", family_taxid=1, family_lineage=[],
+            seq_type="protein", region="RdRp", segment=None,
+            status="OK",
+        )
+        assert row["baltimore_class"] == ""
+        assert row["molecule_region"] == "protein, gene: RdRp"
+
+
+def test_write_status_row_creates_header_then_appends(tmp_path):
+    path = tmp_path / "status.tsv"
+    ok = build_status_row(
+        family="A", family_taxid=1, family_lineage=[],
+        seq_type="nucleotide", region="whole_genome", segment=None,
+        status="OK",
+        family_annotation={"baltimore_class": "IV"},
+    )
+    skip = build_status_row(
+        family="B", family_taxid=None, family_lineage=[],
+        seq_type="nucleotide", region="whole_genome", segment=None,
+        status="no species found in NCBI taxonomy",
+    )
+    write_status_row(path, ok)
+    write_status_row(path, skip)
+    with open(path) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        assert reader.fieldnames == STATUS_COLUMNS
+        rows = list(reader)
+    assert len(rows) == 2
+    assert rows[0]["family"] == "A"
+    assert rows[0]["status"] == "OK"
+    assert rows[0]["baltimore_class"] == "IV"
+    assert rows[1]["status"] == "no species found in NCBI taxonomy"
+    assert rows[1]["baltimore_class"] == ""
 
 
 def test_write_summary_row_creates_header_then_appends(tmp_path):
