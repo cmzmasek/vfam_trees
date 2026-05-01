@@ -82,6 +82,8 @@ COLUMNS = [
     "tree500_n_length_outliers_short",
     "tree100_n_length_outliers_long",
     "tree100_n_length_outliers_short",
+    "tree500_n_refseq_absorbed",
+    "tree100_n_refseq_absorbed",
     "tree500_n_genera",
     "tree100_n_genera",
     "tree500_n_subfamilies",
@@ -340,6 +342,7 @@ def build_summary_row(
         row[f"{prefix}_n_outliers_removed"]      = stats.get("n_outliers_removed", "")
         row[f"{prefix}_n_length_outliers_long"]  = stats.get("n_length_outliers_long", "")
         row[f"{prefix}_n_length_outliers_short"] = stats.get("n_length_outliers_short", "")
+        row[f"{prefix}_n_refseq_absorbed"]       = stats.get("n_refseq_absorbed", "")
         row[f"{prefix}_n_genera"]                = stats.get("n_genera", "")
         row[f"{prefix}_n_subfamilies"]           = stats.get("n_subfamilies", "")
 

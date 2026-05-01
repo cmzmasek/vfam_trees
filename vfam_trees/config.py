@@ -192,6 +192,15 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "model_nuc": "GTR+G",
         "model_aa": "TEST",
     },
+    "refseq_absorption": {
+        # Pre-clustering step: drops non-RefSeq sequences that are near-
+        # identical (≥ threshold) to a RefSeq within the same species.
+        # Prevents the tree from showing redundant near-zero-branch
+        # clusters of isolates around their RefSeq.  All RefSeqs are
+        # always kept; only non-RefSeqs are absorbed.
+        "enabled": True,
+        "threshold": 0.99,
+    },
     "length_outlier": {
         "enabled": True,
         "hi_mult": 3.0,

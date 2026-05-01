@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+import re
 import subprocess
 from pathlib import Path
 
@@ -13,6 +14,142 @@ from .logger import get_logger
 log = get_logger(__name__)
 
 BINARY_SEARCH_ITERATIONS = 7   # ~128 resolution steps over threshold range
+
+
+def absorb_into_refseqs(
+    records: list[SeqRecord],
+    refseq_ids: set[str],
+    threshold: float,
+    seq_type: str,
+    work_dir: Path,
+    clustering_tool: str = "mmseqs2",
+) -> tuple[list[SeqRecord], int]:
+    """Drop non-RefSeq sequences that are near-identical to a RefSeq in the same set.
+
+    Clusters *records* at *threshold* identity; for each cluster that contains
+    one or more RefSeq members, drops the non-RefSeq members (they are deemed
+    near-identical to the RefSeq and therefore redundant).  All RefSeqs are
+    always kept; clusters containing no RefSeq are passed through unchanged.
+
+    A new MMseqs2/CD-HIT run is executed only when *records* contains at least
+    one RefSeq; otherwise the function returns the input untouched.
+
+    Args:
+        records:    quality-filtered SeqRecords for one species (short IDs).
+        refseq_ids: set of short IDs that are RefSeqs (immune from removal).
+        threshold:  clustering identity (0–1); typical 0.99 = "near identical".
+        seq_type:   'nucleotide' or 'protein'.
+        work_dir:   temp directory for the clustering run.
+        clustering_tool: 'mmseqs2' (default) or 'cdhit'.
+
+    Returns:
+        (kept_records, n_absorbed)
+    """
+    if len(records) < 2:
+        return records, 0
+    record_ids = {r.id for r in records}
+    if not (record_ids & refseq_ids):
+        return records, 0
+
+    clusters = _cluster_membership(records, threshold, seq_type, work_dir, clustering_tool)
+    keep_ids: set[str] = set()
+    n_absorbed = 0
+    for members in clusters:
+        cluster_refseqs = members & refseq_ids
+        if cluster_refseqs:
+            keep_ids |= cluster_refseqs
+            n_absorbed += len(members) - len(cluster_refseqs)
+        else:
+            keep_ids |= members
+
+    if n_absorbed:
+        log.debug(
+            "RefSeq absorption: %d non-RefSeq sequence(s) absorbed into "
+            "RefSeq cluster reps at identity ≥ %.2f",
+            n_absorbed, threshold,
+        )
+    return [r for r in records if r.id in keep_ids], n_absorbed
+
+
+def _cluster_membership(
+    records: list[SeqRecord],
+    threshold: float,
+    seq_type: str,
+    work_dir: Path,
+    clustering_tool: str,
+) -> list[set[str]]:
+    """Cluster *records* and return the full membership of each cluster.
+
+    Each item in the returned list is a set of record IDs belonging to one
+    cluster (representative + members).
+    """
+    tool = clustering_tool.lower().replace("-", "").replace("_", "")
+    if tool == "mmseqs2":
+        return _mmseqs2_membership(records, threshold, seq_type, work_dir)
+    if tool in ("cdhit", "cdhitest"):
+        return _cdhit_membership(records, threshold, seq_type, work_dir)
+    raise ValueError(
+        f"Unsupported clustering tool: {clustering_tool!r}. "
+        "Supported: 'mmseqs2', 'cdhit'."
+    )
+
+
+def _mmseqs2_membership(
+    records: list[SeqRecord],
+    threshold: float,
+    seq_type: str,
+    work_dir: Path,
+) -> list[set[str]]:
+    """Run MMseqs2 easy-linclust and parse the cluster TSV for full membership."""
+    _mmseqs2_cluster(records, threshold, seq_type, work_dir)
+    cluster_tsv = work_dir / "output_cluster.tsv"
+    if not cluster_tsv.exists():
+        raise FileNotFoundError(
+            f"MMseqs2 exited 0 but did not produce the expected cluster TSV "
+            f"{cluster_tsv}. This likely indicates a change in MMseqs2's "
+            "output-file naming conventions."
+        )
+    clusters: dict[str, set[str]] = {}
+    with open(cluster_tsv) as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2:
+                continue
+            rep, member = parts[0], parts[1]
+            clusters.setdefault(rep, set()).add(member)
+    return list(clusters.values())
+
+
+def _cdhit_membership(
+    records: list[SeqRecord],
+    threshold: float,
+    seq_type: str,
+    work_dir: Path,
+) -> list[set[str]]:
+    """Run CD-HIT and parse the .clstr file for full membership."""
+    _cdhit_cluster(records, threshold, seq_type, work_dir)
+    clstr_file = work_dir / "output.fasta.clstr"
+    if not clstr_file.exists():
+        raise FileNotFoundError(
+            f"CD-HIT exited 0 but did not produce expected cluster file "
+            f"{clstr_file}."
+        )
+    member_re = re.compile(r">([^\s]+?)\.\.\.")
+    clusters: list[set[str]] = []
+    current: set[str] = set()
+    with open(clstr_file) as f:
+        for line in f:
+            if line.startswith(">Cluster"):
+                if current:
+                    clusters.append(current)
+                current = set()
+            else:
+                m = member_re.search(line)
+                if m:
+                    current.add(m.group(1))
+    if current:
+        clusters.append(current)
+    return clusters
 
 
 def adaptive_cluster_species(

@@ -26,7 +26,7 @@ from .summary import (
 )
 from .quality import filter_sequences, remove_length_outliers, deduplicate, write_fasta
 from .rename import assign_short_ids, restore_fasta_names, restore_newick_names
-from .subsample import adaptive_cluster_species, proportional_merge
+from .subsample import absorb_into_refseqs, adaptive_cluster_species, proportional_merge
 from .msa import run_msa, get_mafft_version, validate_msa
 from .trim import run_trim, get_trimal_version
 from .tree import (
@@ -682,6 +682,13 @@ def _run_target(
     threshold_min = clustering_cfg.get("threshold_min", 0.70)
     threshold_max = clustering_cfg.get("threshold_max", 0.99)
 
+    # RefSeq absorption (per-species, before adaptive clustering): drops
+    # non-RefSeqs that are near-identical (≥ threshold) to a RefSeq.
+    absorb_cfg = family_cfg.get("refseq_absorption", {})
+    absorb_enabled = absorb_cfg.get("enabled", True)
+    absorb_threshold = float(absorb_cfg.get("threshold", 0.99))
+    n_refseq_absorbed = 0
+
     # Adaptive per-species clustering — track actual thresholds used
     log.info("Clustering sequences per species (%s, max_reps=%d, search range=%.2f–%.2f) ...",
              clustering_tool, max_reps, threshold_min, threshold_max)
@@ -690,8 +697,25 @@ def _run_target(
     for sp_name, data in species_data.items():
         sp_safe = sp_name.replace(" ", "_").replace("/", "_")
         sp_work = target_work / "clustering" / sp_safe
+        sp_records = data["renamed"]
+        if absorb_enabled:
+            sp_records, n_absorbed = absorb_into_refseqs(
+                records=sp_records,
+                refseq_ids=refseq_short_ids,
+                threshold=absorb_threshold,
+                seq_type=seq_type,
+                work_dir=sp_work / "absorb",
+                clustering_tool=clustering_tool,
+            )
+            if n_absorbed:
+                log.info(
+                    "RefSeq absorption: %s — %d non-RefSeq sequence(s) "
+                    "absorbed at identity ≥ %.2f",
+                    sp_name, n_absorbed, absorb_threshold,
+                )
+            n_refseq_absorbed += n_absorbed
         reps, threshold_used = adaptive_cluster_species(
-            records=data["renamed"],
+            records=sp_records,
             max_reps=max_reps,
             threshold_min=threshold_min,
             threshold_max=threshold_max,
@@ -701,6 +725,12 @@ def _run_target(
         )
         species_reps[sp_name] = reps
         thresholds_used.append(threshold_used)
+    if absorb_enabled and n_refseq_absorbed:
+        log.info(
+            "RefSeq absorption total: %d non-RefSeq sequence(s) replaced "
+            "by their near-identical RefSeq across %d species",
+            n_refseq_absorbed, len(species_data),
+        )
 
     cluster_thresh_min = round(min(thresholds_used), 4) if thresholds_used else ""
     cluster_thresh_max = round(max(thresholds_used), 4) if thresholds_used else ""
@@ -1034,6 +1064,7 @@ def _run_target(
         "n_outliers_removed":    n_outliers_removed,
         "n_length_outliers_long":  n_length_long,
         "n_length_outliers_short": n_length_short,
+        "n_refseq_absorbed":     n_refseq_absorbed,
         "n_genera":              len(genus_to_color),
         "n_subfamilies":         n_subfamilies,
     }

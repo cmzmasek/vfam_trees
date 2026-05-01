@@ -1,8 +1,11 @@
 """Tests for vfam_trees.subsample.proportional_merge."""
+from pathlib import Path
+
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from vfam_trees.subsample import proportional_merge
+from vfam_trees import subsample
+from vfam_trees.subsample import absorb_into_refseqs, proportional_merge
 
 
 def _rec(rec_id):
@@ -122,3 +125,79 @@ def test_same_seed_gives_same_result():
     a = proportional_merge(species, 10, seed=123)
     b = proportional_merge(species, 10, seed=123)
     assert [r.id for r in a] == [r.id for r in b]
+
+
+# ---------------------------------------------------------------------------
+# absorb_into_refseqs
+# ---------------------------------------------------------------------------
+
+def _mock_membership(monkeypatch, clusters: list[set[str]]):
+    """Patch _cluster_membership to return *clusters* verbatim."""
+    def _fake(records, threshold, seq_type, work_dir, clustering_tool):
+        return clusters
+    monkeypatch.setattr(subsample, "_cluster_membership", _fake)
+
+
+def test_absorb_no_records_returns_empty(tmp_path):
+    kept, n = absorb_into_refseqs([], {"NC_1"}, 0.99, "nucleotide", tmp_path)
+    assert kept == []
+    assert n == 0
+
+
+def test_absorb_single_record_unchanged(tmp_path):
+    rec = _rec("NC_1")
+    kept, n = absorb_into_refseqs([rec], {"NC_1"}, 0.99, "nucleotide", tmp_path)
+    assert kept == [rec]
+    assert n == 0
+
+
+def test_absorb_no_refseqs_in_records_skips_clustering(tmp_path, monkeypatch):
+    # Should never call _cluster_membership when no RefSeqs are present
+    def _boom(*a, **k):
+        raise AssertionError("_cluster_membership should not be called")
+    monkeypatch.setattr(subsample, "_cluster_membership", _boom)
+    records = [_rec("X1"), _rec("X2"), _rec("X3")]
+    kept, n = absorb_into_refseqs(records, {"NC_1"}, 0.99, "nucleotide", tmp_path)
+    assert [r.id for r in kept] == ["X1", "X2", "X3"]
+    assert n == 0
+
+
+def test_absorb_drops_non_refseq_in_refseq_cluster(tmp_path, monkeypatch):
+    # NC_1 (RefSeq) clusters with X1, X2 (non-RefSeqs) → drop X1, X2
+    records = [_rec("NC_1"), _rec("X1"), _rec("X2"), _rec("Y1")]
+    _mock_membership(monkeypatch, [{"NC_1", "X1", "X2"}, {"Y1"}])
+    kept, n = absorb_into_refseqs(records, {"NC_1"}, 0.99, "nucleotide", tmp_path)
+    kept_ids = {r.id for r in kept}
+    assert kept_ids == {"NC_1", "Y1"}
+    assert n == 2
+
+
+def test_absorb_keeps_all_refseqs_in_one_cluster(tmp_path, monkeypatch):
+    # Two RefSeqs near-identical to each other → both kept
+    records = [_rec("NC_1"), _rec("NC_2"), _rec("X1")]
+    _mock_membership(monkeypatch, [{"NC_1", "NC_2", "X1"}])
+    kept, n = absorb_into_refseqs(
+        records, {"NC_1", "NC_2"}, 0.99, "nucleotide", tmp_path,
+    )
+    kept_ids = {r.id for r in kept}
+    assert kept_ids == {"NC_1", "NC_2"}
+    assert n == 1
+
+
+def test_absorb_passes_through_non_refseq_clusters(tmp_path, monkeypatch):
+    # Cluster {X1, X2} has no RefSeq → both kept; cluster {NC_1, Y1} → Y1 absorbed
+    records = [_rec("NC_1"), _rec("X1"), _rec("X2"), _rec("Y1")]
+    _mock_membership(monkeypatch, [{"NC_1", "Y1"}, {"X1", "X2"}])
+    kept, n = absorb_into_refseqs(records, {"NC_1"}, 0.99, "nucleotide", tmp_path)
+    kept_ids = {r.id for r in kept}
+    assert kept_ids == {"NC_1", "X1", "X2"}
+    assert n == 1
+
+
+def test_absorb_refseq_alone_in_cluster_unchanged(tmp_path, monkeypatch):
+    records = [_rec("NC_1"), _rec("X1"), _rec("X2")]
+    _mock_membership(monkeypatch, [{"NC_1"}, {"X1", "X2"}])
+    kept, n = absorb_into_refseqs(records, {"NC_1"}, 0.99, "nucleotide", tmp_path)
+    kept_ids = {r.id for r in kept}
+    assert kept_ids == {"NC_1", "X1", "X2"}
+    assert n == 0
