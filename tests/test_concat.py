@@ -7,9 +7,14 @@ import pytest
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
+from vfam_trees import concat as concat_module
 from vfam_trees.concat import (
     _safe_charset_name,
+    build_raw_concat,
+    cluster_and_merge_genomes,
     concatenate_aligned_markers,
+    identify_refseq_genomes,
+    is_refseq_genome,
     remove_per_marker_length_outliers,
     write_partition_file_nexus,
 )
@@ -269,3 +274,210 @@ class TestPartitionFile:
         assert _safe_charset_name("UL30") == "UL30"
         assert _safe_charset_name("") == "marker"
         assert _safe_charset_name("___") == "marker"
+
+
+# ---------------------------------------------------------------------------
+# is_refseq_genome / identify_refseq_genomes
+# ---------------------------------------------------------------------------
+
+class TestIsRefseqGenome:
+    def test_classic_refseq_prefixes(self):
+        assert is_refseq_genome("NC_001234.1") is True
+        assert is_refseq_genome("NZ_CP012345.1") is True
+        assert is_refseq_genome("AC_000003.2") is True
+
+    def test_bare_genbank_accession_rejected(self):
+        assert is_refseq_genome("MN908947.3") is False
+        assert is_refseq_genome("OP123456") is False
+
+    def test_lowercase_prefix_rejected(self):
+        assert is_refseq_genome("nc_001234.1") is False
+
+    def test_empty_or_short_input(self):
+        assert is_refseq_genome("") is False
+        assert is_refseq_genome("X") is False
+        assert is_refseq_genome(None) is False  # type: ignore[arg-type]
+
+
+class TestIdentifyRefseqGenomes:
+    def test_picks_only_refseq_accessions(self):
+        species_genomes = {
+            "Vaccinia virus": {
+                "NC_006998.1": {"DNA polymerase": SeqRecord(Seq("M" * 1000), id="YP_1")},
+                "MW123456.1":  {"DNA polymerase": SeqRecord(Seq("M" * 1000), id="YP_2")},
+            },
+            "Variola virus": {
+                "NC_001611.1": {"DNA polymerase": SeqRecord(Seq("M" * 1000), id="YP_3")},
+            },
+        }
+        refseqs = identify_refseq_genomes(species_genomes)
+        assert refseqs == {"NC_006998.1", "NC_001611.1"}
+
+    def test_empty_input(self):
+        assert identify_refseq_genomes({}) == set()
+
+
+# ---------------------------------------------------------------------------
+# build_raw_concat
+# ---------------------------------------------------------------------------
+
+class TestBuildRawConcat:
+    def test_full_coverage_concatenates_in_marker_order(self):
+        proteins = {
+            "polB": SeqRecord(Seq("AAAAA"), id="YP_1"),
+            "MCP":  SeqRecord(Seq("CCC"),  id="YP_2"),
+            "hel":  SeqRecord(Seq("HH"),   id="YP_3"),
+        }
+        rec = build_raw_concat(proteins, ["polB", "MCP", "hel"], "NC_001")
+        assert rec.id == "NC_001"
+        assert str(rec.seq) == "AAAAACCCHH"
+
+    def test_marker_order_respected(self):
+        proteins = {
+            "polB": SeqRecord(Seq("AAA"), id="YP_1"),
+            "MCP":  SeqRecord(Seq("CCC"), id="YP_2"),
+        }
+        rec = build_raw_concat(proteins, ["MCP", "polB"], "NC_001")
+        assert str(rec.seq) == "CCCAAA"
+
+    def test_missing_marker_omitted_no_padding(self):
+        # Unaligned concat skips missing markers entirely (no gap padding).
+        proteins = {"polB": SeqRecord(Seq("AAAAA"), id="YP_1")}  # MCP missing
+        rec = build_raw_concat(proteins, ["polB", "MCP"], "NC_001")
+        assert str(rec.seq) == "AAAAA"
+
+    def test_empty_genome_yields_empty_seq(self):
+        rec = build_raw_concat({}, ["polB", "MCP"], "NC_001")
+        assert str(rec.seq) == ""
+        assert rec.id == "NC_001"
+
+
+# ---------------------------------------------------------------------------
+# cluster_and_merge_genomes — uses monkeypatching to avoid MMseqs2 dependency
+# ---------------------------------------------------------------------------
+
+class TestClusterAndMergeGenomes:
+    def _genome_dict(self, species_count=2, per_species=3):
+        """Build a synthetic species_genomes dict with N species × M genomes."""
+        species_genomes = {}
+        for i in range(species_count):
+            sp = f"Species{i}"
+            genomes = {}
+            # First genome of each species is a RefSeq (NC_ prefix)
+            for j in range(per_species):
+                if j == 0:
+                    genome_id = f"NC_00{i}{j}.1"
+                else:
+                    genome_id = f"MN0000{i}{j}.1"
+                genomes[genome_id] = {
+                    "polB": SeqRecord(Seq("M" * 100), id=f"YP_{i}{j}_polB"),
+                    "MCP":  SeqRecord(Seq("M" * 50),  id=f"YP_{i}{j}_MCP"),
+                }
+            species_genomes[sp] = genomes
+        return species_genomes
+
+    def _patch_no_op_clustering(self, monkeypatch):
+        """Make absorb_into_refseqs and adaptive_cluster_species pass-throughs.
+
+        Skips the actual MMseqs2 invocation so the test runs offline and
+        deterministically.
+        """
+        def fake_absorb(records, refseq_ids, threshold, seq_type, work_dir, clustering_tool="mmseqs2"):
+            return records, 0
+        def fake_cluster(records, max_reps, threshold_min, threshold_max,
+                         seq_type, work_dir, clustering_tool="mmseqs2"):
+            # Just return up to max_reps records
+            return records[:max_reps], threshold_max
+        monkeypatch.setattr(concat_module, "absorb_into_refseqs", fake_absorb)
+        monkeypatch.setattr(concat_module, "adaptive_cluster_species", fake_cluster)
+
+    def test_basic_end_to_end(self, tmp_path, monkeypatch):
+        self._patch_no_op_clustering(monkeypatch)
+        species_genomes = self._genome_dict(species_count=2, per_species=3)
+        selected, stats = cluster_and_merge_genomes(
+            species_genomes=species_genomes,
+            marker_order=["polB", "MCP"],
+            target_n=4,
+            max_reps_per_species=3,
+            threshold_min=0.7,
+            threshold_max=0.99,
+            work_dir=tmp_path,
+        )
+        # All 6 genomes are unique reps; merge picks 4 → 2 per species.
+        assert len(selected) == 4
+        assert stats["n_species_with_reps"] == 2
+        assert stats["n_total_reps"] == 6
+        assert stats["n_selected"] == 4
+
+    def test_refseqs_prioritized_when_oversubscribed(self, tmp_path, monkeypatch):
+        self._patch_no_op_clustering(monkeypatch)
+        # 4 species × 3 genomes = 12 reps; target = 4 → must pick 1 per species,
+        # and within each species the RefSeq (NC_ prefix) must win the slot.
+        species_genomes = self._genome_dict(species_count=4, per_species=3)
+        selected, stats = cluster_and_merge_genomes(
+            species_genomes=species_genomes,
+            marker_order=["polB", "MCP"],
+            target_n=4,
+            max_reps_per_species=3,
+            threshold_min=0.7,
+            threshold_max=0.99,
+            work_dir=tmp_path,
+        )
+        assert len(selected) == 4
+        # Every selected genome should be a RefSeq (NC_ prefix)
+        assert all(s.startswith("NC_") for s in selected), selected
+
+    def test_target_caps_total_selection(self, tmp_path, monkeypatch):
+        self._patch_no_op_clustering(monkeypatch)
+        species_genomes = self._genome_dict(species_count=3, per_species=5)  # 15 reps
+        selected, stats = cluster_and_merge_genomes(
+            species_genomes=species_genomes,
+            marker_order=["polB", "MCP"],
+            target_n=6,
+            max_reps_per_species=5,
+            threshold_min=0.7,
+            threshold_max=0.99,
+            work_dir=tmp_path,
+        )
+        assert len(selected) == 6
+
+    def test_empty_species_skipped(self, tmp_path, monkeypatch):
+        self._patch_no_op_clustering(monkeypatch)
+        species_genomes = self._genome_dict(species_count=2, per_species=2)
+        species_genomes["EmptySpecies"] = {}
+        selected, stats = cluster_and_merge_genomes(
+            species_genomes=species_genomes,
+            marker_order=["polB", "MCP"],
+            target_n=4,
+            max_reps_per_species=2,
+            threshold_min=0.7,
+            threshold_max=0.99,
+            work_dir=tmp_path,
+        )
+        # Only the 2 non-empty species contribute.
+        assert stats["n_species_with_reps"] == 2
+
+    def test_absorption_disabled_skips_call(self, tmp_path, monkeypatch):
+        # When absorption is disabled, absorb_into_refseqs must NOT be invoked.
+        called = []
+        def boom_absorb(*a, **k):
+            called.append(True)
+            return a[0], 0
+        def fake_cluster(records, max_reps, threshold_min, threshold_max,
+                         seq_type, work_dir, clustering_tool="mmseqs2"):
+            return records[:max_reps], threshold_max
+        monkeypatch.setattr(concat_module, "absorb_into_refseqs", boom_absorb)
+        monkeypatch.setattr(concat_module, "adaptive_cluster_species", fake_cluster)
+
+        species_genomes = self._genome_dict(species_count=1, per_species=2)
+        cluster_and_merge_genomes(
+            species_genomes=species_genomes,
+            marker_order=["polB", "MCP"],
+            target_n=2,
+            max_reps_per_species=2,
+            threshold_min=0.7,
+            threshold_max=0.99,
+            work_dir=tmp_path,
+            refseq_absorption_enabled=False,
+        )
+        assert called == []

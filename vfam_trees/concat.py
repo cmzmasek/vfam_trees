@@ -18,8 +18,193 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from .logger import get_logger
+from .subsample import (
+    absorb_into_refseqs,
+    adaptive_cluster_species,
+    proportional_merge,
+)
 
 log = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Genome identity helpers — RefSeq detection + raw concat building
+# CONCAT_DESIGN.md §5.7–§5.9
+# ---------------------------------------------------------------------------
+
+def is_refseq_genome(genome_id: str) -> bool:
+    """Return True iff *genome_id* is a RefSeq nucleotide accession.
+
+    Matches the NCBI RefSeq prefix convention: two uppercase letters
+    followed by an underscore (NC_, NZ_, AC_, NW_, NT_, etc.).  Bare
+    GenBank accessions (e.g. MN908947.3) return False.
+    """
+    acc = (genome_id or "").strip()
+    return (
+        len(acc) >= 3
+        and acc[2] == "_"
+        and acc[0:2].isalpha()
+        and acc[0:2].isupper()
+    )
+
+
+def identify_refseq_genomes(
+    species_genomes: dict[str, dict[str, dict[str, SeqRecord]]],
+) -> set[str]:
+    """Return the set of source-nuc accessions that are RefSeq genomes.
+
+    Args:
+        species_genomes: {species_name: {genome_id: {marker_name: SeqRecord}}}
+
+    Returns:
+        set of genome_ids (source-nuc accessions) matching the RefSeq prefix.
+    """
+    return {
+        genome_id
+        for genomes in species_genomes.values()
+        for genome_id in genomes
+        if is_refseq_genome(genome_id)
+    }
+
+
+def build_raw_concat(
+    genome_proteins: dict[str, SeqRecord],
+    marker_order: list[str],
+    genome_id: str,
+) -> SeqRecord:
+    """Build an unaligned head-to-tail concatenation of one genome's markers.
+
+    Used as the input sequence for genome-level clustering and RefSeq
+    absorption.  Missing markers contribute nothing (no gap padding) — the
+    concat is shorter for genomes with low coverage, which is fine for
+    similarity-based clustering and biases absorption toward genomes that
+    actually share most markers.
+
+    Args:
+        genome_proteins: {marker_name: SeqRecord} for one genome.
+        marker_order:    canonical marker order from the family's spec.
+        genome_id:       source-nuc accession; used as the SeqRecord id.
+
+    Returns:
+        SeqRecord with id=genome_id and seq = the head-to-tail concat.
+    """
+    parts: list[str] = []
+    for marker in marker_order:
+        rec = genome_proteins.get(marker)
+        if rec is not None:
+            parts.append(str(rec.seq))
+    return SeqRecord(Seq("".join(parts)), id=genome_id, description="")
+
+
+# ---------------------------------------------------------------------------
+# Genome-level clustering + RefSeq absorption + cross-species merge
+# CONCAT_DESIGN.md §5.7–§5.9.  Operates on the per-genome raw concat
+# sequences built by ``build_raw_concat`` — MMseqs2 clustering only needs
+# similarity, not alignment, so we work on unaligned head-to-tail concats
+# to avoid running family-scale MAFFT before clustering reduces the set.
+# ---------------------------------------------------------------------------
+
+def cluster_and_merge_genomes(
+    species_genomes: dict[str, dict[str, dict[str, SeqRecord]]],
+    marker_order: list[str],
+    target_n: int,
+    max_reps_per_species: int,
+    threshold_min: float,
+    threshold_max: float,
+    work_dir: Path,
+    clustering_tool: str = "mmseqs2",
+    refseq_absorption_enabled: bool = True,
+    refseq_absorption_threshold: float = 0.99,
+    seed: int = 42,
+) -> tuple[set[str], dict]:
+    """Reduce per-genome diversity to the target tree size.
+
+    For each species:
+      1. Build raw (unaligned, head-to-tail) concat per genome.
+      2. RefSeq absorption on those concats — drops non-RefSeq genomes
+         that are ≥ threshold identical to a RefSeq concat in the same
+         species.
+      3. Adaptive clustering on the absorbed concats; each species
+         contributes at most ``max_reps_per_species`` representative
+         genomes.
+
+    Then a single cross-species proportional merge picks ``target_n``
+    genomes overall, with RefSeq genomes preferred at the per-species
+    quota stage.
+
+    Returns:
+        (selected_genome_ids, stats):
+            selected_genome_ids — set of source-nuc accessions chosen.
+            stats — diagnostic counters (n_refseq_absorbed, n_clusters_per_species,
+                    cluster_thresholds_used).
+    """
+    refseq_ids = identify_refseq_genomes(species_genomes)
+
+    species_reps: dict[str, list[SeqRecord]] = {}
+    n_refseq_absorbed_total = 0
+    thresholds_used: list[float] = []
+
+    for sp_name, genomes in species_genomes.items():
+        if not genomes:
+            continue
+        sp_safe = sp_name.replace(" ", "_").replace("/", "_")
+        sp_work = work_dir / sp_safe
+
+        # 1. Build raw concat per genome for this species
+        concats = [
+            build_raw_concat(genome_proteins, marker_order, genome_id)
+            for genome_id, genome_proteins in genomes.items()
+        ]
+
+        # 2. RefSeq absorption (concat-level)
+        if refseq_absorption_enabled and concats:
+            concats, n_absorbed = absorb_into_refseqs(
+                records=concats,
+                refseq_ids=refseq_ids,
+                threshold=refseq_absorption_threshold,
+                seq_type="protein",
+                work_dir=sp_work / "absorb",
+                clustering_tool=clustering_tool,
+            )
+            if n_absorbed:
+                log.info(
+                    "RefSeq absorption (concat): %s — %d non-RefSeq genome(s) "
+                    "absorbed at identity ≥ %.2f",
+                    sp_name, n_absorbed, refseq_absorption_threshold,
+                )
+            n_refseq_absorbed_total += n_absorbed
+
+        if not concats:
+            continue
+
+        # 3. Adaptive clustering — concats are protein-like sequences
+        reps, threshold_used = adaptive_cluster_species(
+            records=concats,
+            max_reps=max_reps_per_species,
+            threshold_min=threshold_min,
+            threshold_max=threshold_max,
+            seq_type="protein",
+            work_dir=sp_work / "cluster",
+            clustering_tool=clustering_tool,
+        )
+        species_reps[sp_name] = reps
+        thresholds_used.append(threshold_used)
+
+    # Cross-species proportional merge — RefSeq priority preserved
+    merged = proportional_merge(
+        species_reps, target_n, seed=seed, priority_ids=refseq_ids,
+    )
+    selected = {rec.id for rec in merged}
+
+    stats = {
+        "n_refseq_absorbed":     n_refseq_absorbed_total,
+        "n_species_with_reps":   len(species_reps),
+        "n_total_reps":          sum(len(reps) for reps in species_reps.values()),
+        "n_selected":            len(selected),
+        "cluster_thresh_min":    round(min(thresholds_used), 4) if thresholds_used else "",
+        "cluster_thresh_max":    round(max(thresholds_used), 4) if thresholds_used else "",
+    }
+    return selected, stats
 
 
 # ---------------------------------------------------------------------------
