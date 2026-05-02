@@ -126,6 +126,274 @@ DNA_FAMILIES: dict[str, dict] = {
 }
 
 
+# Curated multi-marker presets for large DNA virus families where single-
+# protein analysis carries insufficient phylogenetic signal.  Each marker
+# spec: name (canonical), aliases (GenBank annotation variants), optional
+# aliases_<subfamily> (subfamily-specific aliases applied at fetch time
+# based on species lineage), optional length_range [min_aa, max_aa],
+# optional locus_tag_hint (regex used as paralog tiebreaker).  When a
+# family appears here it takes precedence over DNA_FAMILIES in auto-
+# generated configs; the user can revert to single-protein mode by
+# editing the per-family yaml (set sequence.region back to a single
+# protein name and remove the concatenation block).
+#
+# Curation status: first pass from the literature; ASFV gene IDs are
+# flagged TBV (verify against NC_001659).  See CONCAT_DESIGN.md §4 for
+# references.
+CONCATENATION_FAMILIES: dict[str, dict] = {
+
+    # ---- Poxviridae (9 markers) -----------------------------------------
+    # Refs: Upton et al. 2003; Hughes & Friedman 2005; ICTV Poxviridae.
+    # Single 9-marker set covers both Chordopoxvirinae and Entomopoxvirinae;
+    # subfamily-aware aliases handle entomopox annotation drift.
+    "Poxviridae": {
+        "sequence": {"region": "concatenated", "type": "protein"},
+        "concatenation": {
+            "proteins": [
+                {
+                    "name": "DNA polymerase",
+                    "aliases": ["DNA-directed DNA polymerase", "DNA pol"],
+                    "aliases_Entomopoxvirinae": ["DNA polymerase B"],
+                    "locus_tag_hint": r"E9L|polB",
+                },
+                {
+                    "name": "DNA-directed RNA polymerase 147 kDa subunit",
+                    "aliases": ["RPO147", "RNA polymerase subunit RPO147"],
+                    "locus_tag_hint": r"A24R|RPO147|rpo147",
+                },
+                {
+                    "name": "DNA-directed RNA polymerase 132 kDa subunit",
+                    "aliases": ["RPO132", "RNA polymerase subunit RPO132"],
+                    "locus_tag_hint": r"J6R|RPO132|rpo132",
+                },
+                {
+                    "name": "mRNA capping enzyme large subunit",
+                    "aliases": ["capping enzyme large subunit"],
+                    "locus_tag_hint": r"D1R",
+                },
+                {
+                    "name": "DNA helicase",
+                    "aliases": ["NPH-II", "transcript release factor"],
+                    "locus_tag_hint": r"A18R|NPH2",
+                },
+                {
+                    "name": "poly(A) polymerase catalytic subunit",
+                    "aliases": ["poly(A) polymerase large subunit"],
+                    "locus_tag_hint": r"E1L|VP55",
+                },
+                {
+                    "name": "late transcription factor VLTF-3",
+                    "aliases": ["VLTF3", "late transcription factor 3"],
+                    "locus_tag_hint": r"A1L|VLTF",
+                },
+                {
+                    "name": "uracil-DNA glycosylase",
+                    "aliases": ["UNG"],
+                    "locus_tag_hint": r"D4R|UNG",
+                },
+                {
+                    "name": "single-stranded DNA-binding protein",
+                    "aliases": ["ssDNA binding protein"],
+                    "locus_tag_hint": r"I3L|ssb",
+                },
+            ],
+        },
+    },
+
+    # ---- Herpesviridae and other herpesvirus families (7 markers) -------
+    # Refs: McGeoch et al. 1995, 2006; Davison 2010.  Single family-wide
+    # set; deliberately excludes glycoprotein B (UL27) — too divergent
+    # across alpha/beta/gamma subfamilies for clean alignment.
+    "Orthoherpesviridae": {
+        "sequence": {"region": "concatenated", "type": "protein"},
+        "concatenation": {
+            "proteins": [
+                {
+                    "name": "DNA polymerase catalytic subunit",
+                    "aliases": ["DNA-directed DNA polymerase catalytic subunit", "DNA polymerase"],
+                    "locus_tag_hint": r"UL30",
+                },
+                {
+                    "name": "helicase-primase helicase subunit",
+                    "aliases": ["DNA helicase"],
+                    "locus_tag_hint": r"UL5\b",
+                },
+                {
+                    "name": "helicase-primase primase subunit",
+                    "aliases": ["primase"],
+                    "locus_tag_hint": r"UL52",
+                },
+                {
+                    "name": "major capsid protein",
+                    "aliases": ["MCP", "capsid protein VP5"],
+                    "locus_tag_hint": r"UL19|VP5\b",
+                },
+                {
+                    "name": "capsid triplex subunit 2",
+                    "aliases": ["VP23", "minor capsid protein"],
+                    "locus_tag_hint": r"UL18|VP23",
+                },
+                {
+                    "name": "DNA packaging terminase subunit 1",
+                    "aliases": ["terminase ATPase subunit", "DNA packaging terminase ATPase"],
+                    "locus_tag_hint": r"UL15",
+                },
+                {
+                    "name": "single-stranded DNA-binding protein",
+                    "aliases": ["major DNA-binding protein", "ICP8"],
+                    "locus_tag_hint": r"UL29|ICP8",
+                },
+            ],
+        },
+    },
+
+    # ---- Asfarviridae (6 markers — ASFV gene IDs TBV against NC_001659) -
+    # Refs: Yutin & Koonin 2012; Iyer et al. 2006.
+    "Asfarviridae": {
+        "sequence": {"region": "concatenated", "type": "protein"},
+        "concatenation": {
+            "proteins": [
+                {
+                    "name": "DNA polymerase B",
+                    "aliases": ["DNA polymerase", "DNA-directed DNA polymerase"],
+                    "locus_tag_hint": r"polB",
+                },
+                {
+                    "name": "major capsid protein p72",
+                    "aliases": ["major capsid protein", "p72", "capsid protein p72"],
+                    "locus_tag_hint": r"B646L|p72",
+                },
+                {
+                    "name": "packaging ATPase",
+                    "aliases": ["A32-like ATPase", "FtsK-like ATPase"],
+                    "locus_tag_hint": r"A32",
+                },
+                {
+                    "name": "primase-helicase",
+                    "aliases": ["D5-like helicase", "superfamily 3 helicase"],
+                    "locus_tag_hint": r"D5|A18",
+                },
+                {
+                    "name": "late transcription factor 3",
+                    "aliases": ["VLTF-3"],
+                    "locus_tag_hint": r"VLTF",
+                },
+                {
+                    "name": "DNA-directed RNA polymerase subunit",
+                    "aliases": ["RPB1-like subunit", "RNA polymerase largest subunit"],
+                    "locus_tag_hint": r"NP1450L|RPB1",
+                },
+            ],
+        },
+    },
+
+    # ---- Iridoviridae (7 markers) ---------------------------------------
+    # Refs: Tidona & Darai 1997; Eaton et al. 2007; ICTV Iridoviridae.
+    "Iridoviridae": {
+        "sequence": {"region": "concatenated", "type": "protein"},
+        "concatenation": {
+            "proteins": [
+                {"name": "major capsid protein", "aliases": ["MCP"], "locus_tag_hint": r"MCP"},
+                {"name": "DNA polymerase", "aliases": ["DNA-directed DNA polymerase"], "locus_tag_hint": r"polB"},
+                {"name": "packaging ATPase", "aliases": ["A32-like ATPase"], "locus_tag_hint": r"A32"},
+                {"name": "ribonuclease III", "aliases": ["RNase III"], "locus_tag_hint": r"rnc"},
+                {"name": "DNA helicase", "aliases": ["D5-like helicase"], "locus_tag_hint": r"D5|helicase"},
+                {"name": "late transcription factor 3", "aliases": ["VLTF-3"], "locus_tag_hint": r"VLTF"},
+                {"name": "immediate-early protein ICP-46", "aliases": ["ICP46"], "locus_tag_hint": r"ICP46"},
+            ],
+        },
+    },
+
+    # ---- Baculoviridae and relatives (7 markers) ------------------------
+    # Refs: Herniman et al. 2003; Jehle et al. 2006; Miele et al. 2011.
+    # Same set used for Nudiviridae and Ascoviridae (closely related insect
+    # dsDNA virus families that share the baculoviral core gene set).
+    "Baculoviridae": {
+        "sequence": {"region": "concatenated", "type": "protein"},
+        "concatenation": {
+            "proteins": [
+                {"name": "DNA polymerase", "aliases": ["DNA-directed DNA polymerase"], "locus_tag_hint": r"polB"},
+                {"name": "late expression factor 8", "aliases": ["LEF-8", "RNA polymerase subunit LEF-8"], "locus_tag_hint": r"lef-?8"},
+                {"name": "late expression factor 9", "aliases": ["LEF-9", "RNA polymerase subunit LEF-9"], "locus_tag_hint": r"lef-?9"},
+                {"name": "DNA helicase P143", "aliases": ["p143", "helicase"], "locus_tag_hint": r"p143|helicase"},
+                {"name": "per os infectivity factor 1", "aliases": ["PIF-1", "P74"], "locus_tag_hint": r"pif-?1|p74"},
+                {"name": "per os infectivity factor 2", "aliases": ["PIF-2"], "locus_tag_hint": r"pif-?2"},
+                {"name": "major capsid protein", "aliases": ["VP39", "capsid protein VP39"], "locus_tag_hint": r"vp39|MCP"},
+            ],
+        },
+    },
+
+    # ---- NCLDV hallmark fallback (8 markers) ----------------------------
+    # Refs: Yutin & Koonin 2009, 2012; Koonin & Yutin 2019.  Applied to
+    # large-DNA-virus families lacking a curated set (Mimi/Phyco/Marseille/
+    # Pitho/Pandora/Medusaviridae and any future NCLDV-like family).
+}
+
+# Nudiviridae and Ascoviridae use the Baculoviridae 7-gene set verbatim
+# (same insect-dsDNA core, see Miele et al. 2011 §4.5 in CONCAT_DESIGN.md).
+CONCATENATION_FAMILIES["Nudiviridae"] = copy.deepcopy(CONCATENATION_FAMILIES["Baculoviridae"])
+CONCATENATION_FAMILIES["Ascoviridae"] = copy.deepcopy(CONCATENATION_FAMILIES["Baculoviridae"])
+
+# Herpesviridae (legacy ICTV family name) and Alloherpesviridae +
+# Malacoherpesviridae use the same 7-gene herpesvirus core.
+CONCATENATION_FAMILIES["Herpesviridae"]       = copy.deepcopy(CONCATENATION_FAMILIES["Orthoherpesviridae"])
+CONCATENATION_FAMILIES["Alloherpesviridae"]   = copy.deepcopy(CONCATENATION_FAMILIES["Orthoherpesviridae"])
+CONCATENATION_FAMILIES["Malacoherpesviridae"] = copy.deepcopy(CONCATENATION_FAMILIES["Orthoherpesviridae"])
+
+# NCLDV-hallmark 8-marker fallback set.  Applied to large-DNA-virus
+# families that lack a curated per-family set in CONCATENATION_FAMILIES
+# but should still default to concatenated mode.
+_NCLDV_HALLMARK_PROTEINS = [
+    {
+        "name": "DNA polymerase",
+        "aliases": ["DNA-directed DNA polymerase", "polymerase B", "DNA polymerase B"],
+        "locus_tag_hint": r"polB",
+    },
+    {
+        "name": "major capsid protein",
+        "aliases": ["MCP", "capsid protein"],
+        "locus_tag_hint": r"MCP",
+    },
+    {
+        "name": "packaging ATPase",
+        "aliases": ["A32-like ATPase", "FtsK-like ATPase"],
+        "locus_tag_hint": r"A32",
+    },
+    {
+        "name": "primase-helicase",
+        "aliases": ["D5-like helicase", "superfamily 3 helicase"],
+        "locus_tag_hint": r"D5",
+    },
+    {
+        "name": "late transcription factor 3",
+        "aliases": ["VLTF-3"],
+        "locus_tag_hint": r"VLTF",
+    },
+    {
+        "name": "mRNA capping enzyme",
+        "aliases": ["capping enzyme large subunit"],
+    },
+    {
+        "name": "DNA-directed RNA polymerase subunit alpha",
+        "aliases": ["RNA polymerase RPB1", "largest subunit RNA polymerase"],
+        "locus_tag_hint": r"RPB1",
+    },
+    {
+        "name": "DNA-directed RNA polymerase subunit beta",
+        "aliases": ["RNA polymerase RPB2", "second-largest subunit RNA polymerase"],
+        "locus_tag_hint": r"RPB2",
+    },
+]
+for _ncldv_family in (
+    "Mimiviridae", "Phycodnaviridae", "Marseilleviridae",
+    "Pithoviridae", "Pandoraviridae", "Medusaviridae",
+):
+    CONCATENATION_FAMILIES[_ncldv_family] = {
+        "sequence": {"region": "concatenated", "type": "protein"},
+        "concatenation": {"proteins": copy.deepcopy(_NCLDV_HALLMARK_PROTEINS)},
+    }
+
+
 DEFAULT_FAMILY_CONFIG: dict = {
     "download": {
         "max_per_species": 300,
@@ -191,6 +459,29 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "options_aa": "-B 1000",
         "model_nuc": "GTR+G",
         "model_aa": "TEST",
+    },
+    "concatenation": {
+        # Multi-marker protein concatenation mode (sequence.region must be
+        # set to "concatenated" for this block to take effect — see
+        # CONCATENATION_FAMILIES for curated per-family marker presets,
+        # and CONCAT_DESIGN.md for the full specification).
+        #
+        # proteins:        list of marker specs.  Each entry: {name (str),
+        #                  aliases (list[str]), aliases_<subfamily> (optional
+        #                  list[str]), length_range (optional [min_aa,
+        #                  max_aa]), locus_tag_hint (optional regex)}.
+        # min_fraction:    genomes with fewer than ceil(min_fraction × N)
+        #                  markers are dropped.  Default 0.7.
+        # partition_tree_100: partitioned IQ-TREE on tree_100 (one model per
+        #                  marker).  Default true.
+        # partition_tree_500: FastTree does not support partitioned analysis;
+        #                  tree_500 in concat mode is single-model on the
+        #                  full concatenation.  Default false (cannot be
+        #                  enabled in MVP).
+        "proteins": [],
+        "min_fraction": 0.7,
+        "partition_tree_100": True,
+        "partition_tree_500": False,
     },
     "refseq_absorption": {
         # Pre-clustering step: drops non-RefSeq sequences that are near-
@@ -265,6 +556,64 @@ def _validate_global_config(cfg: dict) -> None:
 _KNOWN_FAMILY_CONFIG_KEYS = frozenset(DEFAULT_FAMILY_CONFIG.keys())
 
 
+def _validate_concatenation_block(cfg: dict, family: str) -> None:
+    """Validate the concatenation block when sequence.region == "concatenated".
+
+    Raises ValueError on malformed configuration so the run aborts before
+    anything is fetched or aligned.  Validates only what's structurally
+    required for downstream phases — semantic checks (e.g. "is this a real
+    GenBank protein name") are left to the fetcher.
+    """
+    region = (cfg.get("sequence") or {}).get("region", "")
+    if region != "concatenated":
+        return
+
+    block = cfg.get("concatenation") or {}
+    proteins = block.get("proteins")
+    if not isinstance(proteins, list) or len(proteins) == 0:
+        raise ValueError(
+            f"{family}: sequence.region is 'concatenated' but "
+            "concatenation.proteins is empty.  Provide at least one marker "
+            "spec (name + aliases) or revert sequence.region to a single "
+            "protein name."
+        )
+
+    for i, protein in enumerate(proteins):
+        if not isinstance(protein, dict):
+            raise ValueError(
+                f"{family}: concatenation.proteins[{i}] is not a dict — "
+                "each marker must be a mapping with at least 'name' and "
+                "'aliases' keys."
+            )
+        name = protein.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                f"{family}: concatenation.proteins[{i}].name is missing or "
+                "empty — every marker spec needs a canonical protein name."
+            )
+        aliases = protein.get("aliases", [])
+        if not isinstance(aliases, list) or not all(isinstance(a, str) for a in aliases):
+            raise ValueError(
+                f"{family}: concatenation.proteins[{i}].aliases must be a "
+                "list of strings (use [] if no aliases)."
+            )
+        lr = protein.get("length_range")
+        if lr is not None:
+            if not (isinstance(lr, list) and len(lr) == 2 and
+                    all(isinstance(x, (int, float)) for x in lr) and lr[0] < lr[1]):
+                raise ValueError(
+                    f"{family}: concatenation.proteins[{i}].length_range must "
+                    "be a [min, max] list with min < max."
+                )
+
+    min_fraction = block.get("min_fraction", 0.7)
+    if not (isinstance(min_fraction, (int, float)) and 0 < min_fraction <= 1):
+        raise ValueError(
+            f"{family}: concatenation.min_fraction must be a number in (0, 1] "
+            f"(got {min_fraction!r})."
+        )
+
+
 def _warn_unknown_keys(cfg: dict, path: Path) -> None:
     """Warn about top-level keys in a user config that are not recognised."""
     unknown = [
@@ -293,9 +642,11 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
         _warn_unknown_keys(file_cfg, config_path)
         _warn_smart_default_conflicts(family, file_cfg, config_path)
         cfg = _merge_with_defaults(file_cfg, global_cfg, family)
+        _validate_concatenation_block(cfg, family)
         return cfg, False
     else:
         cfg = _generate_default_family_config(family, global_cfg)
+        _validate_concatenation_block(cfg, family)
         _write_family_config(cfg, config_path)
         log.warning(
             "No config found for %s — auto-generated default at %s. "
@@ -307,18 +658,33 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
 
 
 def _warn_smart_default_conflicts(family: str, file_cfg: dict, config_path: Path) -> None:
-    """Warn when a config file overrides a DNA_FAMILIES or SEGMENTED_FAMILIES setting."""
-    dna_overrides = DNA_FAMILIES.get(family)
-    if dna_overrides:
-        expected_region = (dna_overrides.get("sequence") or {}).get("region")
-        file_region = (file_cfg.get("sequence") or {}).get("region")
-        if expected_region and file_region and file_region != expected_region:
-            log.warning(
-                "%s: %s sets sequence.region=%r, overriding the recommended "
-                "value %r for this family. If this is unintentional (e.g. a "
-                "stale auto-generated file), delete %s and re-run to regenerate.",
-                family, config_path.name, file_region, expected_region, config_path.name,
+    """Warn when a config file overrides a CONCATENATION_FAMILIES, DNA_FAMILIES,
+    or SEGMENTED_FAMILIES setting.  Concat presets are the most specific so
+    they're checked first; the DNA_FAMILIES check is suppressed when the
+    family is in CONCATENATION_FAMILIES (the user is intentionally reverting
+    concat → single-protein, which is documented behaviour, not a mistake).
+    """
+    file_region = (file_cfg.get("sequence") or {}).get("region")
+
+    if family in CONCATENATION_FAMILIES:
+        if file_region and file_region != "concatenated":
+            log.info(
+                "%s: %s sets sequence.region=%r, reverting from the recommended "
+                "concatenated multi-marker mode to single-protein analysis. "
+                "If this is unintentional, delete %s and re-run to regenerate.",
+                family, config_path.name, file_region, config_path.name,
             )
+    else:
+        dna_overrides = DNA_FAMILIES.get(family)
+        if dna_overrides:
+            expected_region = (dna_overrides.get("sequence") or {}).get("region")
+            if expected_region and file_region and file_region != expected_region:
+                log.warning(
+                    "%s: %s sets sequence.region=%r, overriding the recommended "
+                    "value %r for this family. If this is unintentional (e.g. a "
+                    "stale auto-generated file), delete %s and re-run to regenerate.",
+                    family, config_path.name, file_region, expected_region, config_path.name,
+                )
 
     expected_segment = SEGMENTED_FAMILIES.get(family)
     if expected_segment:
@@ -346,11 +712,24 @@ def _merge_with_defaults(cfg: dict, global_cfg: dict, family: str = "") -> dict:
 
 
 def _apply_smart_defaults(family: str, cfg: dict) -> None:
-    """Apply DNA_FAMILIES and SEGMENTED_FAMILIES as smart defaults in-place."""
+    """Apply CONCATENATION_FAMILIES, DNA_FAMILIES, and SEGMENTED_FAMILIES as
+    smart defaults in-place.  Precedence: concat > single-protein DNA
+    overrides; segmentation is orthogonal and always applied when relevant.
+    """
     segment = SEGMENTED_FAMILIES.get(family)
     if segment and not cfg["sequence"].get("segment"):
         cfg["sequence"]["segment"] = segment
         log.info("Auto-configured segment '%s' for segmented family %s", segment, family)
+
+    concat_overrides = CONCATENATION_FAMILIES.get(family)
+    if concat_overrides:
+        _deep_update(cfg, concat_overrides)
+        n_markers = len(cfg.get("concatenation", {}).get("proteins", []))
+        log.info(
+            "Auto-configured concatenation mode for %s: %d markers",
+            family, n_markers,
+        )
+        return  # concat presets supersede DNA_FAMILIES single-protein defaults
 
     dna_overrides = DNA_FAMILIES.get(family)
     if dna_overrides:
