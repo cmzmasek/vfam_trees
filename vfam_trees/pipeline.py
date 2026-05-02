@@ -1139,36 +1139,11 @@ def _run_target(
     return target_stats, support_vals, bio_tree
 
 
-def _branch_length_stats(treefile: Path) -> dict:
-    """Return median, MAD, and per-leaf branch-length map for a Newick file."""
-    from Bio import Phylo as _Phylo
-    try:
-        bio_tree = next(iter(_Phylo.parse(str(treefile), "newick")))
-    except Exception:
-        return {"median": 0.0, "mad": 0.0, "bl_map": {}}
-    bl_map = {
-        c.name: c.branch_length for c in bio_tree.get_terminals()
-        if c.name and c.branch_length is not None
-    }
-    bls = [b for b in bl_map.values() if b > 0]
-    if len(bls) < 3:
-        return {"median": 0.0, "mad": 0.0, "bl_map": bl_map}
-    median_bl = statistics.median(bls)
-    mad = statistics.median([abs(x - median_bl) for x in bls])
-    return {"median": median_bl, "mad": mad, "bl_map": bl_map}
-
-
-def _find_branch_length_outliers(treefile: Path, factor: float) -> set[str]:
-    """Return leaf IDs whose branch length exceeds median + factor × MAD."""
-    stats = _branch_length_stats(treefile)
-    median_bl, mad = stats["median"], stats["mad"]
-    if median_bl == 0 or mad == 0:
-        return set()
-    threshold = median_bl + factor * mad
-    return {
-        name for name, bl in stats["bl_map"].items()
-        if bl is not None and bl > threshold
-    }
+# Branch-outlier helpers live in vfam_trees.branch_outliers and are shared
+# with pipeline_concat; the leading-underscore aliases here keep existing
+# call sites in this module unchanged.
+from .branch_outliers import branch_length_stats as _branch_length_stats
+from .branch_outliers import find_branch_length_outliers as _find_branch_length_outliers
 
 
 

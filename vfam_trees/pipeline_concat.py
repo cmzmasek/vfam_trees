@@ -25,6 +25,7 @@ from typing import Any
 from Bio import Phylo, SeqIO
 from Bio.SeqRecord import SeqRecord
 
+from .branch_outliers import branch_length_stats, find_branch_length_outliers
 from .colors import assign_leaf_colors
 from .concat import (
     align_and_trim_markers,
@@ -326,72 +327,157 @@ def _run_target_concat(
         hi_mult=hi_mult, lo_mult=lo_mult,
     )
 
-    # 4. Per-marker MSA + trim, then concatenate
+    # 4-5. Iterative align + concat + tree, with branch-length outlier
+    # removal between iterations (CONCAT_DESIGN.md §5.7 + READMEsec'8).
+    # RefSeq genomes are exempt; the loop stops when no removable outliers
+    # remain or max_iterations is reached.
     msa_cfg  = family_cfg[f"msa_{label}"]
     trim_cfg = family_cfg.get("msa_trim", {}) or {}
-    msa_options = msa_cfg.get("options_aa", "--auto")  # concat is always protein
+    msa_options  = msa_cfg.get("options_aa", "--auto")  # concat is always protein
     trim_enabled = bool(trim_cfg.get("enabled", True))
     trim_options = trim_cfg.get("options", "-automated1")
 
-    aligned_per_marker = align_and_trim_markers(
-        genomes=selected_genomes,
-        marker_order=marker_order,
-        work_dir=target_work / "msa",
-        msa_tool=msa_cfg.get("tool", "mafft"),
-        msa_options=msa_options,
-        trim_enabled=trim_enabled,
-        trim_options=trim_options,
-        threads=threads,
-    )
+    outlier_cfg          = family_cfg.get("outlier_removal", {}) or {}
+    do_outlier_removal   = bool(outlier_cfg.get("enabled", True))
+    outlier_factor       = float(outlier_cfg.get("factor", 20.0))
+    outlier_max_iter     = int(outlier_cfg.get("max_iterations", 3))
+    outlier_min_genomes  = int(outlier_cfg.get("min_seqs", 40))
 
-    concat, partition_map = concatenate_aligned_markers(
-        aligned_per_marker=aligned_per_marker,
-        genome_ids=list(selected_genomes.keys()),
-        marker_order=marker_order,
-    )
-    if not concat:
-        log.warning("tree_%s: concat alignment is empty — skipping.", label)
-        return {"leaves": 0, "skipped_reason": "empty concat"}
-
-    concat_fasta = target_work / f"concat_{label}.fasta"
-    with open(concat_fasta, "w") as f:
-        SeqIO.write(list(concat.values()), f, "fasta")
-
-    partition_path = target_work / f"partitions_{label}.nex"
-    write_partition_file_nexus(partition_map, partition_path)
-
-    # 5. Tree inference
     tree_output_dir = target_work / "tree"
     tree_output_dir.mkdir(parents=True, exist_ok=True)
-    tree_cfg = family_cfg[f"tree_{label}"]
+    tree_cfg  = family_cfg[f"tree_{label}"]
     tree_tool = tree_cfg.get("tool", "fasttree" if label == "500" else "iqtree")
+    concat_fasta   = target_work / f"concat_{label}.fasta"
+    partition_path = target_work / f"partitions_{label}.nex"
 
-    if label == "100" and tree_tool.lower().startswith("iqtree"):
-        # Partitioned IQ-TREE: -p partitions.nex -m MFP, plus existing AA support flag
-        partition_options = (
-            f"-p {partition_path} "
-            + (tree_cfg.get("options_aa", "-B 1000") or "")
-        ).strip()
-        tree_options = partition_options
-        model_aa = "MFP"
-        model_nuc = "MFP"
-    else:
-        tree_options = tree_cfg.get("options", "") or ""
-        model_aa = tree_cfg.get("model_aa", "LG+G")
-        model_nuc = tree_cfg.get("model_nuc", "GTR+G")
+    n_outliers_removed = 0
+    treefile: Path | None = None
+    concat: dict[str, SeqRecord] = {}
+    partition_map: dict[str, tuple[int, int]] = {}
 
-    treefile = run_tree(
-        alignment_fasta=concat_fasta,
-        output_dir=tree_output_dir,
-        prefix=f"tree_{label}",
-        tool=tree_tool,
-        seq_type="protein",
-        model_nuc=model_nuc,
-        model_aa=model_aa,
-        options=tree_options,
-        threads=threads,
-    )
-    validate_newick(treefile)
+    for iteration in range(outlier_max_iter + 1):
+        aligned_per_marker = align_and_trim_markers(
+            genomes=selected_genomes,
+            marker_order=marker_order,
+            work_dir=target_work / "msa",
+            msa_tool=msa_cfg.get("tool", "mafft"),
+            msa_options=msa_options,
+            trim_enabled=trim_enabled,
+            trim_options=trim_options,
+            threads=threads,
+        )
+
+        concat, partition_map = concatenate_aligned_markers(
+            aligned_per_marker=aligned_per_marker,
+            genome_ids=list(selected_genomes.keys()),
+            marker_order=marker_order,
+        )
+        if not concat:
+            log.warning("tree_%s: concat alignment is empty — skipping.", label)
+            return {"leaves": 0, "skipped_reason": "empty concat"}
+
+        with open(concat_fasta, "w") as f:
+            SeqIO.write(list(concat.values()), f, "fasta")
+        write_partition_file_nexus(partition_map, partition_path)
+
+        if label == "100" and tree_tool.lower().startswith("iqtree"):
+            # Partitioned IQ-TREE: -p partitions.nex -m MFP + AA support flag
+            tree_options = (
+                f"-p {partition_path} "
+                + (tree_cfg.get("options_aa", "-B 1000") or "")
+            ).strip()
+            model_aa = model_nuc = "MFP"
+        else:
+            tree_options = tree_cfg.get("options", "") or ""
+            model_aa  = tree_cfg.get("model_aa", "LG+G")
+            model_nuc = tree_cfg.get("model_nuc", "GTR+G")
+
+        treefile = run_tree(
+            alignment_fasta=concat_fasta,
+            output_dir=tree_output_dir,
+            prefix=f"tree_{label}",
+            tool=tree_tool,
+            seq_type="protein",
+            model_nuc=model_nuc,
+            model_aa=model_aa,
+            options=tree_options,
+            threads=threads,
+        )
+        validate_newick(treefile)
+
+        # Branch-length outlier removal — RefSeq genomes are exempt.
+        if not do_outlier_removal or iteration >= outlier_max_iter:
+            break
+        if len(selected_genomes) <= outlier_min_genomes:
+            log.info(
+                "tree_%s iteration %d: %d genomes ≤ min_seqs %d — stopping.",
+                label, iteration, len(selected_genomes), outlier_min_genomes,
+            )
+            break
+
+        all_outliers = find_branch_length_outliers(treefile, outlier_factor)
+        if not all_outliers:
+            log.info("tree_%s iteration %d: no branch-length outliers — stopping.",
+                     label, iteration)
+            break
+
+        protected_outliers = all_outliers & refseq_ids
+        removable_outliers = all_outliers - refseq_ids
+
+        bl_stats = branch_length_stats(treefile)
+        median_bl = bl_stats["median"]
+        mad       = bl_stats["mad"]
+        threshold = median_bl + outlier_factor * mad
+        bl_map    = bl_stats["bl_map"]
+        log.info(
+            "tree_%s iteration %d: branch-length stats — median=%.5f, MAD=%.5f, "
+            "threshold (median + %.1f×MAD)=%.5f",
+            label, iteration, median_bl, mad, outlier_factor, threshold,
+        )
+        for oid in protected_outliers:
+            bl = bl_map.get(oid, float("nan"))
+            mads_above = (bl - median_bl) / mad if mad else float("nan")
+            log.warning(
+                "tree_%s iteration %d: RefSeq genome %r looks like a "
+                "branch-length outlier — branch length %.5f (%.1f× MAD above "
+                "median, threshold=%.5f) — KEEPING (RefSeq protected)",
+                label, iteration, oid, bl, mads_above, threshold,
+            )
+
+        if not removable_outliers:
+            log.info(
+                "tree_%s iteration %d: only protected (RefSeq) outliers remain — stopping.",
+                label, iteration,
+            )
+            break
+
+        remaining = len(selected_genomes) - len(removable_outliers)
+        if remaining < outlier_min_genomes:
+            log.info(
+                "tree_%s iteration %d: removing %d outlier(s) would leave %d genomes "
+                "(min_seqs=%d) — stopping.",
+                label, iteration, len(removable_outliers), remaining, outlier_min_genomes,
+            )
+            break
+
+        for oid in removable_outliers:
+            bl = bl_map.get(oid, float("nan"))
+            mads_above = (bl - median_bl) / mad if mad else float("nan")
+            log.info(
+                "tree_%s iteration %d: removing outlier genome %r — branch length "
+                "%.5f (%.1f× MAD above median, threshold=%.5f)",
+                label, iteration, oid, bl, mads_above, threshold,
+            )
+        for oid in removable_outliers:
+            selected_genomes.pop(oid, None)
+        n_outliers_removed += len(removable_outliers)
+
+        if len(selected_genomes) < 4:
+            log.warning(
+                "tree_%s: only %d genome(s) left after branch-length outlier removal — stopping.",
+                label, len(selected_genomes),
+            )
+            break
 
     # 6. Build display names (one per genome) — used for visualization / PhyloXML.
     #    Format: <species_safe>|<accession>.  Spaces in species names are
@@ -520,7 +606,7 @@ def _run_target_concat(
         "tree_model":           model_aa if label == "100" else (tree_cfg.get("model_aa") or ""),
         "tree_options":         tree_options,
         "support_type":         "SH_aLRT" if label == "100" else "SH_like",
-        "n_outliers_removed":   0,                                # Phase 8
+        "n_outliers_removed":   n_outliers_removed,
         "n_length_outliers_long":  lo_stats["n_long_dropped"],
         "n_length_outliers_short": lo_stats["n_short_dropped"],
         "n_refseq_absorbed":    sel_stats["n_refseq_absorbed"],
