@@ -247,6 +247,30 @@ def run_family(
         log.info("Discovered %d species in %s", len(species_list), family)
 
     # -------------------------------------------------------------------------
+    # Concatenated multi-marker mode dispatch (CONCAT_DESIGN.md).
+    # Routes to the dedicated pipeline_concat runner; existing single-protein
+    # / whole-genome path continues unchanged below.
+    # -------------------------------------------------------------------------
+    if region == "concatenated":
+        from .pipeline_concat import run_family_concat
+        return run_family_concat(
+            family=family,
+            family_cfg=family_cfg,
+            family_taxid=family_taxid,
+            family_lineage=family_lineage,
+            family_annotation=family_annotation,
+            family_dir=family_dir,
+            work_dir=work_dir,
+            output_dir=output_dir,
+            species_list=species_list,
+            threads=threads,
+            summary_path=summary_path,
+            status_path=status_path,
+            mark_done=_mark_done,
+            mark_skipped=_mark_skipped,
+        )
+
+    # -------------------------------------------------------------------------
     # Step 2: Per-species download + quality filter
     #         Results cached per species to avoid re-downloading
     # -------------------------------------------------------------------------
