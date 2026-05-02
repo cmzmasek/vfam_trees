@@ -88,6 +88,17 @@ COLUMNS = [
     "tree100_n_genera",
     "tree500_n_subfamilies",
     "tree100_n_subfamilies",
+    # concat-mode columns (CONCAT_DESIGN.md §6.1).  Empty in single-protein /
+    # whole-genome runs.
+    "tree500_concat_n_markers_target",
+    "tree100_concat_n_markers_target",
+    "tree500_concat_n_markers_used",
+    "tree100_concat_n_markers_used",
+    "tree500_concat_length",
+    "tree100_concat_length",
+    "tree500_marker_coverage",
+    "tree100_marker_coverage",
+    "tree100_marker_models",
 ]
 
 
@@ -345,5 +356,12 @@ def build_summary_row(
         row[f"{prefix}_n_refseq_absorbed"]       = stats.get("n_refseq_absorbed", "")
         row[f"{prefix}_n_genera"]                = stats.get("n_genera", "")
         row[f"{prefix}_n_subfamilies"]           = stats.get("n_subfamilies", "")
+        # Concat-mode columns (empty in single-protein / whole-genome runs)
+        row[f"{prefix}_concat_n_markers_target"] = stats.get("concat_n_markers_target", "")
+        row[f"{prefix}_concat_n_markers_used"]   = stats.get("concat_n_markers_used", "")
+        row[f"{prefix}_concat_length"]           = stats.get("concat_length", "")
+        row[f"{prefix}_marker_coverage"]         = stats.get("marker_coverage", "")
+        if prefix == "tree100":
+            row[f"{prefix}_marker_models"]       = stats.get("marker_models", "")
 
     return row

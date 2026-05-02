@@ -6,6 +6,7 @@ from vfam_trees.tree import (
     _fasttree_nuc_flags,
     is_model_finder_spec,
     parse_iqtree_best_model,
+    parse_iqtree_partition_models,
     validate_newick,
 )
 
@@ -150,3 +151,76 @@ class TestValidateNewick:
         good = tmp_path / "good.nwk"
         good.write_text("(A:0.1,B:0.2,(C:0.3,D:0.4):0.05);")
         validate_newick(good)  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# parse_iqtree_partition_models — reads sibling .best_scheme.nex
+# ---------------------------------------------------------------------------
+
+class TestParseIqtreePartitionModels:
+    """Verifies the NEXUS charpartition parser used to extract per-partition
+    models from IQ-TREE's -p output."""
+
+    def _write_nex(self, tmp_path, name, content):
+        path = tmp_path / f"{name}.iqtree"
+        # Sibling that the parser actually reads
+        nex = tmp_path / f"{name}.best_scheme.nex"
+        nex.write_text(content)
+        return path
+
+    def test_basic_two_partitions(self, tmp_path):
+        log = self._write_nex(tmp_path, "tree_100",
+            """#nexus
+begin sets;
+charset DNA_polymerase = 1-1234;
+charset MCP = 1235-2456;
+charpartition mymodels = LG+I+G4: DNA_polymerase, WAG+G4: MCP;
+end;
+""")
+        out = parse_iqtree_partition_models(log)
+        assert out == {"DNA_polymerase": "LG+I+G4", "MCP": "WAG+G4"}
+
+    def test_extra_whitespace_handled(self, tmp_path):
+        log = self._write_nex(tmp_path, "tree_100",
+            """#nexus
+begin sets;
+charset polB = 1-100;
+charpartition  scheme   =    LG+I+G4 :  polB ,  WAG+G4 : MCP ;
+end;
+""")
+        out = parse_iqtree_partition_models(log)
+        assert out == {"polB": "LG+I+G4", "MCP": "WAG+G4"}
+
+    def test_missing_nex_returns_empty(self, tmp_path):
+        log = tmp_path / "tree_100.iqtree"
+        log.write_text("just an iqtree report")
+        # No best_scheme.nex sibling
+        assert parse_iqtree_partition_models(log) == {}
+
+    def test_no_charpartition_returns_empty(self, tmp_path):
+        log = self._write_nex(tmp_path, "tree_100",
+            """#nexus
+begin sets;
+charset polB = 1-100;
+end;
+""")
+        assert parse_iqtree_partition_models(log) == {}
+
+    def test_multi_marker_partitioned_run(self, tmp_path):
+        log = self._write_nex(tmp_path, "tree_100",
+            """#nexus
+begin sets;
+charset polB = 1-1000;
+charset MCP = 1001-1500;
+charset hel = 1501-2000;
+charset ATPase = 2001-2300;
+charpartition mymodels = LG+I+G4: polB, WAG+G4: MCP, JTT+G: hel, LG+F+I+G: ATPase;
+end;
+""")
+        out = parse_iqtree_partition_models(log)
+        assert out == {
+            "polB": "LG+I+G4",
+            "MCP": "WAG+G4",
+            "hel": "JTT+G",
+            "ATPase": "LG+F+I+G",
+        }

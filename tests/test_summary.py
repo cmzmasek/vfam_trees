@@ -317,3 +317,83 @@ def test_write_summary_row_creates_header_then_appends(tmp_path):
     assert len(rows) == 2
     assert rows[0]["family"] == "A"
     assert rows[1]["family"] == "B"
+
+
+# ---------------------------------------------------------------------------
+# Concat-mode columns (CONCAT_DESIGN.md §6.1)
+# ---------------------------------------------------------------------------
+
+class TestConcatSummaryColumns:
+    def test_concat_columns_in_schema(self):
+        from vfam_trees.summary import COLUMNS
+        for col in (
+            "tree500_concat_n_markers_target",
+            "tree100_concat_n_markers_target",
+            "tree500_concat_n_markers_used",
+            "tree100_concat_n_markers_used",
+            "tree500_concat_length",
+            "tree100_concat_length",
+            "tree500_marker_coverage",
+            "tree100_marker_coverage",
+            "tree100_marker_models",
+        ):
+            assert col in COLUMNS, f"missing column: {col}"
+
+    def test_concat_stats_populated_into_row(self):
+        tree_stats = {
+            "500": {
+                "leaves":                   123,
+                "concat_n_markers_target":  9,
+                "concat_n_markers_used":    9,
+                "concat_length":            4321,
+                "marker_coverage":          "polB:120,MCP:118,hel:115",
+            },
+            "100": {
+                "leaves":                   45,
+                "concat_n_markers_target":  9,
+                "concat_n_markers_used":    8,
+                "concat_length":            3987,
+                "marker_coverage":          "polB:45,MCP:44,hel:40",
+                "marker_models":            "polB:LG+I+G4,MCP:WAG+G4,hel:JTT+G",
+            },
+        }
+        row = build_summary_row(
+            family="Poxviridae", family_taxid=10240, family_lineage=[],
+            seq_type="protein", region="concatenated", segment=None,
+            n_species_discovered=20, n_species_with_seqs=18,
+            seqlen_stats={}, tree_stats=tree_stats,
+        )
+        assert row["tree500_concat_n_markers_target"] == 9
+        assert row["tree500_concat_n_markers_used"] == 9
+        assert row["tree500_concat_length"] == 4321
+        assert row["tree500_marker_coverage"] == "polB:120,MCP:118,hel:115"
+        assert row["tree100_concat_n_markers_used"] == 8
+        assert row["tree100_marker_models"] == "polB:LG+I+G4,MCP:WAG+G4,hel:JTT+G"
+
+    def test_marker_models_only_on_tree100(self):
+        # marker_models is partitioned-IQ-TREE specific (tree_100); never on tree_500.
+        tree_stats = {
+            "500": {"marker_models": "should_not_appear"},
+            "100": {"marker_models": "polB:LG+G"},
+        }
+        row = build_summary_row(
+            family="X", family_taxid=1, family_lineage=[],
+            seq_type="protein", region="concatenated", segment=None,
+            n_species_discovered=0, n_species_with_seqs=0,
+            seqlen_stats={}, tree_stats=tree_stats,
+        )
+        # Only tree100_marker_models is populated; tree500 has no models column
+        assert row["tree100_marker_models"] == "polB:LG+G"
+        assert "tree500_marker_models" not in row
+
+    def test_concat_columns_empty_for_single_protein(self):
+        # When tree_stats has no concat fields, columns are empty strings
+        tree_stats = {"500": {"leaves": 100}, "100": {"leaves": 30}}
+        row = build_summary_row(
+            family="X", family_taxid=1, family_lineage=[],
+            seq_type="protein", region="DNA polymerase", segment=None,
+            n_species_discovered=10, n_species_with_seqs=8,
+            seqlen_stats={}, tree_stats=tree_stats,
+        )
+        assert row["tree500_concat_length"] == ""
+        assert row["tree100_marker_models"] == ""

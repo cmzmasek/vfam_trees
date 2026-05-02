@@ -16,6 +16,7 @@ unchanged.
 """
 from __future__ import annotations
 
+import copy
 import csv
 import json
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Any
 from Bio import Phylo, SeqIO
 from Bio.SeqRecord import SeqRecord
 
+from .colors import assign_leaf_colors
 from .concat import (
     align_and_trim_markers,
     build_raw_concat,
@@ -36,6 +38,7 @@ from .concat import (
 from .fetch import fetch_species_genomes, fetch_taxonomy_lineages
 from .logger import get_logger
 from .phyloxml_writer import write_phyloxml
+from .report import save_tree_icon, save_tree_images
 from .summary import (
     build_status_row,
     build_summary_row,
@@ -46,7 +49,7 @@ from .summary import (
     write_summary_row,
 )
 from .taxonomy import annotate_tree
-from .tree import run_tree, validate_newick
+from .tree import parse_iqtree_partition_models, run_tree, validate_newick
 
 log = get_logger(__name__)
 
@@ -166,6 +169,55 @@ def run_family_concat(
             family_cfg=family_cfg,
         )
         tree_stats[label] = target_stats
+
+    # -------------------------------------------------------------------------
+    # Tree images + icon (PDF + PNG, rooted + unrooted) for concat trees.
+    # Mirrors the single-protein output set so downstream consumers
+    # (overview_tree_100.png, per-family report) work transparently.
+    # -------------------------------------------------------------------------
+    bio_trees = {
+        label: stats["_display_tree"]
+        for label, stats in tree_stats.items()
+        if stats.get("_display_tree") is not None
+    }
+    tree_leaf_colors = {
+        label: {
+            "display_to_color":    stats.get("_display_to_color", {}),
+            "genus_to_color":      stats.get("_genus_to_color", {}),
+            "subfamily_to_genera": stats.get("_subfamily_to_genera", {}),
+        }
+        for label, stats in tree_stats.items()
+    }
+    visualization_cfg = (family_cfg.get("visualization") or {})
+    branch_linewidth = float(visualization_cfg.get("branch_linewidth", 0.5))
+    icon_cfg = (family_cfg.get("icon") or {})
+    icon_size         = int(icon_cfg.get("size", 256))
+    icon_bg_color     = icon_cfg.get("bg_color", "#EAF3F2")
+    icon_branch_color = icon_cfg.get("branch_color", "#000000")
+
+    if bio_trees:
+        save_tree_images(
+            family=family,
+            output_dir=family_dir,
+            bio_trees=bio_trees,
+            tree_leaf_colors=tree_leaf_colors,
+            branch_linewidth=branch_linewidth,
+        )
+        # Persist tree_100 leaf colors so generate_overview_png can read them back
+        colors_100 = tree_leaf_colors.get("100", {}).get("display_to_color")
+        if colors_100:
+            with open(family_dir / f"{family}_colors_100.json", "w") as f:
+                json.dump(colors_100, f)
+        save_tree_icon(
+            family=family,
+            output_dir=family_dir,
+            bio_trees=bio_trees,
+            icon_size=icon_size,
+            icon_bg_color=icon_bg_color,
+            icon_branch_color=icon_branch_color,
+            branch_linewidth=branch_linewidth,
+            leaf_colors=tree_leaf_colors.get("100", {}).get("display_to_color"),
+        )
 
     # -------------------------------------------------------------------------
     # Summary + status
@@ -341,9 +393,16 @@ def _run_target_concat(
     )
     validate_newick(treefile)
 
-    # 6. Annotate tree with LCA labels and root.
-    #    id_map = {genome_id: genome_id} (concat leaves have human-readable IDs already).
-    id_map = {gid: gid for gid in selected_genomes}
+    # 6. Build display names (one per genome) — used for visualization / PhyloXML.
+    #    Format: <species_safe>|<accession>.  Spaces in species names are
+    #    replaced with underscores so Newick display labels stay parseable.
+    short_to_display: dict[str, str] = {}
+    for gid in selected_genomes:
+        sp_name = genome_to_species.get(gid, "")
+        sp_safe = sp_name.replace(" ", "_") if sp_name else "unknown"
+        short_to_display[gid] = f"{sp_safe}|{gid}"
+
+    # 7. Annotate tree with LCA labels and root.
     metadata_for_annotation = [
         {
             "short_id":       gid,
@@ -352,28 +411,64 @@ def _run_target_concat(
         }
         for gid in selected_genomes
     ]
-    annotated_nwk = family_dir / f"{family}_tree_{label}.nwk"
+    annotated_nwk = target_work / f"tree_{label}_annotated.nwk"
     bio_tree = annotate_tree(
         newick_path=treefile,
-        id_map=id_map,
+        id_map=short_to_display,
         metadata=metadata_for_annotation,
         output_nwk=annotated_nwk,
         lca_min_rank=family_cfg.get("taxonomy", {}).get("lca_min_rank", "none"),
     )
 
-    # 7. PhyloXML
+    # 8. Final Newick: deep copy bio_tree, rename terminals to display names,
+    #    drop internal labels (matches single-protein convention).
+    output_nwk = family_dir / f"{family}_tree_{label}.nwk"
+    if bio_tree is not None:
+        nwk_tree = copy.deepcopy(bio_tree)
+        for clade in nwk_tree.find_clades():
+            if clade.is_terminal():
+                clade.name = short_to_display.get(clade.name, clade.name)
+            else:
+                clade.name = None
+        Phylo.write(nwk_tree, str(output_nwk), "newick")
+        log.info("Newick written to %s", output_nwk)
+
+    # 9. Genus/subfamily leaf coloring — sel_records is a list of SeqRecord
+    #    proxies (only .id is consulted), short_id_to_meta carries lineage.
+    sel_records = list(concat.values())
+    short_id_to_meta = {
+        gid: {"lineage_ranked": species_lineages.get(genome_to_species.get(gid, ""), [])}
+        for gid in selected_genomes
+    }
+    genus_inference = family_cfg.get("coloring", {}).get("genus_inference", "none")
+    display_to_color, _short_to_color, genus_to_color, subfamily_to_genera = assign_leaf_colors(
+        sel_records, short_id_to_meta, short_to_display, genus_inference=genus_inference,
+    )
+    n_subfamilies = sum(1 for k in subfamily_to_genera if k != "(unclassified)")
+
+    # 10. Display-name copy of bio_tree for image rendering.  Stored on the
+    #     target_stats so the post-loop run_family_concat can call
+    #     save_tree_images / save_tree_icon.
+    display_tree = None
+    if bio_tree is not None:
+        display_tree = copy.deepcopy(bio_tree)
+        for clade in display_tree.find_clades():
+            if clade.is_terminal():
+                clade.name = short_to_display.get(clade.name, clade.name)
+
+    # 11. PhyloXML — display names on leaves, source-nuc accession in <accession>.
     xml_path = family_dir / f"{family}_tree_{label}.xml"
     leaf_metadata = {
-        gid: {"species": genome_to_species.get(gid, ""),
-              "accession": gid,
-              "seq_name": gid,
+        gid: {"species":        genome_to_species.get(gid, ""),
+              "accession":      gid,
+              "seq_name":       short_to_display.get(gid, gid),
               "lineage_ranked": species_lineages.get(genome_to_species.get(gid, ""), [])}
         for gid in selected_genomes
     }
     write_phyloxml(
         newick_path=annotated_nwk,
         output_xml=xml_path,
-        id_map=id_map,
+        id_map=short_to_display,
         leaf_metadata=leaf_metadata,
         family=family,
         tree=bio_tree,
@@ -382,9 +477,35 @@ def _run_target_concat(
                          f"(target_{label}, partitioned)" if label == "100"
                          else f"concatenated {len(marker_order)}-marker phylogeny (target_{label})",
         confidence_type="SH_aLRT" if label == "100" else "SH_like",
+        leaf_colors=display_to_color,
     )
 
-    # 8. Stats
+    # 8. Concat-specific stats: marker coverage, concat length, partition models
+    n_markers_target = len(marker_set)
+    n_markers_used   = sum(
+        1 for m in marker_order
+        if any(m in selected_genomes[gid] for gid in selected_genomes)
+    )
+    concat_length = len(next(iter(concat.values())).seq) if concat else 0
+    marker_coverage = ",".join(
+        f"{m}:{sum(1 for gid in selected_genomes if m in selected_genomes[gid])}"
+        for m in marker_order
+    )
+    marker_models_str = ""
+    if label == "100" and tree_tool.lower().startswith("iqtree"):
+        # Read per-partition models from <prefix>.best_scheme.nex
+        models_by_charset = parse_iqtree_partition_models(
+            tree_output_dir / f"tree_{label}.iqtree"
+        )
+        if models_by_charset:
+            # Map sanitized charset names back to canonical marker names
+            from .concat import _safe_charset_name
+            sanitized_to_marker = {_safe_charset_name(m): m for m in marker_order}
+            marker_models_str = ",".join(
+                f"{sanitized_to_marker.get(cs, cs)}:{model}"
+                for cs, model in models_by_charset.items()
+            )
+
     target_stats: dict[str, Any] = {
         "leaves":               len(selected_genomes),
         "cluster_thresh_min":   sel_stats["cluster_thresh_min"],
@@ -399,12 +520,22 @@ def _run_target_concat(
         "tree_model":           model_aa if label == "100" else (tree_cfg.get("model_aa") or ""),
         "tree_options":         tree_options,
         "support_type":         "SH_aLRT" if label == "100" else "SH_like",
-        "n_outliers_removed":   0,                                # Phase 7
+        "n_outliers_removed":   0,                                # Phase 8
         "n_length_outliers_long":  lo_stats["n_long_dropped"],
         "n_length_outliers_short": lo_stats["n_short_dropped"],
         "n_refseq_absorbed":    sel_stats["n_refseq_absorbed"],
-        "n_genera":             "",
-        "n_subfamilies":        "",
+        "concat_n_markers_target": n_markers_target,
+        "concat_n_markers_used":   n_markers_used,
+        "concat_length":           concat_length,
+        "marker_coverage":         marker_coverage,
+        "marker_models":           marker_models_str,
+        "n_genera":                len(genus_to_color),
+        "n_subfamilies":           n_subfamilies,
+        # Carried for post-loop image rendering (not written into summary.tsv)
+        "_display_tree":           display_tree,
+        "_display_to_color":       display_to_color,
+        "_genus_to_color":         genus_to_color,
+        "_subfamily_to_genera":    subfamily_to_genera,
     }
     if bio_tree is not None:
         target_stats["support"] = compute_support_stats(bio_tree)

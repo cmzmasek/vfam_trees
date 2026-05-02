@@ -66,6 +66,42 @@ def is_model_finder_spec(model: str) -> bool:
     return root in {"TEST", "TESTONLY", "TESTNEW", "TESTNEWONLY", "MF", "MFP"}
 
 
+def parse_iqtree_partition_models(log_path: Path) -> dict[str, str]:
+    """Return ``{charset_name: model}`` for a partitioned IQ-TREE run.
+
+    Reads the sibling ``<prefix>.best_scheme.nex`` written by IQ-TREE 2
+    when run with ``-p partitions.nex``.  Format:
+
+    ::
+
+        charpartition mymodels = LG+I+G4: DNApolymerase, WAG+G4: MCP;
+
+    Returns an empty dict when the file is missing, unparseable, or the
+    run wasn't partitioned (no charpartition line).
+    """
+    nex_path = log_path.with_suffix(".best_scheme.nex")
+    if not nex_path.exists():
+        return {}
+    try:
+        text = nex_path.read_text()
+    except Exception:
+        return {}
+    m = re.search(r"charpartition\s+\w+\s*=\s*(.+?);", text, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return {}
+    body = m.group(1)
+    result: dict[str, str] = {}
+    for entry in body.split(","):
+        if ":" not in entry:
+            continue
+        model_part, charset_part = entry.split(":", 1)
+        model = model_part.strip()
+        charset = charset_part.strip()
+        if model and charset:
+            result[charset] = model
+    return result
+
+
 def validate_newick(nwk_path: Path) -> None:
     """Validate that a Newick file is non-empty and parseable.
 
