@@ -39,7 +39,7 @@ from .concat import (
 from .fetch import fetch_species_genomes, fetch_taxonomy_lineages
 from .logger import get_logger
 from .phyloxml_writer import write_phyloxml
-from .report import save_tree_icon, save_tree_images
+from .report import generate_family_report, save_tree_icon, save_tree_images
 from .summary import (
     build_status_row,
     build_summary_row,
@@ -223,27 +223,62 @@ def run_family_concat(
     # -------------------------------------------------------------------------
     # Summary + status
     # -------------------------------------------------------------------------
-    seqlen_stats = compute_seqlen_stats([
+    seq_lengths_all = [
         len(rec.seq)
         for genomes in species_genomes.values()
         for proteins in genomes.values()
         for rec in proteins.values()
-    ])
+    ]
+    seqlen_stats = compute_seqlen_stats(seq_lengths_all)
+    summary_row_for_report = build_summary_row(
+        family=family,
+        family_taxid=family_taxid,
+        family_lineage=family_lineage,
+        seq_type=seq_type,
+        region=region,
+        segment=segment,
+        n_species_discovered=len(species_list),
+        n_species_with_seqs=len(species_genomes),
+        seqlen_stats=seqlen_stats,
+        tree_stats=tree_stats,
+        family_annotation=family_annotation,
+    )
     if summary_path is not None:
-        row = build_summary_row(
+        write_summary_row(summary_path, summary_row_for_report)
+    # ---- Per-family report PDF (parity with single-protein, plus a
+    #      per-marker coverage page — CONCAT_DESIGN.md §6.3) ----
+    tree_seq_lengths = {
+        label: stats.get("_seq_lengths", [])
+        for label, stats in tree_stats.items()
+        if stats.get("_seq_lengths")
+    }
+    tree_support = {
+        label: stats.get("_support_vals", [])
+        for label, stats in tree_stats.items()
+        if stats.get("_support_vals")
+    }
+    marker_coverage_for_report = {
+        label: stats.get("_marker_coverage_map", {})
+        for label, stats in tree_stats.items()
+        if stats.get("_marker_coverage_map")
+    }
+    try:
+        generate_family_report(
             family=family,
-            family_taxid=family_taxid,
-            family_lineage=family_lineage,
-            seq_type=seq_type,
-            region=region,
-            segment=segment,
-            n_species_discovered=len(species_list),
-            n_species_with_seqs=len(species_genomes),
-            seqlen_stats=seqlen_stats,
-            tree_stats=tree_stats,
-            family_annotation=family_annotation,
+            output_pdf=family_dir / f"{family}_report.pdf",
+            summary_row=summary_row_for_report,
+            seq_lengths=seq_lengths_all,
+            tree_seq_lengths=tree_seq_lengths,
+            tree_support=tree_support,
+            bio_trees=bio_trees,
+            tree_leaf_colors=tree_leaf_colors,
+            branch_linewidth=branch_linewidth,
+            marker_coverage=marker_coverage_for_report,
+            concat_min_fraction=float(family_cfg["concatenation"].get("min_fraction", 0.7)),
         )
-        write_summary_row(summary_path, row)
+    except Exception as e:
+        log.warning("Per-family report PDF skipped: %s", e)
+
     if status_path is not None:
         write_status_row(status_path, build_status_row(
             family=family,
@@ -625,7 +660,19 @@ def _run_target_concat(
     }
     if bio_tree is not None:
         target_stats["support"] = compute_support_stats(bio_tree)
+        target_stats["_support_vals"] = [
+            c.confidence for c in bio_tree.find_clades()
+            if not c.is_terminal() and c.confidence is not None
+        ]
     target_stats["msa"] = compute_msa_stats(concat_fasta)
+    # Structured per-marker coverage map for the report PDF (underscored so
+    # DictWriter(extrasaction='ignore') won't try to write it into summary.tsv).
+    target_stats["_marker_coverage_map"] = {
+        m: sum(1 for gid in selected_genomes if m in selected_genomes[gid])
+        for m in marker_order
+    }
+    # Concat length per genome — used for the per-tree length histogram.
+    target_stats["_seq_lengths"] = [len(rec.seq) for rec in concat.values()]
     return target_stats
 
 

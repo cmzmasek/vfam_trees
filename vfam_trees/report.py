@@ -22,6 +22,8 @@ def generate_family_report(
     bio_trees: dict[str, Any] | None = None,
     tree_leaf_colors: dict[str, dict] | None = None,
     branch_linewidth: float = 0.5,
+    marker_coverage: dict[str, dict[str, int]] | None = None,
+    concat_min_fraction: float | None = None,
 ) -> None:
     """Generate a per-family PDF report with stats and plots.
 
@@ -222,6 +224,50 @@ def generate_family_report(
                 branch_linewidth=branch_linewidth,
             )
             if fig is not None:
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close(fig)
+
+        # ------------------------------------------------------------------
+        # Page 5 (concat mode only): Per-marker coverage bar chart
+        # CONCAT_DESIGN.md §6.3.  One panel per tree (500 / 100), bars =
+        # number of genomes carrying that marker; horizontal dashed line at
+        # concat_min_fraction × n_genomes is the dropping threshold.
+        # ------------------------------------------------------------------
+        if marker_coverage:
+            panels = [
+                (lbl, marker_coverage.get(lbl, {}))
+                for lbl in ("500", "100")
+                if marker_coverage.get(lbl)
+            ]
+            if panels:
+                fig, axes = plt.subplots(
+                    len(panels), 1, figsize=(11, 3.5 * len(panels)), squeeze=False,
+                )
+                colors = {"500": "#3c6e9f", "100": "#e07b39"}
+                for i, (label, per_marker) in enumerate(panels):
+                    ax = axes[i][0]
+                    markers = list(per_marker.keys())
+                    counts  = [per_marker[m] for m in markers]
+                    n_genomes = max(counts) if counts else 0
+                    ax.bar(range(len(markers)), counts, color=colors[label],
+                           edgecolor="white", linewidth=0.5)
+                    if concat_min_fraction is not None and n_genomes > 0:
+                        threshold = concat_min_fraction * n_genomes
+                        ax.axhline(threshold, linestyle="--", color="#a04040",
+                                   linewidth=1.0,
+                                   label=f"min_fraction × n_genomes = {threshold:.1f}")
+                        ax.legend(loc="lower right", fontsize=8, frameon=False)
+                    ax.set_xticks(range(len(markers)))
+                    ax.set_xticklabels(markers, rotation=30, ha="right", fontsize=8)
+                    ax.set_ylabel("Genomes with marker", fontsize=10)
+                    ax.set_title(
+                        f"{family} tree_{label} — per-marker coverage "
+                        f"(max n={n_genomes})",
+                        fontsize=11,
+                    )
+                    ax.spines["top"].set_visible(False)
+                    ax.spines["right"].set_visible(False)
+                fig.tight_layout()
                 pdf.savefig(fig, bbox_inches="tight")
                 plt.close(fig)
 
