@@ -1,14 +1,19 @@
 """Fetch sequences and metadata from NCBI — per-species download."""
 from __future__ import annotations
 
+import io
+import re
 import time
 from pathlib import Path
-from typing import Generator
+from typing import Generator, TYPE_CHECKING
 
 from Bio import Entrez, SeqIO
 from Bio.SeqRecord import SeqRecord
 
 from .logger import get_logger
+
+if TYPE_CHECKING:
+    from .markers import MarkerIdentifier
 
 log = get_logger(__name__)
 
@@ -375,3 +380,278 @@ def _first(lst: list) -> str:
 def _batched(items: list, size: int) -> Generator[list, None, None]:
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+# ---------------------------------------------------------------------------
+# Concatenation mode — multi-marker per-genome fetching
+# CONCAT_DESIGN.md §5.2 (fetcher contract).  Phase 3 of the rollout.
+# ---------------------------------------------------------------------------
+
+def _safe_marker_filename(marker_name: str) -> str:
+    """Produce a filename-safe slug from a marker name."""
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", marker_name).strip("_")
+    return slug or "marker"
+
+
+_ACCESSION_RE = re.compile(r"\b([A-Z]{1,3}_?\d+(?:\.\d+)?)\b")
+
+
+def _source_nuc_accession(record: SeqRecord) -> str:
+    """Return the source nucleotide accession for a protein record, or ''.
+
+    Tries the CDS/Protein feature ``coded_by`` qualifier first (the most
+    reliable source under modern GenBank conventions), then falls back to
+    parsing the ``db_source`` annotation.
+    """
+    for feat in getattr(record, "features", None) or []:
+        qualifiers = getattr(feat, "qualifiers", None) or {}
+        for cb in qualifiers.get("coded_by", []):
+            m = _ACCESSION_RE.search(cb)
+            if m:
+                return m.group(1)
+    annotations = getattr(record, "annotations", None) or {}
+    db_source = annotations.get("db_source", "") or ""
+    m = re.search(r"accession\s+([A-Z]{1,3}_?\d+(?:\.\d+)?)", db_source, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _extract_isolate(record: SeqRecord) -> str:
+    """Best-effort isolate / strain qualifier from the protein's source feature."""
+    for feat in getattr(record, "features", None) or []:
+        if getattr(feat, "type", None) != "source":
+            continue
+        qualifiers = getattr(feat, "qualifiers", None) or {}
+        for key in ("isolate", "strain"):
+            vals = qualifiers.get(key, [])
+            if vals and isinstance(vals[0], str) and vals[0].strip():
+                return vals[0].strip()
+    return ""
+
+
+def _count_split_submissions(bucket: dict[str, dict[str, list[SeqRecord]]]) -> int:
+    """Count distinct isolate names that appear in 2+ source-nuc accessions.
+
+    Diagnostic only: under Policy A each source-nuc accession is its own
+    genome, so an isolate that's been split across multiple GenBank
+    submissions surfaces as multiple low-coverage genomes.  This counter
+    is a proxy for "how many specimens did Policy A's strict accession
+    grouping cost us"; the value motivates whether to revisit Policy B
+    in a future release.
+    """
+    isolate_to_accs: dict[str, set[str]] = {}
+    for src_acc, marker_to_records in bucket.items():
+        # One isolate per source_acc is enough — pick the first non-empty one.
+        for records in marker_to_records.values():
+            picked = False
+            for rec in records:
+                isolate = _extract_isolate(rec)
+                if isolate:
+                    isolate_to_accs.setdefault(isolate, set()).add(src_acc)
+                    picked = True
+                    break
+            if picked:
+                break
+    return sum(1 for accs in isolate_to_accs.values() if len(accs) > 1)
+
+
+def group_proteins_by_genome(
+    proteins_by_marker: dict[str, list[SeqRecord]],
+    marker_set: list[dict],
+    species_lineage: list[dict] | None,
+    min_fraction: float,
+    identifier: "MarkerIdentifier | None" = None,
+) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
+    """Group fetched proteins into genomes (Policy A) and apply min-fraction drop.
+
+    Pure function — no network calls.  Tests exercise this directly.
+
+    Args:
+        proteins_by_marker: {marker_name: [SeqRecord]} from per-marker queries.
+        marker_set:         the family's curated marker spec list.
+        species_lineage:    NCBI ranked lineage; passed through to identifier
+                            for subfamily-aware alias resolution.
+        min_fraction:       genomes covering fewer than ceil(min_fraction × N)
+                            markers are dropped.
+        identifier:         MarkerIdentifier; defaults to NameMatchIdentifier().
+
+    Returns:
+        (genomes, stats):
+            genomes: {source_nuc_accession: {marker_name: SeqRecord}}
+            stats:   diagnostic counters (n_genomes_found, n_genomes_kept,
+                     n_dropped_min_fraction, n_dropped_split_submission).
+    """
+    if identifier is None:
+        from .markers import NameMatchIdentifier
+        identifier = NameMatchIdentifier()
+
+    # Group raw protein records by source nucleotide accession + marker name.
+    bucket: dict[str, dict[str, list[SeqRecord]]] = {}
+    n_orphaned_no_source = 0
+    for marker_name, records in proteins_by_marker.items():
+        for rec in records:
+            src = _source_nuc_accession(rec)
+            if not src:
+                n_orphaned_no_source += 1
+                continue
+            bucket.setdefault(src, {}).setdefault(marker_name, []).append(rec)
+
+    n_genomes_found = len(bucket)
+    n_required_markers = max(1, int(round(min_fraction * len(marker_set))))
+
+    genomes: dict[str, dict[str, SeqRecord]] = {}
+    n_dropped_min_fraction = 0
+
+    for src_acc, marker_to_records in bucket.items():
+        # Flatten this genome's candidate proteins, then run the identifier
+        # (which applies tiebreakers per marker against the marker_set).
+        all_candidates: list[SeqRecord] = []
+        for records in marker_to_records.values():
+            all_candidates.extend(records)
+        chosen = identifier.identify(all_candidates, marker_set, species_lineage)
+        if len(chosen) >= n_required_markers:
+            genomes[src_acc] = chosen
+        else:
+            n_dropped_min_fraction += 1
+
+    stats = {
+        "n_genomes_found":            n_genomes_found,
+        "n_genomes_kept":             len(genomes),
+        "n_dropped_min_fraction":     n_dropped_min_fraction,
+        "n_dropped_split_submission": _count_split_submissions(bucket),
+        "n_orphaned_no_source":       n_orphaned_no_source,
+        "n_required_markers":         n_required_markers,
+    }
+    return genomes, stats
+
+
+def fetch_species_genomes(
+    taxid: int,
+    species_name: str,
+    species_lineage: list[dict],
+    marker_set: list[dict],
+    output_dir: Path,
+    max_per_species: int = 200,
+    min_fraction: float = 0.7,
+    exclude_organisms: list[str] | None = None,
+    identifier: "MarkerIdentifier | None" = None,
+) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
+    """Concatenation-mode counterpart to ``fetch_species_sequences``.
+
+    Issues one Entrez query per marker (RefSeq matches uncapped, non-RefSeq
+    capped at ``max_per_species``), groups returned proteins by source
+    nucleotide accession (Policy A), applies the per-genome paralog
+    tiebreaker via ``identifier``, and drops genomes covering fewer than
+    ``min_fraction × N`` markers.
+
+    Returns:
+        (genomes, stats):
+            genomes: {source_nuc_accession: {marker_name: SeqRecord}}
+            stats:   diagnostic counters (see group_proteins_by_genome).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    proteins_by_marker: dict[str, list[SeqRecord]] = {}
+    n_proteins_fetched = 0
+
+    for marker in marker_set:
+        marker_name = marker["name"]
+        marker_proteins = _fetch_marker_proteins(
+            taxid=taxid,
+            marker=marker,
+            species_lineage=species_lineage,
+            output_gb=output_dir / f"{_safe_marker_filename(marker_name)}.gb",
+            max_per_species=max_per_species,
+            exclude_organisms=exclude_organisms,
+        )
+        proteins_by_marker[marker_name] = marker_proteins
+        n_proteins_fetched += len(marker_proteins)
+        log.debug(
+            "%s [marker=%s]: %d protein record(s)",
+            species_name, marker_name, len(marker_proteins),
+        )
+
+    genomes, stats = group_proteins_by_genome(
+        proteins_by_marker=proteins_by_marker,
+        marker_set=marker_set,
+        species_lineage=species_lineage,
+        min_fraction=min_fraction,
+        identifier=identifier,
+    )
+    stats["n_proteins_fetched"] = n_proteins_fetched
+    log.info(
+        "%s: fetched %d proteins across %d markers; "
+        "%d genome(s) kept, %d dropped (min_fraction)",
+        species_name, n_proteins_fetched, len(marker_set),
+        stats["n_genomes_kept"], stats["n_dropped_min_fraction"],
+    )
+    return genomes, stats
+
+
+def _fetch_marker_proteins(
+    taxid: int,
+    marker: dict,
+    species_lineage: list[dict],
+    output_gb: Path,
+    max_per_species: int,
+    exclude_organisms: list[str] | None,
+) -> list[SeqRecord]:
+    """Fetch all protein records for one marker within one species.
+
+    Always retrieves RefSeq matches in full; tops up with non-RefSeq matches
+    up to ``max_per_species``.  Writes a per-marker GenBank flat file and
+    returns the parsed records.
+    """
+    db = "protein"
+    refseq_query = _build_marker_query(taxid, marker, species_lineage,
+                                       exclude_organisms, refseq_only=True)
+    refseq_ids = _search_ids(db, refseq_query, max_records=10_000)
+    refseq_set = set(refseq_ids)
+
+    n_remaining = max(0, max_per_species - len(refseq_ids))
+    non_refseq_ids: list[str] = []
+    if n_remaining > 0:
+        all_query = _build_marker_query(taxid, marker, species_lineage,
+                                        exclude_organisms)
+        all_ids = _search_ids(db, all_query, max_records=max_per_species)
+        non_refseq_ids = [i for i in all_ids if i not in refseq_set][:n_remaining]
+
+    final_ids = refseq_ids + non_refseq_ids
+    if not final_ids:
+        return []
+
+    output_gb.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_gb, "w") as out_f:
+        for batch in _batched(final_ids, FETCH_BATCH_SIZE):
+            data = _fetch_batch(db, batch)
+            out_f.write(data)
+
+    return list(SeqIO.parse(output_gb, "genbank"))
+
+
+def _build_marker_query(
+    taxid: int,
+    marker: dict,
+    species_lineage: list[dict] | None,
+    exclude_organisms: list[str] | None,
+    refseq_only: bool = False,
+) -> str:
+    """Build an Entrez protein query for one marker within one species.
+
+    Aliases (including any subfamily-specific aliases applicable to this
+    species) are OR-combined as `[Protein Name]` clauses.
+    """
+    from .markers import _subfamily_from_lineage  # local import to avoid cycle
+    subfamily = _subfamily_from_lineage(species_lineage)
+    names = [marker["name"]] + list(marker.get("aliases", []))
+    if subfamily:
+        names.extend(marker.get(f"aliases_{subfamily}", []))
+
+    or_clause = " OR ".join(f'"{n}"[Protein Name]' for n in names if n)
+    base = f"txid{taxid}[Organism:exp] AND ({or_clause})"
+    if refseq_only:
+        base += " AND refseq[filter]"
+    base += " NOT patent[filter]"
+    for term in (exclude_organisms or []):
+        base += f' NOT "{term}"[Organism]'
+    return base
