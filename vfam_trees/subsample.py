@@ -63,7 +63,7 @@ def absorb_into_refseqs(
             keep_ids |= members
 
     if n_absorbed:
-        log.debug(
+        log.info(
             "RefSeq absorption: %d non-RefSeq sequence(s) absorbed into "
             "RefSeq cluster reps at identity ≥ %.2f",
             n_absorbed, threshold,
@@ -181,7 +181,7 @@ def adaptive_cluster_species(
         (representative_records, threshold_used)
     """
     if len(records) <= max_reps:
-        log.debug("Species has %d sequences (≤ max_reps %d) — no clustering needed.",
+        log.info("Species has %d sequences (≤ max_reps %d) — no clustering needed.",
                   len(records), max_reps)
         return records, threshold_max
 

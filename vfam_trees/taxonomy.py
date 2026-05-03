@@ -546,7 +546,7 @@ def _keep_deepest_labels(tree: BioTree) -> None:
         else:
             seen_taxa.add(taxon)
 
-    log.debug("Kept crown label for %d distinct taxa", len(seen_taxa))
+    log.info("Kept crown label for %d distinct taxa", len(seen_taxa))
 
 
 def _normalize_bootstrap(tree: BioTree) -> None:
@@ -561,7 +561,7 @@ def _normalize_bootstrap(tree: BioTree) -> None:
         for clade in tree.find_clades():
             if clade.confidence is not None:
                 clade.confidence = round(clade.confidence * 100)
-        log.debug("Bootstrap values scaled from [0,1] to [0,100]")
+        log.info("Bootstrap values scaled from [0,1] to [0,100]")
     else:
         for clade in tree.find_clades():
             if clade.confidence is not None:

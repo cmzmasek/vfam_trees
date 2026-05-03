@@ -240,7 +240,7 @@ def _run_fasttree(
 
     cmd += [str(alignment_fasta)]
 
-    log.debug("Running: %s > %s", " ".join(cmd), out_nwk)
+    log.info("Running: %s > %s", " ".join(cmd), out_nwk)
     with open(out_nwk, "w") as out_f:
         result = subprocess.run(cmd, stdout=out_f, stderr=subprocess.PIPE, text=True)
 
@@ -299,7 +299,7 @@ def _run_iqtree(
         "--redo",
     ] + options_parts
 
-    log.debug("Running: %s", " ".join(str(c) for c in cmd))
+    log.info("Running: %s", " ".join(str(c) for c in cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:

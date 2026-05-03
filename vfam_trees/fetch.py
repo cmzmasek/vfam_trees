@@ -50,7 +50,7 @@ def discover_species(family: str) -> list[dict]:
         log.warning("Could not find NCBI taxonomy entry for family: %s", family)
         return []
 
-    log.debug("Family %s has taxid %d", family, family_taxid)
+    log.info("Family %s has taxid %d", family, family_taxid)
 
     # Step 2: get all species-rank descendants
     query = f"txid{family_taxid}[subtree] AND species[rank]"
