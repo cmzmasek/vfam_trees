@@ -563,13 +563,23 @@ def fetch_species_genomes(
             output_gb=output_dir / f"{_safe_marker_filename(marker_name)}.gb",
             max_per_species=max_per_species,
             exclude_organisms=exclude_organisms,
+            species_name=species_name,
         )
         proteins_by_marker[marker_name] = marker_proteins
         n_proteins_fetched += len(marker_proteins)
-        log.debug(
-            "%s [marker=%s]: %d protein record(s)",
-            species_name, marker_name, len(marker_proteins),
-        )
+
+    # Flag markers that returned 0 hits while sibling markers found something —
+    # often a sign of annotation drift (alias list miss).  Quiet when the
+    # species had no hits at all, since that's just an absent virus.
+    n_markers_found = sum(1 for v in proteins_by_marker.values() if v)
+    if n_markers_found > 0:
+        for marker_name, recs in proteins_by_marker.items():
+            if not recs:
+                log.info(
+                    "%s [marker=%s]: 0 protein records found — marker missing "
+                    "for this species (sibling markers had hits)",
+                    species_name, marker_name,
+                )
 
     genomes, stats = group_proteins_by_genome(
         proteins_by_marker=proteins_by_marker,
@@ -579,11 +589,20 @@ def fetch_species_genomes(
         identifier=identifier,
     )
     stats["n_proteins_fetched"] = n_proteins_fetched
+    # Count RefSeq genomes within this species' kept set (uses inline
+    # accession-prefix detection — concat.is_refseq_genome would create an
+    # import cycle; this stays in fetch.py).
+    n_refseq_kept = sum(
+        1 for gid in genomes
+        if len(gid) >= 3 and gid[2] == "_" and gid[:2].isalpha() and gid[:2].isupper()
+    )
+    stats["n_refseq_kept"] = n_refseq_kept
     log.info(
         "%s: fetched %d proteins across %d markers; "
-        "%d genome(s) kept, %d dropped (min_fraction)",
+        "%d genome(s) kept (%d RefSeq), %d dropped (min_fraction)",
         species_name, n_proteins_fetched, len(marker_set),
-        stats["n_genomes_kept"], stats["n_dropped_min_fraction"],
+        stats["n_genomes_kept"], n_refseq_kept,
+        stats["n_dropped_min_fraction"],
     )
     return genomes, stats
 
@@ -595,12 +614,16 @@ def _fetch_marker_proteins(
     output_gb: Path,
     max_per_species: int,
     exclude_organisms: list[str] | None,
+    species_name: str = "",
 ) -> list[SeqRecord]:
     """Fetch all protein records for one marker within one species.
 
     Always retrieves RefSeq matches in full; tops up with non-RefSeq matches
     up to ``max_per_species``.  Writes a per-marker GenBank flat file and
     returns the parsed records.
+
+    ``species_name`` is used only for log messages — the actual fetch is keyed
+    by ``taxid``.
     """
     db = "protein"
     refseq_query = _build_marker_query(taxid, marker, species_lineage,
@@ -617,6 +640,11 @@ def _fetch_marker_proteins(
         non_refseq_ids = [i for i in all_ids if i not in refseq_set][:n_remaining]
 
     final_ids = refseq_ids + non_refseq_ids
+    log.debug(
+        "%s [marker=%s]: %d RefSeq + %d non-RefSeq protein records",
+        species_name or f"taxid {taxid}", marker.get("name", "?"),
+        len(refseq_ids), len(non_refseq_ids),
+    )
     if not final_ids:
         return []
 

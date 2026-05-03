@@ -102,7 +102,14 @@ def run_family_concat(
     lo_mult          = float(length_outlier_cfg.get("lo_mult", 1.0 / 3.0))
 
     log.info("=" * 60)
-    log.info("Concatenated mode: %s — %d markers", family, len(marker_set))
+    log.info("Concatenated mode for %s: %d markers (%s)",
+             family, len(marker_set), ", ".join(marker_order))
+    log.info(
+        "Downloading per-marker proteins for %d species "
+        "(max %d non-RefSeq per species per marker, RefSeq uncapped) ...",
+        len(species_list), max_per_species,
+    )
+    log.info("Sequence type: protein, concatenated (%d markers)", len(marker_set))
     log.info("=" * 60)
 
     # -------------------------------------------------------------------------
@@ -119,10 +126,49 @@ def run_family_concat(
     )
 
     n_genomes_total = sum(len(g) for g in species_genomes.values())
+    n_required_markers = max(1, int(round(min_fraction * len(marker_set))))
     log.info(
-        "Concat fetch complete: %d genome(s) across %d species (proteins fetched: %d)",
-        n_genomes_total, len(species_genomes), fetch_stats["n_proteins_fetched"],
+        "Concat fetch complete: %d proteins → %d source-nuc genome(s) found → "
+        "%d kept after min_fraction (≥%d/%d markers); "
+        "%d dropped (multi-accession / Policy A), "
+        "%d dropped (low coverage), "
+        "%d orphaned (no source-nuc accession) "
+        "across %d species",
+        fetch_stats["n_proteins_fetched"],
+        fetch_stats["n_genomes_found"],
+        n_genomes_total,
+        n_required_markers, len(marker_set),
+        fetch_stats["n_dropped_split_submission"],
+        fetch_stats["n_dropped_min_fraction"],
+        fetch_stats["n_orphaned_no_source"],
+        len(species_genomes),
     )
+
+    # Per-marker family-scale coverage summary — easy parity check vs the
+    # marker preset's expected per-family yield.
+    if species_genomes:
+        per_marker_n = {m: 0 for m in marker_order}
+        for genomes in species_genomes.values():
+            for proteins in genomes.values():
+                for m in proteins:
+                    if m in per_marker_n:
+                        per_marker_n[m] += 1
+        coverage_str = ", ".join(f"{m}={per_marker_n[m]}" for m in marker_order)
+        log.info("Per-marker coverage across %d genomes: %s",
+                 n_genomes_total, coverage_str)
+
+    # RefSeq detection — cross-family count for transparency.
+    refseq_genome_ids = {
+        gid for genomes in species_genomes.values() for gid in genomes
+        if (len(gid) >= 3 and gid[2] == "_" and gid[:2].isalpha() and gid[:2].isupper())
+    }
+    if refseq_genome_ids:
+        log.info(
+            "Detected %d RefSeq genome(s) out of %d total — uncapped through "
+            "clustering/merge and exempt from per-marker length-outlier and "
+            "branch-length outlier removal",
+            len(refseq_genome_ids), n_genomes_total,
+        )
 
     if n_genomes_total < 4:
         reason = (f"too few genomes after concat fetch + min_fraction "
@@ -292,6 +338,16 @@ def run_family_concat(
         ))
     mark_done(family_dir, family, output_dir)
 
+    leaves_500 = tree_stats.get("500", {}).get("leaves", "?")
+    leaves_100 = tree_stats.get("100", {}).get("leaves", "?")
+    log.info("=" * 60)
+    log.info(
+        "Pipeline complete for %s  (concat: %d markers, "
+        "tree_500: %s leaves, tree_100: %s leaves)",
+        family, len(marker_set), leaves_500, leaves_100,
+    )
+    log.info("=" * 60)
+
 
 # ---------------------------------------------------------------------------
 # Per-target runner
@@ -323,6 +379,11 @@ def _run_target_concat(
     target_work.mkdir(parents=True, exist_ok=True)
 
     # 1. Cluster + merge to pick selected genomes
+    log.info(
+        "Clustering genomes per species on concatenated sequences "
+        "(%s, max_reps=%d, search range=%.2f–%.2f) ...",
+        clustering_tool, max_reps, threshold_min, threshold_max,
+    )
     selected_ids, sel_stats = cluster_and_merge_genomes(
         species_genomes=species_genomes,
         marker_order=marker_order,
@@ -335,8 +396,15 @@ def _run_target_concat(
         refseq_absorption_enabled=absorb_enabled,
         refseq_absorption_threshold=absorb_threshold,
     )
-    log.info("tree_%s: selected %d genomes (from %d species)",
-             label, sel_stats["n_selected"], sel_stats["n_species_with_reps"])
+    log.info(
+        "Clustering complete (tree_%s): %d total representative genome(s) "
+        "across %d species",
+        label, sel_stats["n_total_reps"], sel_stats["n_species_with_reps"],
+    )
+    log.info(
+        "Proportional merge: selected %d genomes for tree_%s (target=%d)",
+        sel_stats["n_selected"], label, target_n,
+    )
 
     if len(selected_ids) < 4:
         log.warning(
@@ -391,6 +459,13 @@ def _run_target_concat(
     partition_map: dict[str, tuple[int, int]] = {}
 
     for iteration in range(outlier_max_iter + 1):
+        log.info(
+            "tree_%s iteration %d: aligning %d markers with MAFFT for "
+            "%d genome(s) (options: %s)%s ...",
+            label, iteration, len(marker_order), len(selected_genomes),
+            msa_options or "(default)",
+            f"; trimAl ({trim_options})" if trim_enabled else "; no trim",
+        )
         aligned_per_marker = align_and_trim_markers(
             genomes=selected_genomes,
             marker_order=marker_order,
@@ -414,6 +489,20 @@ def _run_target_concat(
         with open(concat_fasta, "w") as f:
             SeqIO.write(list(concat.values()), f, "fasta")
         write_partition_file_nexus(partition_map, partition_path)
+        block_widths_str = ", ".join(
+            f"{m}:{partition_map[m][1] - partition_map[m][0] + 1}"
+            for m in marker_order if m in partition_map
+        )
+        total_cols = len(next(iter(concat.values())).seq)
+        log.info(
+            "Concatenated alignment for tree_%s: %d genomes × %d columns "
+            "across %d markers; block widths [%s]",
+            label, len(concat), total_cols, len(partition_map), block_widths_str,
+        )
+        log.info(
+            "Wrote NEXUS partition file (%d charsets, %d columns) → %s",
+            len(partition_map), total_cols, partition_path,
+        )
 
         if label == "100" and tree_tool.lower().startswith("iqtree"):
             # Partitioned IQ-TREE: -p partitions.nex -m MFP + AA support flag
@@ -622,9 +711,21 @@ def _run_target_concat(
             # Map sanitized charset names back to canonical marker names
             from .concat import _safe_charset_name
             sanitized_to_marker = {_safe_charset_name(m): m for m in marker_order}
-            marker_models_str = ",".join(
+            marker_models_str = ", ".join(
                 f"{sanitized_to_marker.get(cs, cs)}:{model}"
                 for cs, model in models_by_charset.items()
+            )
+            log.info(
+                "IQ-TREE ModelFinder per-partition (tree_%s): %s",
+                label, marker_models_str,
+            )
+            # summary.tsv stores comma-only (no spaces) for grep-friendliness
+            marker_models_str = marker_models_str.replace(", ", ",")
+        else:
+            log.warning(
+                "tree_%s: could not parse per-partition models from "
+                "<prefix>.best_scheme.nex — marker_models column will be empty",
+                label,
             )
 
     target_stats: dict[str, Any] = {
@@ -701,7 +802,9 @@ def _fetch_all_species(
     if lineage_cache.exists():
         with open(lineage_cache) as f:
             taxid_to_lineage = json.load(f)
+        log.info("Reusing cached ranked taxonomy: %d taxa", len(taxid_to_lineage))
     else:
+        log.info("Fetching ranked taxonomy from NCBI for %d species ...", len(taxids))
         taxid_to_lineage = fetch_taxonomy_lineages(taxids)
         with open(lineage_cache, "w") as f:
             json.dump(taxid_to_lineage, f)
@@ -718,6 +821,13 @@ def _fetch_all_species(
         "n_orphaned_no_source":        0,
     }
 
+    # One-time warning that concat mode bypasses the global sequence cache.
+    # Tracked in CONCAT_DESIGN.md as a deferred phase-10 task.
+    log.warning(
+        "Note: concat mode does not yet use the global sequence cache; "
+        "every concat run hits NCBI for every species (CONCAT_DESIGN.md phase 10).",
+    )
+
     for i, sp in enumerate(species_list, start=1):
         sp_name  = sp["name"]
         sp_taxid = sp["taxid"]
@@ -727,11 +837,10 @@ def _fetch_all_species(
         sp_lineage = taxid_to_lineage.get(str(sp_taxid), [])
         species_lineages[sp_name] = sp_lineage
 
-        log.info("[%d/%d] Concat fetch: %s", i, len(species_list), sp_name)
         try:
             genomes, stats = fetch_species_genomes(
                 taxid=sp_taxid,
-                species_name=sp_name,
+                species_name=f"[{i}/{len(species_list)}] {sp_name}",
                 species_lineage=sp_lineage,
                 marker_set=marker_set,
                 output_dir=sp_work,

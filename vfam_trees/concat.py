@@ -178,6 +178,7 @@ def cluster_and_merge_genomes(
             continue
 
         # 3. Adaptive clustering — concats are protein-like sequences
+        n_input = len(concats)
         reps, threshold_used = adaptive_cluster_species(
             records=concats,
             max_reps=max_reps_per_species,
@@ -189,6 +190,11 @@ def cluster_and_merge_genomes(
         )
         species_reps[sp_name] = reps
         thresholds_used.append(threshold_used)
+        if n_input != len(reps):
+            log.info(
+                "Clustering %s: %d genomes → %d representatives at identity %.4f",
+                sp_name, n_input, len(reps), threshold_used,
+            )
 
     # Cross-species proportional merge — RefSeq priority preserved
     merged = proportional_merge(
@@ -283,11 +289,18 @@ def remove_per_marker_length_outliers(
                 new_markers[marker_name] = rec
         updated[genome_id] = new_markers
 
-    if n_long or n_short:
+    # Always log the per-marker median sample so users can spot annotation
+    # issues even when no cells are dropped.
+    if medians:
+        median_str = ", ".join(
+            f"{m}:{int(medians[m])}(n={len(marker_lengths[m])})"
+            for m in medians
+        )
         log.info(
-            "Per-marker length-outlier removal: dropped %d long + %d short "
-            "(genome × marker) cells (RefSeq-protected: %d)",
-            n_long, n_short, n_refseq_protected,
+            "Per-marker length-outlier scan: per-marker medians [%s] — "
+            "dropped %d long + %d short (genome × marker) cells "
+            "(RefSeq-protected: %d)",
+            median_str, n_long, n_short, n_refseq_protected,
         )
 
     stats = {
@@ -424,8 +437,9 @@ def align_and_trim_markers(
     from .trim import run_trim
 
     aligned_per_marker: dict[str, dict[str, SeqRecord]] = {}
+    n_markers = len(marker_order)
 
-    for marker in marker_order:
+    for i, marker in enumerate(marker_order, start=1):
         marker_dir = work_dir / _safe_charset_name(marker)
         marker_dir.mkdir(parents=True, exist_ok=True)
 
@@ -438,9 +452,9 @@ def align_and_trim_markers(
 
         if len(records_for_marker) < 2:
             log.warning(
-                "Marker %r has only %d genome(s) with this protein — "
+                "Marker [%d/%d] %r has only %d genome(s) with this protein — "
                 "skipping per-marker alignment (concat will gap-pad).",
-                marker, len(records_for_marker),
+                i, n_markers, marker, len(records_for_marker),
             )
             aligned_per_marker[marker] = {}
             continue
@@ -452,12 +466,30 @@ def align_and_trim_markers(
         aln_fasta = marker_dir / "aln.fasta"
         run_msa(raw_fasta, aln_fasta, tool=msa_tool, options=msa_options, threads=threads)
 
+        # Count MAFFT output columns for the per-marker progress line.
+        aln_cols_pre = next(
+            (len(rec.seq) for rec in SeqIO.parse(aln_fasta, "fasta")), 0,
+        )
+
         if trim_enabled:
             trim_fasta = marker_dir / "aln.trim.fasta"
             run_trim(aln_fasta, trim_fasta, tool=trim_tool, options=trim_options)
             final = trim_fasta
+            aln_cols_post = next(
+                (len(rec.seq) for rec in SeqIO.parse(final, "fasta")), 0,
+            )
+            log.info(
+                "Marker [%d/%d] %r: %d genome(s) → MAFFT → %d cols → "
+                "trimAl → %d cols",
+                i, n_markers, marker, len(records_for_marker),
+                aln_cols_pre, aln_cols_post,
+            )
         else:
             final = aln_fasta
+            log.info(
+                "Marker [%d/%d] %r: %d genome(s) → MAFFT → %d cols (trim disabled)",
+                i, n_markers, marker, len(records_for_marker), aln_cols_pre,
+            )
 
         aligned_per_marker[marker] = {
             rec.id: rec for rec in SeqIO.parse(final, "fasta")

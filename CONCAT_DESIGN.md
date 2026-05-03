@@ -376,6 +376,9 @@ New page: per-marker coverage bar chart (genomes-with-marker, one bar per marker
 | 5 | Genome-level adaptive clustering + RefSeq absorption + cross-species merge | Cluster on concats; genome-level RefSeq prioritization |
 | 6 | Tree inference: partitioned IQ-TREE for tree_100; partition-aware model parsing; branch-outlier at genome level | Partition file → IQ-TREE invocation; multi-model parsing; RefSeq genome exemption |
 | 7 | Outputs: PhyloXML leaf adjustments, summary columns, per-family report page | PhyloXML schema validation; column population |
+| 10 | Wire concat mode into the global sequence cache (`~/.vfam_cache`).  Extend the cache key with a stable hash of `concatenation.proteins` (names, aliases, length_range, locus_tag_hint) when `region == "concatenated"`.  Verify the per-marker `.gb` files round-trip through cache → fetch → reparse.  Remove the one-time "concat bypasses cache" WARNING from `_fetch_all_species` once landed. | Cache key includes marker-set hash; changing the marker list invalidates the cache for that family; existing single-protein cache entries unaffected |
+
+Phases 8–9 (iterative branch-outlier loop in concat mode + per-family report PDF coverage page) shipped as v1.2.0; phase 10 is deferred.
 
 Each phase ships as its own commit and stays runnable end-to-end.
 
@@ -393,7 +396,7 @@ Items requiring user decision before/during implementation:
 
 5. ~~**Marker-fetch retry policy.**~~ **DECIDED**: no retry in MVP. Markers not matched by name+alias are treated as missing for that genome; the gap is logged and `min_fraction` decides whether the genome stays. BLAST/HMM-based recovery is left for v2 (the HMMER swap-in in §8 is the right tool for this job).
 
-6. ~~**Concat-mode cache keying.**~~ **DECIDED**: when `region == "concatenated"`, the cache key automatically extends to include a stable hash of the full `concatenation.proteins` spec (names, aliases, length_range, locus_tag_hint). Any change to the marker list invalidates the cache for that family. Same flat cache layout — no user-visible change.
+6. **Concat-mode cache keying.** Decision: when `region == "concatenated"`, the cache key auto-extends to include a stable hash of the full `concatenation.proteins` spec (names, aliases, length_range, locus_tag_hint). Same flat cache layout, no user-visible change. **STATUS: deferred — not yet implemented.** Phases 1–9 shipped concat mode without integrating the global sequence cache (`~/.vfam_cache`); every concat run currently hits NCBI for every species. `pipeline_concat._fetch_all_species` emits a one-time WARNING noting this. Tracked as **phase 10** below.
 
 7. ~~**Entomopoxvirinae handling.**~~ **DECIDED**: B1 — single shared marker set, with optional **subfamily-aware aliases**. The marker spec gains an optional `aliases_<subfamily>` override (e.g. `aliases_Entomopoxvirinae`); at fetch time the pipeline determines each species' subfamily from its NCBI ranked lineage and unions the base `aliases` with any applicable subfamily-specific aliases for that species. One concat alignment, one tree pair per family — Chordopox and Entomopox sit in the same Poxviridae tree. The mechanism is generic and can be applied to any family later if needed; currently only Poxviridae uses it.
 
