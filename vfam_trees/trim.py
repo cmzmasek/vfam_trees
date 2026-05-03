@@ -53,7 +53,7 @@ def _run_trimal(input_fasta: Path, output_fasta: Path, options: str) -> None:
     cmd = ["trimal", "-in", str(input_fasta), "-out", str(output_fasta)]
     cmd += options.split()
 
-    log.debug("Running: %s", " ".join(cmd))
+    log.info("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
