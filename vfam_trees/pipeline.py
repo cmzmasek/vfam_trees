@@ -145,7 +145,11 @@ def run_family(
     family_dir.mkdir(parents=True, exist_ok=True)
 
     log_file = family_dir / f"{family}.log"
-    setup_logger(f"vfam_trees.{family}", log_file=log_file, level=log_level)
+    # Configure handlers on the vfam_trees parent logger so every child —
+    # the family-named logger AND module-level loggers (vfam_trees.fetch,
+    # vfam_trees.concat, vfam_trees.pipeline_concat, …) — propagates here
+    # and lands in the per-family log file.
+    setup_logger("vfam_trees", log_file=log_file, level=log_level)
     log = get_logger(f"vfam_trees.{family}")
 
     log.info("=" * 60)
