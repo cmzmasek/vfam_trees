@@ -264,6 +264,7 @@ def run_family(
             output_dir=output_dir,
             species_list=species_list,
             threads=threads,
+            seq_cache=seq_cache,
             summary_path=summary_path,
             status_path=status_path,
             mark_done=_mark_done,

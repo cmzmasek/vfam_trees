@@ -607,6 +607,34 @@ def fetch_species_genomes(
     return genomes, stats
 
 
+def load_proteins_from_marker_dir(
+    marker_dir: Path,
+    marker_set: list[dict],
+) -> tuple[dict[str, list[SeqRecord]], int]:
+    """Parse cached per-marker GenBank files into ``proteins_by_marker``.
+
+    Counterpart to the per-marker fetch loop in ``fetch_species_genomes`` —
+    used when the global sequence cache hits and we want to skip the network
+    call.  Looks for ``<safe_marker>.gb`` files keyed by the same naming
+    scheme the fetcher uses.
+
+    Returns:
+        (proteins_by_marker, n_total_proteins)
+    """
+    proteins_by_marker: dict[str, list[SeqRecord]] = {}
+    n_total = 0
+    for marker in marker_set:
+        marker_name = marker["name"]
+        gb_path = marker_dir / f"{_safe_marker_filename(marker_name)}.gb"
+        if gb_path.exists() and gb_path.stat().st_size > 0:
+            recs = list(SeqIO.parse(gb_path, "genbank"))
+        else:
+            recs = []
+        proteins_by_marker[marker_name] = recs
+        n_total += len(recs)
+    return proteins_by_marker, n_total
+
+
 def _fetch_marker_proteins(
     taxid: int,
     marker: dict,

@@ -5,19 +5,26 @@ Cache layout
 {cache_dir}/
   {db}/                          nuccore or protein
     txid{taxid}_{region}_{segment}_{max}/
-      sequences.gb               GenBank flat file
+      sequences.gb               GenBank flat file (single-protein / whole-genome)
       manifest.json              download metadata
       _no_results                sentinel: NCBI returned 0 sequences (JSON timestamp)
       .lock                      present only during active download
 
+    txid{taxid}_concat_marker{hash8}_{max}/
+      <safe_marker>.gb           per-marker GenBank flat file (concat mode)
+      manifest.json              includes marker_set_hash + marker filenames
+      _no_results, .lock         same semantics as single-protein
+
 The cache key encodes every parameter that affects what NCBI returns, so
-changing region, segment, or max_per_species automatically triggers a fresh
-download.  Negative results (0 sequences found) are also cached so that
-repeated runs do not re-query NCBI for species with no data.  The sentinel
-file uses the same TTL as positive entries.
+changing region, segment, max_per_species, or — in concat mode — any element
+of the marker_set spec automatically triggers a fresh download.  Negative
+results (0 sequences found) are also cached so that repeated runs do not
+re-query NCBI for species with no data.  Sentinels use the same TTL as
+positive entries.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import time
@@ -38,6 +45,27 @@ LOCK_TIMEOUT_SECONDS = 1800   # 30 minutes
 # before giving up waiting on a concurrent download.
 LOCK_POLL_INTERVAL  = 5       # seconds
 LOCK_POLL_MAX       = 120     # 10 minutes total wait
+
+
+def marker_set_hash(marker_set: list[dict]) -> str:
+    """Stable 8-character hex hash over a concat-mode marker_set spec.
+
+    Hash inputs include every field that affects what NCBI returns (name,
+    aliases, subfamily-aware aliases, length_range, locus_tag_hint), so any
+    edit to the curated preset invalidates the cache for that family.
+    """
+    canonical: list[dict] = []
+    for marker in marker_set:
+        canonical.append({
+            "name":     marker.get("name", ""),
+            "aliases":  list(marker.get("aliases") or []),
+            "subfam":   {k: list(v) for k, v in marker.items()
+                         if k.startswith("aliases_") and isinstance(v, list)},
+            "length":   list(marker.get("length_range") or []) or None,
+            "locus":    marker.get("locus_tag_hint") or "",
+        })
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
 
 
 class SequenceCache:
@@ -336,6 +364,12 @@ class SequenceCache:
         for gb in self.cache_dir.rglob("sequences.gb"):
             total      += 1
             size_bytes += gb.stat().st_size
+        for gb in self.cache_dir.rglob("*.gb"):
+            # Count concat per-marker .gb files (anything not named sequences.gb).
+            if gb.name == "sequences.gb":
+                continue
+            total      += 1
+            size_bytes += gb.stat().st_size
         for _ in self.cache_dir.rglob("_no_results"):
             n_empty += 1
         return {
@@ -344,6 +378,194 @@ class SequenceCache:
             "size_mb":         round(size_bytes / 1_048_576, 1),
             "cache_dir":       str(self.cache_dir),
         }
+
+    # ------------------------------------------------------------------
+    # Concat mode — multi-marker per-species cache
+    # CONCAT_DESIGN.md §10 item 6 / phase 10.
+    # Stores per-marker .gb files inside one entry directory keyed by
+    # (taxid, marker_set_hash, max_per_species).
+    # ------------------------------------------------------------------
+
+    def get_concat(
+        self,
+        taxid: int,
+        marker_set_hash_str: str,
+        max_per_species: int,
+    ) -> Path | None:
+        """Return the entry directory containing per-marker .gb files, or None.
+
+        Same TTL semantics as ``get``.  Caller iterates the directory's
+        ``*.gb`` files (each named after the safe-marker filename used by
+        the fetcher) to load the cached records.
+        """
+        entry_dir = self._concat_entry_dir(taxid, marker_set_hash_str, max_per_species)
+        manifest_file = entry_dir / "manifest.json"
+        if not manifest_file.exists():
+            return None
+        # Any .gb file present (sequences.gb is for single-protein)
+        if not any(p.suffix == ".gb" for p in entry_dir.iterdir()):
+            return None
+        if self.ttl_days is not None:
+            try:
+                manifest = json.loads(manifest_file.read_text())
+                downloaded = datetime.fromisoformat(manifest["downloaded"])
+                age = datetime.now(timezone.utc) - downloaded
+                if age > timedelta(days=self.ttl_days):
+                    log.debug(
+                        "Concat cache entry expired (age %.1f d > ttl %d d): %s",
+                        age.total_seconds() / 86400, self.ttl_days, entry_dir,
+                    )
+                    return None
+            except Exception as exc:
+                log.debug(
+                    "Cannot read concat cache manifest %s: %s — treating as miss",
+                    manifest_file, exc,
+                )
+                return None
+        return entry_dir
+
+    def get_empty_concat(
+        self,
+        taxid: int,
+        marker_set_hash_str: str,
+        max_per_species: int,
+    ) -> bool:
+        """Return True if a valid negative-result sentinel exists for this concat key."""
+        sentinel = self._concat_entry_dir(
+            taxid, marker_set_hash_str, max_per_species,
+        ) / "_no_results"
+        if not sentinel.exists():
+            return False
+        if self.ttl_days is not None:
+            try:
+                data = json.loads(sentinel.read_text())
+                downloaded = datetime.fromisoformat(data["downloaded"])
+                age = datetime.now(timezone.utc) - downloaded
+                if age > timedelta(days=self.ttl_days):
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def store_concat(
+        self,
+        taxid: int,
+        marker_set_hash_str: str,
+        max_per_species: int,
+        marker_dir: Path,
+        family: str = "",
+    ) -> Path:
+        """Copy every ``*.gb`` from *marker_dir* into the cache entry.
+
+        Writes a manifest.json carrying the marker-set hash and the list of
+        per-marker filenames.  Errors during copy are logged but do not
+        propagate — the pipeline always has its working copy in *marker_dir*.
+        """
+        entry_dir = self._concat_entry_dir(taxid, marker_set_hash_str, max_per_species)
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        marker_files: list[str] = []
+        for gb in sorted(marker_dir.glob("*.gb")):
+            try:
+                shutil.copy2(gb, entry_dir / gb.name)
+                marker_files.append(gb.name)
+            except Exception as exc:
+                log.warning("Could not copy %s into concat cache (%s)", gb, exc)
+        manifest = {
+            "taxid":              taxid,
+            "marker_set_hash":    marker_set_hash_str,
+            "max_per_species":    max_per_species,
+            "marker_files":       marker_files,
+            "downloaded":         datetime.now(timezone.utc).isoformat(),
+            "family":             family,
+        }
+        try:
+            (entry_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        except Exception as exc:
+            log.warning("Could not write concat cache manifest (%s)", exc)
+        log.debug("Stored %d marker file(s) in concat cache: %s",
+                  len(marker_files), entry_dir)
+        return entry_dir
+
+    def store_empty_concat(
+        self,
+        taxid: int,
+        marker_set_hash_str: str,
+        max_per_species: int,
+        family: str = "",
+    ) -> None:
+        """Write a negative-result sentinel for this concat key."""
+        entry_dir = self._concat_entry_dir(taxid, marker_set_hash_str, max_per_species)
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "downloaded":      datetime.now(timezone.utc).isoformat(),
+            "taxid":           taxid,
+            "marker_set_hash": marker_set_hash_str,
+            "family":          family,
+        }
+        try:
+            (entry_dir / "_no_results").write_text(json.dumps(payload))
+        except Exception as exc:
+            log.warning("Could not write concat negative sentinel (%s)", exc)
+
+    @contextmanager
+    def download_lock_concat(
+        self,
+        taxid: int,
+        marker_set_hash_str: str,
+        max_per_species: int,
+    ) -> Generator[bool, None, None]:
+        """Concat-mode counterpart to ``download_lock`` — same advisory-lock
+        semantics, scoped to the concat cache entry."""
+        entry_dir = self._concat_entry_dir(taxid, marker_set_hash_str, max_per_species)
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = entry_dir / ".lock"
+        acquired = False
+        for poll in range(LOCK_POLL_MAX):
+            try:
+                with lock_path.open("x") as fh:
+                    fh.write(datetime.now(timezone.utc).isoformat())
+                acquired = True
+                break
+            except FileExistsError:
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                    if age > LOCK_TIMEOUT_SECONDS:
+                        log.warning(
+                            "Removing stale concat download lock (%.0f s old): %s",
+                            age, lock_path,
+                        )
+                        lock_path.unlink(missing_ok=True)
+                        continue
+                except OSError:
+                    pass
+                if poll == 0:
+                    log.info(
+                        "Another job is downloading concat-mode taxid %d "
+                        "(marker hash %s) — waiting (max %d s) ...",
+                        taxid, marker_set_hash_str,
+                        LOCK_POLL_MAX * LOCK_POLL_INTERVAL,
+                    )
+                time.sleep(LOCK_POLL_INTERVAL)
+        if not acquired:
+            log.warning(
+                "Timed out waiting for concat download lock on taxid %d — proceeding anyway",
+                taxid,
+            )
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                lock_path.unlink(missing_ok=True)
+
+    def _concat_entry_dir(
+        self,
+        taxid: int,
+        marker_set_hash_str: str,
+        max_per_species: int,
+    ) -> Path:
+        # Layout: protein/txid<taxid>_concat_marker<hash8>_<max>/
+        key = f"txid{taxid}_concat_marker{marker_set_hash_str}_{max_per_species}"
+        return self.cache_dir / "protein" / key
 
     # ------------------------------------------------------------------
     # Internals

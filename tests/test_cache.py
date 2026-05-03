@@ -1,11 +1,12 @@
 """Tests for vfam_trees.cache."""
+import copy
 import json
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from vfam_trees.cache import SequenceCache
+from vfam_trees.cache import SequenceCache, marker_set_hash
 
 
 @pytest.fixture
@@ -203,3 +204,161 @@ def test_stats_counts_empty_entries(sc, tmp_path):
     st = sc.stats()
     assert st["entries"] == 1
     assert st["empty_entries"] == 2
+
+
+# ---------------------------------------------------------------------------
+# marker_set_hash — stable concat-mode cache key extension
+# ---------------------------------------------------------------------------
+
+class TestMarkerSetHash:
+    def _spec(self):
+        return [
+            {"name": "DNA polymerase",
+             "aliases": ["DNA-directed DNA polymerase"],
+             "locus_tag_hint": r"polB"},
+            {"name": "MCP",
+             "aliases": [],
+             "length_range": [400, 800]},
+        ]
+
+    def test_deterministic(self):
+        h1 = marker_set_hash(self._spec())
+        h2 = marker_set_hash(self._spec())
+        assert h1 == h2
+        assert len(h1) == 8 and all(c in "0123456789abcdef" for c in h1)
+
+    def test_alias_change_invalidates(self):
+        s1 = self._spec()
+        s2 = copy.deepcopy(s1)
+        s2[0]["aliases"].append("DNA pol")
+        assert marker_set_hash(s1) != marker_set_hash(s2)
+
+    def test_locus_tag_hint_change_invalidates(self):
+        s1 = self._spec()
+        s2 = copy.deepcopy(s1)
+        s2[0]["locus_tag_hint"] = r"polB|G1211R"
+        assert marker_set_hash(s1) != marker_set_hash(s2)
+
+    def test_length_range_change_invalidates(self):
+        s1 = self._spec()
+        s2 = copy.deepcopy(s1)
+        s2[1]["length_range"] = [400, 900]
+        assert marker_set_hash(s1) != marker_set_hash(s2)
+
+    def test_subfamily_alias_change_invalidates(self):
+        s1 = self._spec()
+        s2 = copy.deepcopy(s1)
+        s2[0]["aliases_Entomopoxvirinae"] = ["DNA polymerase B"]
+        assert marker_set_hash(s1) != marker_set_hash(s2)
+
+    def test_marker_order_matters(self):
+        # Stability for canonical input order — reordering marker entries
+        # corresponds to a different concat layout, so the hash should change.
+        s1 = self._spec()
+        s2 = list(reversed(self._spec()))
+        assert marker_set_hash(s1) != marker_set_hash(s2)
+
+    def test_unrelated_field_does_not_affect_hash(self):
+        # Hash inputs are limited to fields that affect what NCBI returns.
+        # Adding an irrelevant key (e.g. a comment) should not invalidate.
+        s1 = self._spec()
+        s2 = copy.deepcopy(s1)
+        s2[0]["__comment"] = "added by curator"
+        assert marker_set_hash(s1) == marker_set_hash(s2)
+
+
+# ---------------------------------------------------------------------------
+# Concat cache round-trip
+# ---------------------------------------------------------------------------
+
+def _make_marker_dir(tmp_path, marker_files: dict[str, str]) -> Path:
+    """Build a sp_work-style directory with one .gb file per marker."""
+    d = tmp_path / "sp_work_concat"
+    d.mkdir(parents=True, exist_ok=True)
+    for fname, content in marker_files.items():
+        (d / fname).write_text(content)
+    return d
+
+
+class TestConcatCache:
+    def test_store_then_get_round_trip(self, sc, tmp_path):
+        marker_dir = _make_marker_dir(tmp_path, {
+            "DNA_polymerase.gb": "LOCUS YP_1\nproduct: DNA polymerase\n//\n",
+            "MCP.gb":            "LOCUS YP_2\nproduct: MCP\n//\n",
+        })
+        sc.store_concat(taxid=12345, marker_set_hash_str="abc12345",
+                        max_per_species=300, marker_dir=marker_dir,
+                        family="Poxviridae")
+        cached = sc.get_concat(12345, "abc12345", 300)
+        assert cached is not None
+        assert (cached / "DNA_polymerase.gb").exists()
+        assert (cached / "MCP.gb").exists()
+        assert (cached / "manifest.json").exists()
+        manifest = json.loads((cached / "manifest.json").read_text())
+        assert manifest["marker_set_hash"] == "abc12345"
+        assert manifest["family"] == "Poxviridae"
+        assert set(manifest["marker_files"]) == {"DNA_polymerase.gb", "MCP.gb"}
+
+    def test_get_returns_none_for_missing(self, sc):
+        assert sc.get_concat(99999, "deadbeef", 300) is None
+
+    def test_get_returns_none_when_no_gb_files(self, sc, tmp_path):
+        # Manifest exists but no .gb files (corrupted state)
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        sc.store_concat(taxid=1, marker_set_hash_str="abc12345",
+                        max_per_species=300, marker_dir=empty_dir,
+                        family="X")
+        # Now no .gb files were copied; get_concat must return None
+        assert sc.get_concat(1, "abc12345", 300) is None
+
+    def test_store_empty_then_get_empty(self, sc):
+        sc.store_empty_concat(7777, "abc12345", 300, family="Asfarviridae")
+        assert sc.get_empty_concat(7777, "abc12345", 300) is True
+        assert sc.get_empty_concat(7777, "abc12345", 200) is False  # different max
+        assert sc.get_empty_concat(7777, "different", 300) is False  # different hash
+
+    def test_marker_hash_isolates_caches(self, sc, tmp_path):
+        # Two runs of the same taxid with different marker sets must NOT collide.
+        d1 = _make_marker_dir(tmp_path / "v1", {"polB.gb": "LOCUS A\n//\n"})
+        sc.store_concat(taxid=42, marker_set_hash_str="hash1111",
+                        max_per_species=300, marker_dir=d1, family="X")
+        # Different marker hash → cache miss
+        assert sc.get_concat(42, "hash2222", 300) is None
+        # Original hash still hits
+        assert sc.get_concat(42, "hash1111", 300) is not None
+
+    def test_concat_cache_does_not_collide_with_single_protein(self, sc, tmp_path):
+        # Single-protein entry for taxid 42, then concat entry for the same
+        # taxid — both must coexist independently.
+        gb = _make_gb(tmp_path)
+        sc.store(42, "protein", "DNA polymerase", None, 300, gb, 5,
+                 family="X")
+        d = _make_marker_dir(tmp_path, {"polB.gb": "LOCUS A\n//\n"})
+        sc.store_concat(taxid=42, marker_set_hash_str="abc12345",
+                        max_per_species=300, marker_dir=d, family="X")
+        # Both retrievable
+        assert sc.get(42, "protein", "DNA polymerase", None, 300) is not None
+        assert sc.get_concat(42, "abc12345", 300) is not None
+
+    def test_concat_cache_in_protein_subdirectory(self, sc, tmp_path):
+        # Layout invariant: concat entries live under cache_dir/protein/
+        d = _make_marker_dir(tmp_path, {"polB.gb": "LOCUS A\n//\n"})
+        sc.store_concat(taxid=42, marker_set_hash_str="abc12345",
+                        max_per_species=300, marker_dir=d, family="X")
+        cached = sc.get_concat(42, "abc12345", 300)
+        assert cached is not None
+        # Path includes /protein/ segment
+        assert "protein" in cached.parts
+
+    def test_stats_counts_concat_marker_files(self, sc, tmp_path):
+        d = _make_marker_dir(tmp_path, {
+            "polB.gb": "LOCUS A\n//\n",
+            "MCP.gb":  "LOCUS B\n//\n",
+            "hel.gb":  "LOCUS C\n//\n",
+        })
+        sc.store_concat(taxid=42, marker_set_hash_str="abc12345",
+                        max_per_species=300, marker_dir=d, family="X")
+        st = sc.stats()
+        # 3 per-marker .gb files counted as 3 entries
+        assert st["entries"] >= 3

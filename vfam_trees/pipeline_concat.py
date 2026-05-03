@@ -26,6 +26,7 @@ from Bio import Phylo, SeqIO
 from Bio.SeqRecord import SeqRecord
 
 from .branch_outliers import branch_length_stats, find_branch_length_outliers
+from .cache import SequenceCache, marker_set_hash
 from .colors import assign_leaf_colors
 from .concat import (
     align_and_trim_markers,
@@ -36,7 +37,12 @@ from .concat import (
     remove_per_marker_length_outliers,
     write_partition_file_nexus,
 )
-from .fetch import fetch_species_genomes, fetch_taxonomy_lineages
+from .fetch import (
+    fetch_species_genomes,
+    fetch_taxonomy_lineages,
+    group_proteins_by_genome,
+    load_proteins_from_marker_dir,
+)
 from .logger import get_logger
 from .phyloxml_writer import write_phyloxml
 from .report import generate_family_report, save_tree_icon, save_tree_images
@@ -67,6 +73,7 @@ def run_family_concat(
     output_dir: Path,
     species_list: list[dict],
     threads: int,
+    seq_cache: SequenceCache | None = None,
     summary_path: Path | None,
     status_path: Path | None,
     mark_done,
@@ -123,6 +130,7 @@ def run_family_concat(
         max_per_species=max_per_species,
         min_fraction=min_fraction,
         exclude_organisms=quality_cfg.get("exclude_organisms"),
+        seq_cache=seq_cache,
     )
 
     n_genomes_total = sum(len(g) for g in species_genomes.values())
@@ -790,6 +798,7 @@ def _fetch_all_species(
     max_per_species: int,
     min_fraction: float,
     exclude_organisms: list[str] | None,
+    seq_cache: SequenceCache | None = None,
 ) -> tuple[dict[str, dict[str, dict[str, SeqRecord]]], dict[str, list[dict]], dict]:
     """Fetch genomes per species and return:
        - species_genomes: {species_name: {genome_id: {marker_name: SeqRecord}}}
@@ -821,12 +830,15 @@ def _fetch_all_species(
         "n_orphaned_no_source":        0,
     }
 
-    # One-time warning that concat mode bypasses the global sequence cache.
-    # Tracked in CONCAT_DESIGN.md as a deferred phase-10 task.
-    log.warning(
-        "Note: concat mode does not yet use the global sequence cache; "
-        "every concat run hits NCBI for every species (CONCAT_DESIGN.md phase 10).",
-    )
+    # Stable hash of the marker_set spec — invalidates the cache when any
+    # alias / length_range / locus_tag_hint changes.  Computed once.
+    marker_hash = marker_set_hash(marker_set) if seq_cache is not None else ""
+    if seq_cache is not None:
+        cs = seq_cache.stats()
+        log.info(
+            "Concat-mode global cache: %s  (%d entries, %.1f MB; marker-set hash %s)",
+            seq_cache.cache_dir, cs["entries"], cs["size_mb"], marker_hash,
+        )
 
     for i, sp in enumerate(species_list, start=1):
         sp_name  = sp["name"]
@@ -836,14 +848,19 @@ def _fetch_all_species(
 
         sp_lineage = taxid_to_lineage.get(str(sp_taxid), [])
         species_lineages[sp_name] = sp_lineage
+        species_label = f"[{i}/{len(species_list)}] {sp_name}"
 
         try:
-            genomes, stats = fetch_species_genomes(
-                taxid=sp_taxid,
-                species_name=f"[{i}/{len(species_list)}] {sp_name}",
-                species_lineage=sp_lineage,
+            genomes, stats = _fetch_one_species_with_cache(
+                seq_cache=seq_cache,
+                marker_hash=marker_hash,
+                family=family,
+                species_label=species_label,
+                sp_taxid=sp_taxid,
+                sp_name=sp_name,
+                sp_lineage=sp_lineage,
+                sp_work=sp_work,
                 marker_set=marker_set,
-                output_dir=sp_work,
                 max_per_species=max_per_species,
                 min_fraction=min_fraction,
                 exclude_organisms=exclude_organisms,
@@ -859,6 +876,126 @@ def _fetch_all_species(
             agg[k] += stats.get(k, 0)
 
     return species_genomes, species_lineages, agg
+
+
+def _fetch_one_species_with_cache(
+    *,
+    seq_cache: SequenceCache | None,
+    marker_hash: str,
+    family: str,
+    species_label: str,
+    sp_taxid: int,
+    sp_name: str,
+    sp_lineage: list[dict],
+    sp_work: Path,
+    marker_set: list[dict],
+    max_per_species: int,
+    min_fraction: float,
+    exclude_organisms: list[str] | None,
+) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
+    """Run the per-species fetch, going through the global concat cache when set.
+
+    Three tiers (mirrors the single-protein path):
+      1. Fast negative-cache check (skip species).
+      2. Hit on cached per-marker .gb files → copy into sp_work, parse, group.
+      3. Miss → call ``fetch_species_genomes``, then store_concat.
+
+    When seq_cache is None, falls through directly to ``fetch_species_genomes``.
+    """
+    # Tier 0: no cache configured — fetch directly.
+    if seq_cache is None:
+        return fetch_species_genomes(
+            taxid=sp_taxid,
+            species_name=species_label,
+            species_lineage=sp_lineage,
+            marker_set=marker_set,
+            output_dir=sp_work,
+            max_per_species=max_per_species,
+            min_fraction=min_fraction,
+            exclude_organisms=exclude_organisms,
+        )
+
+    # Tier 1: fast negative-cache check (no lock needed).
+    if seq_cache.get_empty_concat(sp_taxid, marker_hash, max_per_species):
+        log.info("%s: cached empty concat result — skipping.", species_label)
+        return {}, _zero_stats()
+
+    with seq_cache.download_lock_concat(sp_taxid, marker_hash, max_per_species) as got_lock:
+        # Re-check after acquiring lock (concurrent run may have populated).
+        cached_dir = seq_cache.get_concat(sp_taxid, marker_hash, max_per_species)
+        if cached_dir is not None:
+            log.info("%s: concat cache hit — loading per-marker proteins from disk.",
+                     species_label)
+            # Copy cached .gb files into sp_work so subsequent steps and
+            # downstream tooling see them at the expected path.
+            for gb in cached_dir.glob("*.gb"):
+                try:
+                    import shutil as _shutil
+                    _shutil.copy2(gb, sp_work / gb.name)
+                except Exception as exc:
+                    log.debug("Could not copy cached %s into %s: %s", gb, sp_work, exc)
+            proteins_by_marker, n_proteins = load_proteins_from_marker_dir(
+                sp_work, marker_set,
+            )
+            genomes, stats = group_proteins_by_genome(
+                proteins_by_marker=proteins_by_marker,
+                marker_set=marker_set,
+                species_lineage=sp_lineage,
+                min_fraction=min_fraction,
+            )
+            stats["n_proteins_fetched"] = n_proteins
+            n_refseq_kept = sum(
+                1 for gid in genomes
+                if len(gid) >= 3 and gid[2] == "_" and gid[:2].isalpha() and gid[:2].isupper()
+            )
+            stats["n_refseq_kept"] = n_refseq_kept
+            log.info(
+                "%s: loaded %d cached proteins across %d markers; "
+                "%d genome(s) kept (%d RefSeq), %d dropped (min_fraction)",
+                species_label, n_proteins, len(marker_set),
+                stats["n_genomes_kept"], n_refseq_kept,
+                stats["n_dropped_min_fraction"],
+            )
+            return genomes, stats
+        if seq_cache.get_empty_concat(sp_taxid, marker_hash, max_per_species):
+            log.info("%s: cached empty concat result (concurrent) — skipping.",
+                     species_label)
+            return {}, _zero_stats()
+
+        if not got_lock:
+            log.warning("%s: proceeding without concat cache lock", species_label)
+
+        # Tier 3: miss — fetch from NCBI, then store.
+        log.info("%s: concat cache miss — downloading (will cache).", species_label)
+        genomes, stats = fetch_species_genomes(
+            taxid=sp_taxid,
+            species_name=species_label,
+            species_lineage=sp_lineage,
+            marker_set=marker_set,
+            output_dir=sp_work,
+            max_per_species=max_per_species,
+            min_fraction=min_fraction,
+            exclude_organisms=exclude_organisms,
+        )
+        if stats.get("n_proteins_fetched", 0) == 0:
+            seq_cache.store_empty_concat(sp_taxid, marker_hash, max_per_species,
+                                         family=family)
+        else:
+            seq_cache.store_concat(sp_taxid, marker_hash, max_per_species,
+                                   marker_dir=sp_work, family=family)
+        return genomes, stats
+
+
+def _zero_stats() -> dict:
+    return {
+        "n_proteins_fetched":         0,
+        "n_genomes_found":            0,
+        "n_genomes_kept":             0,
+        "n_dropped_min_fraction":     0,
+        "n_dropped_split_submission": 0,
+        "n_orphaned_no_source":       0,
+        "n_refseq_kept":              0,
+    }
 
 
 def _emit_skip(
