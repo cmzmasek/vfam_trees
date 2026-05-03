@@ -257,6 +257,19 @@ class SequenceCache:
         removed so a crashed process never blocks the pipeline indefinitely.
         """
         entry_dir = self._entry_dir(taxid, db, region, segment, max_per_species)
+        with self._acquire_lock(entry_dir, lock_label=f"taxid {taxid}") as acquired:
+            yield acquired
+
+    @contextmanager
+    def _acquire_lock(
+        self,
+        entry_dir: Path,
+        lock_label: str,
+    ) -> Generator[bool, None, None]:
+        """Shared advisory-lock implementation used by both single-protein and
+        concat-mode lock contexts.  ``lock_label`` appears in info/warning logs
+        so both flavours surface in `<family>.log` with the right context.
+        """
         entry_dir.mkdir(parents=True, exist_ok=True)
         lock_path = entry_dir / ".lock"
         acquired  = False
@@ -283,15 +296,15 @@ class SequenceCache:
 
                 if poll == 0:
                     log.info(
-                        "Another job is downloading taxid %d — waiting (max %d s) ...",
-                        taxid, LOCK_POLL_MAX * LOCK_POLL_INTERVAL,
+                        "Another job is downloading %s — waiting (max %d s) ...",
+                        lock_label, LOCK_POLL_MAX * LOCK_POLL_INTERVAL,
                     )
                 time.sleep(LOCK_POLL_INTERVAL)
 
         if not acquired:
             log.warning(
-                "Timed out waiting for download lock on taxid %d — proceeding anyway",
-                taxid,
+                "Timed out waiting for download lock on %s — proceeding anyway",
+                lock_label,
             )
 
         try:
@@ -357,17 +370,15 @@ class SequenceCache:
         return removed
 
     def stats(self) -> dict:
-        """Return basic cache statistics (entry count, negative count, total size)."""
+        """Return basic cache statistics (entry count, negative count, total size).
+
+        Counts both single-protein ``sequences.gb`` and concat-mode per-marker
+        ``<name>.gb`` files via one tree walk.
+        """
         total         = 0
         n_empty       = 0
         size_bytes    = 0
-        for gb in self.cache_dir.rglob("sequences.gb"):
-            total      += 1
-            size_bytes += gb.stat().st_size
         for gb in self.cache_dir.rglob("*.gb"):
-            # Count concat per-marker .gb files (anything not named sequences.gb).
-            if gb.name == "sequences.gb":
-                continue
             total      += 1
             size_bytes += gb.stat().st_size
         for _ in self.cache_dir.rglob("_no_results"):
@@ -380,10 +391,9 @@ class SequenceCache:
         }
 
     # ------------------------------------------------------------------
-    # Concat mode — multi-marker per-species cache
-    # CONCAT_DESIGN.md §10 item 6 / phase 10.
-    # Stores per-marker .gb files inside one entry directory keyed by
-    # (taxid, marker_set_hash, max_per_species).
+    # Concat mode — multi-marker per-species cache.  Entry key is
+    # (taxid, marker_set_hash, max_per_species); same TTL and lock
+    # semantics as the single-protein methods above.
     # ------------------------------------------------------------------
 
     def get_concat(
@@ -402,24 +412,24 @@ class SequenceCache:
         manifest_file = entry_dir / "manifest.json"
         if not manifest_file.exists():
             return None
-        # Any .gb file present (sequences.gb is for single-protein)
-        if not any(p.suffix == ".gb" for p in entry_dir.iterdir()):
+        try:
+            manifest = json.loads(manifest_file.read_text())
+        except Exception as exc:
+            log.debug("Cannot read concat cache manifest %s: %s — treating as miss",
+                      manifest_file, exc)
+            return None
+        if not manifest.get("marker_files"):
             return None
         if self.ttl_days is not None:
             try:
-                manifest = json.loads(manifest_file.read_text())
                 downloaded = datetime.fromisoformat(manifest["downloaded"])
-                age = datetime.now(timezone.utc) - downloaded
-                if age > timedelta(days=self.ttl_days):
-                    log.debug(
-                        "Concat cache entry expired (age %.1f d > ttl %d d): %s",
-                        age.total_seconds() / 86400, self.ttl_days, entry_dir,
-                    )
-                    return None
-            except Exception as exc:
+            except Exception:
+                return None
+            age = datetime.now(timezone.utc) - downloaded
+            if age > timedelta(days=self.ttl_days):
                 log.debug(
-                    "Cannot read concat cache manifest %s: %s — treating as miss",
-                    manifest_file, exc,
+                    "Concat cache entry expired (age %.1f d > ttl %d d): %s",
+                    age.total_seconds() / 86400, self.ttl_days, entry_dir,
                 )
                 return None
         return entry_dir
@@ -517,45 +527,9 @@ class SequenceCache:
         """Concat-mode counterpart to ``download_lock`` — same advisory-lock
         semantics, scoped to the concat cache entry."""
         entry_dir = self._concat_entry_dir(taxid, marker_set_hash_str, max_per_species)
-        entry_dir.mkdir(parents=True, exist_ok=True)
-        lock_path = entry_dir / ".lock"
-        acquired = False
-        for poll in range(LOCK_POLL_MAX):
-            try:
-                with lock_path.open("x") as fh:
-                    fh.write(datetime.now(timezone.utc).isoformat())
-                acquired = True
-                break
-            except FileExistsError:
-                try:
-                    age = time.time() - lock_path.stat().st_mtime
-                    if age > LOCK_TIMEOUT_SECONDS:
-                        log.warning(
-                            "Removing stale concat download lock (%.0f s old): %s",
-                            age, lock_path,
-                        )
-                        lock_path.unlink(missing_ok=True)
-                        continue
-                except OSError:
-                    pass
-                if poll == 0:
-                    log.info(
-                        "Another job is downloading concat-mode taxid %d "
-                        "(marker hash %s) — waiting (max %d s) ...",
-                        taxid, marker_set_hash_str,
-                        LOCK_POLL_MAX * LOCK_POLL_INTERVAL,
-                    )
-                time.sleep(LOCK_POLL_INTERVAL)
-        if not acquired:
-            log.warning(
-                "Timed out waiting for concat download lock on taxid %d — proceeding anyway",
-                taxid,
-            )
-        try:
+        label = f"concat-mode taxid {taxid} (marker hash {marker_set_hash_str})"
+        with self._acquire_lock(entry_dir, lock_label=label) as acquired:
             yield acquired
-        finally:
-            if acquired:
-                lock_path.unlink(missing_ok=True)
 
     def _concat_entry_dir(
         self,

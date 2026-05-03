@@ -37,25 +37,11 @@ from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
 from .report import generate_family_report, save_tree_images, save_tree_icon, save_sequence_length_plot
 from .colors import assign_leaf_colors
+from .concat import is_refseq_genome
 from .cache import SequenceCache
 from .logger import setup_logger, get_logger
 
 log = get_logger(__name__)
-
-
-def _is_refseq_accession(accession: str) -> bool:
-    """Return True if *accession* follows the NCBI RefSeq ``XX_`` prefix format.
-
-    Examples: NC_045512.2, NZ_CP012345.1, YP_009724390.1 → True;
-    MN908947.3, OP123456 → False.
-    """
-    acc = (accession or "").strip()
-    return (
-        len(acc) >= 3
-        and acc[2] == "_"
-        and acc[0:2].isalpha()
-        and acc[0:2].isupper()
-    )
 
 
 def _compute_key(obj) -> str:
@@ -525,7 +511,7 @@ def run_family(
     # subsampling clusters within each species.
     refseq_short_ids = {
         short_id for short_id, meta in short_id_to_meta.items()
-        if _is_refseq_accession(meta.get("accession", ""))
+        if is_refseq_genome(meta.get("accession", ""))
     }
     if refseq_short_ids:
         log.info("Detected %d RefSeq record(s) — will prefer them during subsampling",

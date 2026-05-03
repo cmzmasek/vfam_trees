@@ -34,6 +34,7 @@ from .concat import (
     cluster_and_merge_genomes,
     concatenate_aligned_markers,
     identify_refseq_genomes,
+    is_refseq_genome,
     remove_per_marker_length_outliers,
     write_partition_file_nexus,
 )
@@ -168,7 +169,7 @@ def run_family_concat(
     # RefSeq detection — cross-family count for transparency.
     refseq_genome_ids = {
         gid for genomes in species_genomes.values() for gid in genomes
-        if (len(gid) >= 3 and gid[2] == "_" and gid[:2].isalpha() and gid[:2].isupper())
+        if is_refseq_genome(gid)
     }
     if refseq_genome_ids:
         log.info(
@@ -821,17 +822,8 @@ def _fetch_all_species(
     species_genomes: dict[str, dict[str, dict[str, SeqRecord]]] = {}
     species_lineages: dict[str, list[dict]] = {}
 
-    agg = {
-        "n_proteins_fetched":          0,
-        "n_genomes_found":             0,
-        "n_genomes_kept":              0,
-        "n_dropped_min_fraction":      0,
-        "n_dropped_split_submission":  0,
-        "n_orphaned_no_source":        0,
-    }
+    agg = _zero_stats()
 
-    # Stable hash of the marker_set spec — invalidates the cache when any
-    # alias / length_range / locus_tag_hint changes.  Computed once.
     marker_hash = marker_set_hash(marker_set) if seq_cache is not None else ""
     if seq_cache is not None:
         cs = seq_cache.stats()
@@ -895,14 +887,8 @@ def _fetch_one_species_with_cache(
 ) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
     """Run the per-species fetch, going through the global concat cache when set.
 
-    Three tiers (mirrors the single-protein path):
-      1. Fast negative-cache check (skip species).
-      2. Hit on cached per-marker .gb files → copy into sp_work, parse, group.
-      3. Miss → call ``fetch_species_genomes``, then store_concat.
-
     When seq_cache is None, falls through directly to ``fetch_species_genomes``.
     """
-    # Tier 0: no cache configured — fetch directly.
     if seq_cache is None:
         return fetch_species_genomes(
             taxid=sp_taxid,
@@ -915,7 +901,7 @@ def _fetch_one_species_with_cache(
             exclude_organisms=exclude_organisms,
         )
 
-    # Tier 1: fast negative-cache check (no lock needed).
+    # Fast negative-cache check before paying the lock cost.
     if seq_cache.get_empty_concat(sp_taxid, marker_hash, max_per_species):
         log.info("%s: cached empty concat result — skipping.", species_label)
         return {}, _zero_stats()
@@ -926,16 +912,8 @@ def _fetch_one_species_with_cache(
         if cached_dir is not None:
             log.info("%s: concat cache hit — loading per-marker proteins from disk.",
                      species_label)
-            # Copy cached .gb files into sp_work so subsequent steps and
-            # downstream tooling see them at the expected path.
-            for gb in cached_dir.glob("*.gb"):
-                try:
-                    import shutil as _shutil
-                    _shutil.copy2(gb, sp_work / gb.name)
-                except Exception as exc:
-                    log.debug("Could not copy cached %s into %s: %s", gb, sp_work, exc)
             proteins_by_marker, n_proteins = load_proteins_from_marker_dir(
-                sp_work, marker_set,
+                cached_dir, marker_set,
             )
             genomes, stats = group_proteins_by_genome(
                 proteins_by_marker=proteins_by_marker,
@@ -944,10 +922,7 @@ def _fetch_one_species_with_cache(
                 min_fraction=min_fraction,
             )
             stats["n_proteins_fetched"] = n_proteins
-            n_refseq_kept = sum(
-                1 for gid in genomes
-                if len(gid) >= 3 and gid[2] == "_" and gid[:2].isalpha() and gid[:2].isupper()
-            )
+            n_refseq_kept = sum(1 for gid in genomes if is_refseq_genome(gid))
             stats["n_refseq_kept"] = n_refseq_kept
             log.info(
                 "%s: loaded %d cached proteins across %d markers; "
@@ -965,7 +940,6 @@ def _fetch_one_species_with_cache(
         if not got_lock:
             log.warning("%s: proceeding without concat cache lock", species_label)
 
-        # Tier 3: miss — fetch from NCBI, then store.
         log.info("%s: concat cache miss — downloading (will cache).", species_label)
         genomes, stats = fetch_species_genomes(
             taxid=sp_taxid,
@@ -986,16 +960,19 @@ def _fetch_one_species_with_cache(
         return genomes, stats
 
 
+_STATS_KEYS = (
+    "n_proteins_fetched",
+    "n_genomes_found",
+    "n_genomes_kept",
+    "n_dropped_min_fraction",
+    "n_dropped_split_submission",
+    "n_orphaned_no_source",
+    "n_refseq_kept",
+)
+
+
 def _zero_stats() -> dict:
-    return {
-        "n_proteins_fetched":         0,
-        "n_genomes_found":            0,
-        "n_genomes_kept":             0,
-        "n_dropped_min_fraction":     0,
-        "n_dropped_split_submission": 0,
-        "n_orphaned_no_source":       0,
-        "n_refseq_kept":              0,
-    }
+    return dict.fromkeys(_STATS_KEYS, 0)
 
 
 def _emit_skip(

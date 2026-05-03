@@ -588,14 +588,9 @@ def fetch_species_genomes(
         min_fraction=min_fraction,
         identifier=identifier,
     )
+    from .concat import is_refseq_genome  # local to keep fetch standalone-importable
     stats["n_proteins_fetched"] = n_proteins_fetched
-    # Count RefSeq genomes within this species' kept set (uses inline
-    # accession-prefix detection — concat.is_refseq_genome would create an
-    # import cycle; this stays in fetch.py).
-    n_refseq_kept = sum(
-        1 for gid in genomes
-        if len(gid) >= 3 and gid[2] == "_" and gid[:2].isalpha() and gid[:2].isupper()
-    )
+    n_refseq_kept = sum(1 for gid in genomes if is_refseq_genome(gid))
     stats["n_refseq_kept"] = n_refseq_kept
     log.info(
         "%s: fetched %d proteins across %d markers; "
