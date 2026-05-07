@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import csv
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from .branch_outliers import branch_length_stats, find_branch_length_outliers
 from .cache import SequenceCache, marker_set_hash
 from .colors import assign_leaf_colors
 from .concat import (
+    _safe_charset_name,
     align_and_trim_markers,
     build_raw_concat,
     cluster_and_merge_genomes,
@@ -47,6 +49,7 @@ from .fetch import (
 )
 from .logger import get_logger
 from .phyloxml_writer import write_phyloxml
+from .rename import restore_fasta_names
 from .report import generate_family_report, save_tree_icon, save_tree_images
 from .summary import (
     build_status_row,
@@ -63,6 +66,63 @@ from .tree import (
 )
 
 log = get_logger(__name__)
+
+
+def _write_concat_id_map(
+    output_path: Path,
+    short_to_display: dict[str, str],
+) -> None:
+    """Write the per-tree id-map TSV (short_id, accession, display_name).
+
+    Concat mode keeps source-nuc accessions as the on-tree leaf IDs (no
+    short renaming), so ``short_id`` and ``accession`` are identical.  We
+    still emit the same 3-column schema as the single-protein
+    ``<family>_id_map.tsv`` so downstream join scripts work uniformly.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", newline="") as f:
+        w = csv.writer(f, delimiter="\t")
+        w.writerow(["short_id", "accession", "display_name"])
+        for gid in sorted(short_to_display):
+            w.writerow([gid, gid, short_to_display[gid]])
+
+
+def _write_concat_metadata_tsv(
+    output_path: Path,
+    selected_genomes: dict[str, dict[str, SeqRecord]],
+    leaf_metadata: dict[str, dict],
+    short_to_display: dict[str, str],
+    concat: dict[str, SeqRecord],
+) -> None:
+    """Write per-genome metadata TSV using the single-protein column schema.
+
+    Strain/host/collection_date/location/taxon_id come from any one protein
+    record's source feature (handled by ``_build_concat_leaf_metadata``);
+    they are blank when the GenBank source feature didn't carry the
+    qualifier.  ``length`` is the concatenated alignment length for that
+    genome (post-trim if trimming is enabled).
+    """
+    cols = ["short_id", "display_name", "accession", "species", "strain", "host",
+            "collection_date", "location", "taxon_id", "length"]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=cols, delimiter="\t",
+                                extrasaction="ignore")
+        writer.writeheader()
+        for gid in sorted(selected_genomes):
+            meta = leaf_metadata.get(gid, {})
+            writer.writerow({
+                "short_id":         gid,
+                "display_name":     short_to_display.get(gid, gid),
+                "accession":        gid,
+                "species":          meta.get("species", ""),
+                "strain":           meta.get("strain", ""),
+                "host":             meta.get("host", ""),
+                "collection_date":  meta.get("collection_date", ""),
+                "location":         meta.get("location", ""),
+                "taxon_id":         meta.get("taxon_id", ""),
+                "length":           len(concat[gid].seq) if gid in concat else "",
+            })
 
 
 def _outlier_display(oid: str, genome_to_species: dict[str, str]) -> str:
@@ -644,6 +704,69 @@ def _run_target_concat(
         sp_safe = sp_name.replace(" ", "_") if sp_name else "unknown"
         short_to_display[gid] = f"{sp_safe}|{gid}"
 
+    # 6.5. Publish per-target outputs to family_dir for parity with the
+    #      single-protein pipeline (and additional concat-specific files).
+    #      All FASTA outputs carry display names rather than the bare
+    #      source-nuc accessions used internally.
+    leaf_metadata = _build_concat_leaf_metadata(
+        selected_genomes=selected_genomes,
+        genome_to_species=genome_to_species,
+        short_to_display=short_to_display,
+        species_lineages=species_lineages,
+    )
+    _write_concat_id_map(
+        family_dir / f"{family}_id_map_{label}.tsv",
+        short_to_display,
+    )
+    _write_concat_metadata_tsv(
+        family_dir / f"{family}_metadata_{label}.tsv",
+        selected_genomes=selected_genomes,
+        leaf_metadata=leaf_metadata,
+        short_to_display=short_to_display,
+        concat=concat,
+    )
+    # Final concat MSA (post-trim, post-outlier-removal) with display names
+    restore_fasta_names(
+        concat_fasta,
+        family_dir / f"{family}_alignment_{label}.fasta",
+        short_to_display,
+    )
+    # NEXUS partition file — always emitted in concat mode; used by IQ-TREE
+    # for tree_100 and informative documentation for tree_500 (FastTree)
+    if partition_path.exists():
+        shutil.copy2(
+            partition_path,
+            family_dir / f"{family}_partitions_{label}.nex",
+        )
+    # Per-marker raw + final aligned FASTAs (display names).  Files reflect
+    # the FINAL outlier-removal iteration since align_and_trim_markers
+    # overwrites its outputs in-place.
+    markers_dir = family_dir / f"{family}_markers_{label}"
+    markers_dir.mkdir(parents=True, exist_ok=True)
+    msa_root = target_work / "msa"
+    aln_basename = "aln.trim.fasta" if trim_enabled else "aln.fasta"
+    for marker in marker_order:
+        safe = _safe_charset_name(marker)
+        src_raw = msa_root / safe / "raw.fasta"
+        src_aln = msa_root / safe / aln_basename
+        if src_raw.exists():
+            restore_fasta_names(
+                src_raw,
+                markers_dir / f"{safe}_raw.fasta",
+                short_to_display,
+            )
+        if src_aln.exists():
+            restore_fasta_names(
+                src_aln,
+                markers_dir / f"{safe}_alignment.fasta",
+                short_to_display,
+            )
+    log.info(
+        "tree_%s outputs published: id_map, metadata, concat alignment, "
+        "partition file, %d per-marker raw + aligned FASTAs",
+        label, len(marker_order),
+    )
+
     # 7. Annotate tree with LCA labels and root.
     support_type = support_type_for(tree_tool, tree_options)
     metadata_for_annotation = [
@@ -701,13 +824,8 @@ def _run_target_concat(
                 clade.name = short_to_display.get(clade.name, clade.name)
 
     # 11. PhyloXML — display names on leaves, source-nuc accession in <accession>.
+    #     Reuses leaf_metadata built earlier for the metadata TSV (step 6.5).
     xml_path = family_dir / f"{family}_tree_{label}.xml"
-    leaf_metadata = _build_concat_leaf_metadata(
-        selected_genomes=selected_genomes,
-        genome_to_species=genome_to_species,
-        short_to_display=short_to_display,
-        species_lineages=species_lineages,
-    )
     write_phyloxml(
         newick_path=annotated_nwk,
         output_xml=xml_path,

@@ -15,7 +15,12 @@ from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 
 from vfam_trees import pipeline_concat
-from vfam_trees.pipeline_concat import _build_concat_leaf_metadata, _outlier_display
+from vfam_trees.pipeline_concat import (
+    _build_concat_leaf_metadata,
+    _outlier_display,
+    _write_concat_id_map,
+    _write_concat_metadata_tsv,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +56,123 @@ class TestOutlierDisplay:
     def test_empty_species_falls_back_to_question_mark(self):
         m = {"NC_001234.1": ""}
         assert _outlier_display("NC_001234.1", m) == "?|NC_001234.1"
+
+
+# ---------------------------------------------------------------------------
+# _write_concat_id_map / _write_concat_metadata_tsv
+# Regression for v1.2.16: concat now publishes id_map / metadata TSVs and
+# per-marker FASTAs for parity with the single-protein pipeline.
+# ---------------------------------------------------------------------------
+
+import csv as _csv
+from Bio.Seq import Seq as _Seq
+
+
+class TestWriteConcatIdMap:
+    def test_writes_three_columns_in_sorted_accession_order(self, tmp_path):
+        path = tmp_path / "F_id_map_100.tsv"
+        short_to_display = {
+            "NC_002645.1": "Some_virus|NC_002645.1",
+            "MN908947.3":  "Severe_acute_respiratory_syndrome_coronavirus_2|MN908947.3",
+            "KX111111.2":  "Other_virus|KX111111.2",
+        }
+        _write_concat_id_map(path, short_to_display)
+        with open(path, newline="") as f:
+            reader = _csv.DictReader(f, delimiter="\t")
+            assert reader.fieldnames == ["short_id", "accession", "display_name"]
+            rows = list(reader)
+        # Sorted alphabetically by accession for stable diffs across runs
+        assert [r["short_id"] for r in rows] == [
+            "KX111111.2", "MN908947.3", "NC_002645.1",
+        ]
+        # short_id == accession in concat (no renaming layer)
+        for r in rows:
+            assert r["short_id"] == r["accession"]
+        assert rows[1]["display_name"] == \
+            "Severe_acute_respiratory_syndrome_coronavirus_2|MN908947.3"
+
+    def test_empty_map_writes_header_only(self, tmp_path):
+        path = tmp_path / "F_id_map_500.tsv"
+        _write_concat_id_map(path, {})
+        text = path.read_text().strip().splitlines()
+        assert text == ["short_id\taccession\tdisplay_name"]
+
+
+class TestWriteConcatMetadataTsv:
+    def _make(self, tmp_path):
+        # 2 genomes × 1 marker each
+        sel = {
+            "NC_001234.1": {"polB": SeqRecord(_Seq("M" * 100), id="YP_a")},
+            "MN555555.1":  {"polB": SeqRecord(_Seq("M" * 100), id="YP_b")},
+        }
+        leaf_metadata = {
+            "NC_001234.1": {
+                "species":          "Virus alpha",
+                "strain":           "alpha-1",
+                "host":             "Homo sapiens",
+                "collection_date":  "2024-01-01",
+                "location":         "USA",
+                "taxon_id":         "12345",
+            },
+            "MN555555.1": {
+                "species":          "Virus beta",
+                # no strain/host/etc — leaf_metadata only sets fields when
+                # the GenBank source feature carried a non-"unknown" value
+            },
+        }
+        short_to_display = {
+            "NC_001234.1": "Virus_alpha|NC_001234.1",
+            "MN555555.1":  "Virus_beta|MN555555.1",
+        }
+        # Concat sequences (post-trim length, used for the "length" column)
+        concat = {
+            "NC_001234.1": SeqRecord(_Seq("X" * 800), id="NC_001234.1"),
+            "MN555555.1":  SeqRecord(_Seq("X" * 800), id="MN555555.1"),
+        }
+        path = tmp_path / "F_metadata_100.tsv"
+        _write_concat_metadata_tsv(path, sel, leaf_metadata, short_to_display, concat)
+        return path
+
+    def test_schema_matches_single_protein(self, tmp_path):
+        path = self._make(tmp_path)
+        with open(path, newline="") as f:
+            reader = _csv.DictReader(f, delimiter="\t")
+            assert reader.fieldnames == [
+                "short_id", "display_name", "accession", "species", "strain",
+                "host", "collection_date", "location", "taxon_id", "length",
+            ]
+            rows = list(reader)
+        assert len(rows) == 2
+
+    def test_full_metadata_row(self, tmp_path):
+        path = self._make(tmp_path)
+        with open(path, newline="") as f:
+            rows = {r["short_id"]: r for r in _csv.DictReader(f, delimiter="\t")}
+        r = rows["NC_001234.1"]
+        assert r["display_name"] == "Virus_alpha|NC_001234.1"
+        assert r["accession"]    == "NC_001234.1"
+        assert r["species"]      == "Virus alpha"
+        assert r["strain"]       == "alpha-1"
+        assert r["host"]         == "Homo sapiens"
+        assert r["collection_date"] == "2024-01-01"
+        assert r["location"]     == "USA"
+        assert r["taxon_id"]     == "12345"
+        assert r["length"]       == "800"
+
+    def test_partial_metadata_leaves_missing_fields_empty(self, tmp_path):
+        # Genome with no strain/host/etc must produce empty strings, not
+        # "unknown" placeholders or None.
+        path = self._make(tmp_path)
+        with open(path, newline="") as f:
+            rows = {r["short_id"]: r for r in _csv.DictReader(f, delimiter="\t")}
+        r = rows["MN555555.1"]
+        assert r["species"]         == "Virus beta"
+        assert r["strain"]          == ""
+        assert r["host"]            == ""
+        assert r["collection_date"] == ""
+        assert r["location"]        == ""
+        assert r["taxon_id"]        == ""
+        assert r["length"]          == "800"
 
 
 # ---------------------------------------------------------------------------

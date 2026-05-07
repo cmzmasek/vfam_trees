@@ -38,6 +38,41 @@ Three columns: `short_id` (used internally during MSA/tree inference because phy
 ### Color map (`<Family>_colors_500.json`, `<Family>_colors_100.json`)
 JSON mapping each leaf's `display_name` to a hex color. The same colors are reused in the PDF/PNG figures and the PhyloXML `style:font_color` property.
 
+## 3a. Concat-mode-only files
+
+Concat-mode runs (`sequence.region == "concatenated"`, used by large DNA virus families with curated marker sets) produce a few additional files beyond the single-protein output set, plus per-tree variants of the id-map.
+
+### Per-tree ID map (`<Family>_id_map_500.tsv`, `<Family>_id_map_100.tsv`)
+Concat keeps the source-nuc genome accession as the on-tree leaf identifier (no short renaming). The schema is identical to single-protein's `<Family>_id_map.tsv` — `short_id`, `accession`, `display_name` — but `short_id == accession` in concat. Per-tree because the genome set kept in tree_500 differs from tree_100 (different selection + iterative outlier removal). `display_name` is `species|accession`.
+
+### NEXUS partition file (`<Family>_partitions_500.nex`, `<Family>_partitions_100.nex`)
+NEXUS-format charset block listing the column coordinates of each marker in the concatenated alignment, e.g.:
+
+```
+#nexus
+begin sets;
+    charset DNA_polymerase = 1-1234;
+    charset MCP = 1235-2456;
+    charset hel = 2457-3210;
+end;
+```
+
+Used directly by partitioned IQ-TREE on tree_100 (`-p partitions.nex -m MFP`, so each partition gets its own ModelFinder pick — recorded in `summary.tsv:tree100_marker_models`). Emitted for tree_500 too even though FastTree doesn't consume it, because the coordinates are useful for any downstream analysis that wants to slice the concat back into per-marker blocks.
+
+### Per-marker FASTAs (`<Family>_markers_500/`, `<Family>_markers_100/`)
+A subdirectory per tree size containing two files per marker:
+
+- `<safe_marker>_raw.fasta` — unaligned per-marker protein sequences (one record per genome that has this marker after Policy A grouping + per-marker length-outlier removal)
+- `<safe_marker>_alignment.fasta` — the **final** per-marker MSA fed into the concatenation step (post-MAFFT, post-trimAl when `msa_trim.enabled: true`, reflecting the final outlier-removal iteration)
+
+Marker names are sanitized to NEXUS-compatible identifiers (`DNA polymerase` → `DNA_polymerase`); the same sanitized name appears in `_partitions_<size>.nex`. Headers carry the same `species|accession` display names as the rest of the per-tree outputs, so per-marker FASTAs join cleanly back to `<Family>_metadata_<size>.tsv`. Genomes lacking a marker contribute no record to that marker's raw/alignment FASTAs but appear in the concatenated alignment as a gap-padded block of the marker's aligned column count.
+
+### Concatenated final alignment (`<Family>_alignment_500.fasta`, `<Family>_alignment_100.fasta`)
+Same filename as the single-protein equivalent — the concat case fills it with the head-to-tail concatenation of all per-marker MSAs (gap-padded for missing markers). Length equals the sum of per-marker block widths reported in the partition file. Reflects the final outlier-removal iteration.
+
+### Per-genome metadata TSV (`<Family>_metadata_500.tsv`, `<Family>_metadata_100.tsv`)
+Same column schema as single-protein. Concat extracts strain/host/collection_date/location/taxon_id from any one of the genome's protein records (all share the source feature). Fields the GenBank source feature didn't carry are left blank rather than filled with `unknown`. `length` is the **concatenated** alignment length for that genome.
+
 ## 4. Configuration & log
 
 ### Resolved per-family config (`<Family>.yaml`)

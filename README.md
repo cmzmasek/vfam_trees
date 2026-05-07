@@ -386,7 +386,10 @@ For each family, results are written to `results/<Family>_<taxid>/` (e.g. `resul
 | `<Family>_sequences_raw_100.fasta` | Sequences entering the MSA (after QC, clustering, and proportional merge; before post-tree outlier removal) |
 | `<Family>_metadata_500.tsv` | Sequence metadata (broad) |
 | `<Family>_metadata_100.tsv` | Sequence metadata (collapsed) |
-| `<Family>_id_map.tsv` | Short ID → display name mapping |
+| `<Family>_id_map.tsv` | Short ID → display name mapping (single-protein / whole-genome runs only — concat mode emits per-tree `_id_map_500.tsv` / `_id_map_100.tsv` instead) |
+| `<Family>_id_map_500.tsv`, `<Family>_id_map_100.tsv` | Concat mode only: per-tree id-map (concat keeps source-nuc accessions as leaf IDs, so `short_id == accession`; `display_name` is `species|accession`) |
+| `<Family>_partitions_500.nex`, `<Family>_partitions_100.nex` | Concat mode only: NEXUS charset coordinates of each marker block in the concatenated alignment, used by partitioned IQ-TREE for tree_100 and informative for tree_500 |
+| `<Family>_markers_500/`, `<Family>_markers_100/` | Concat mode only: per-marker FASTAs — `<safe_marker>_raw.fasta` (unaligned, display names) and `<safe_marker>_alignment.fasta` (final per-marker MSA, post-trim when enabled) |
 | `<Family>_tree_icon.png` | Square topology-only icon of tree_100 (no labels, uniform branch color, configurable size/colors) |
 | `<Family>_report.pdf` | Per-family PDF report: stats table, post-QC length histogram, per-tree length histograms (tree_500 and tree_100), SH support histograms, tree_100 visualization with genus/subfamily color legend |
 | `<Family>.log` | Per-family log |
