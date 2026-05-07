@@ -277,7 +277,7 @@ def generate_family_report(
         d["Author"] = f"vfam_trees v{__version__}"
         d["CreationDate"] = datetime.now(timezone.utc)
 
-    log.info("PDF report written to %s", output_pdf)
+    log.debug("PDF report written to %s", output_pdf)
 
 
 def save_tree_images(
@@ -464,7 +464,7 @@ def save_tree_icon(
         ax.axis("off")
 
         fig.savefig(str(out_path), dpi=_ICON_DPI)
-        log.info("Tree icon written to %s", out_path)
+        log.debug("Tree icon written to %s", out_path)
     except Exception as e:
         log.warning("Tree icon skipped for %s: %s", family, e)
     finally:
@@ -557,7 +557,7 @@ def _draw_tree_fig(
                     artist.set_color(color)
                     n_colored += 1
 
-        log.debug(
+        log.info(
             "tree_%s: colored %d / %d leaf labels in %s",
             label, n_colored, n_leaves, family,
         )

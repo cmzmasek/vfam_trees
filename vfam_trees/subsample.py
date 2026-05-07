@@ -197,8 +197,8 @@ def adaptive_cluster_species(
     reps_at_max = _cluster_at(records, threshold_max, seq_type,
                                work_dir / f"t{threshold_max:.2f}", clustering_tool)
     if len(reps_at_max) <= max_reps:
-        log.debug("threshold_max=%.2f gives %d reps ≤ max_reps %d — using threshold_max.",
-                  threshold_max, len(reps_at_max), max_reps)
+        log.info("threshold_max=%.2f gives %d reps ≤ max_reps %d — using threshold_max.",
+                 threshold_max, len(reps_at_max), max_reps)
         return reps_at_max, threshold_max
 
     # Binary search: find highest threshold where n_reps ≤ max_reps
@@ -218,7 +218,7 @@ def adaptive_cluster_species(
         else:
             hi = mid   # need lower (more aggressive)
 
-    log.debug(
+    log.info(
         "Adaptive clustering: %d sequences → %d reps at threshold %.4f (max_reps=%d)",
         len(records), len(best_reps), best_threshold, max_reps,
     )
@@ -409,6 +409,8 @@ def _mmseqs2_cluster(
         "-v", "0",
     ]
 
+    log.info("Running MMseqs2 easy-linclust (--min-seq-id %.4f)", threshold)
+    log.debug("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -430,6 +432,7 @@ def _mmseqs2_cluster(
             "change in MMseqs2's output-file naming conventions."
         )
 
+    log.info("MMseqs2 complete")
     return [rec.id for rec in SeqIO.parse(rep_fasta, "fasta")]
 
 
@@ -455,6 +458,8 @@ def _cdhit_cluster(
                "-c", str(threshold), "-n", _word_size_nuc(threshold),
                "-T", "1", "-M", "0", "-d", "0"]
 
+    log.info("Running %s (-c %.4f)", cmd[0], threshold)
+    log.debug("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -473,6 +478,7 @@ def _cdhit_cluster(
             "conventions."
         )
 
+    log.info("%s complete", cmd[0])
     return [rec.id for rec in SeqIO.parse(output_fasta, "fasta")]
 
 

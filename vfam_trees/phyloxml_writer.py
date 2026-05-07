@@ -105,7 +105,7 @@ def write_phyloxml(
 
     output_xml.parent.mkdir(parents=True, exist_ok=True)
     _write_pretty_xml(root, output_xml)
-    log.info("PhyloXML written to %s", output_xml)
+    log.debug("PhyloXML written to %s", output_xml)
 
 
 def _write_clade(

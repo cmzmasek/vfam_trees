@@ -69,7 +69,7 @@ def run_msa(
     else:
         raise ValueError(f"Unsupported MSA tool: {tool}. Supported: mafft")
 
-    log.info("MSA complete: %s", output_fasta)
+    log.debug("MSA complete: %s", output_fasta)
 
 
 def _run_mafft(
@@ -84,7 +84,8 @@ def _run_mafft(
     cmd += ["--out", str(output_fasta)]
     cmd += [str(input_fasta)]
 
-    log.info("Running: %s", " ".join(cmd))
+    log.info("Running MAFFT (%s)", options)
+    log.debug("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -105,3 +106,4 @@ def _run_mafft(
         )
 
     log.debug("MAFFT stdout: %s", result.stdout[:500] if result.stdout else "(none)")
+    log.info("MAFFT complete")

@@ -232,7 +232,7 @@ def write_summary_row(summary_path: Path, row: dict) -> None:
         if is_new:
             writer.writeheader()
         writer.writerow(row)
-    log.info("Summary updated: %s", summary_path)
+    log.debug("Summary updated: %s", summary_path)
 
 
 def build_status_row(
@@ -273,7 +273,7 @@ def write_status_row(status_path: Path, row: dict) -> None:
         if is_new:
             writer.writeheader()
         writer.writerow(row)
-    log.info("Status updated: %s", status_path)
+    log.debug("Status updated: %s", status_path)
 
 
 def build_summary_row(

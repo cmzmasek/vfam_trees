@@ -71,7 +71,7 @@ def filter_sequences(
             rec.description,
         ]).lower()
         if any(term in search_text for term in exclude_lower):
-            log.debug("Excluding record: %s", rec.annotations.get("organism", ""))
+            log.info("Excluding record: %s", rec.annotations.get("organism", ""))
             n_excluded_organism += 1
         else:
             passed_organism.append(rec)

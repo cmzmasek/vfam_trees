@@ -663,7 +663,7 @@ def _fetch_marker_proteins(
         non_refseq_ids = [i for i in all_ids if i not in refseq_set][:n_remaining]
 
     final_ids = refseq_ids + non_refseq_ids
-    log.debug(
+    log.info(
         "%s [marker=%s]: %d RefSeq + %d non-RefSeq protein records",
         species_name or f"taxid {taxid}", marker.get("name", "?"),
         len(refseq_ids), len(non_refseq_ids),

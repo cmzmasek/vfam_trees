@@ -240,7 +240,8 @@ def _run_fasttree(
 
     cmd += [str(alignment_fasta)]
 
-    log.info("Running: %s > %s", " ".join(cmd), out_nwk)
+    log.info("Running FastTree (%s)", " ".join(cmd[1:-1]))
+    log.debug("Running: %s > %s", " ".join(cmd), out_nwk)
     with open(out_nwk, "w") as out_f:
         result = subprocess.run(cmd, stdout=out_f, stderr=subprocess.PIPE, text=True)
 
@@ -260,7 +261,8 @@ def _run_fasttree(
             "stderr above."
         )
 
-    log.info("FastTree complete: %s", out_nwk)
+    log.debug("FastTree complete: %s", out_nwk)
+    log.info("FastTree complete")
     return out_nwk
 
 
@@ -299,7 +301,8 @@ def _run_iqtree(
         "--redo",
     ] + options_parts
 
-    log.info("Running: %s", " ".join(str(c) for c in cmd))
+    log.info("Running IQ-TREE (model=%s%s)", model, ", " + " ".join(options_parts) if options_parts else "")
+    log.debug("Running: %s", " ".join(str(c) for c in cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -324,5 +327,6 @@ def _run_iqtree(
     out_nwk = output_dir / f"{prefix}.nwk"
     out_nwk.write_text(treefile.read_text())
 
-    log.info("IQ-TREE complete: %s", out_nwk)
+    log.debug("IQ-TREE complete: %s", out_nwk)
+    log.info("IQ-TREE complete")
     return out_nwk

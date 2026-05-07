@@ -123,7 +123,7 @@ def annotate_tree(
 
     output_nwk.parent.mkdir(parents=True, exist_ok=True)
     Phylo.write(tree, str(output_nwk), "newick")
-    log.info("Annotated tree written to %s", output_nwk)
+    log.debug("Annotated tree written to %s", output_nwk)
     return tree
 
 

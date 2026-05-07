@@ -39,6 +39,7 @@ from .concat import (
     write_partition_file_nexus,
 )
 from .fetch import (
+    extract_metadata,
     fetch_species_genomes,
     fetch_taxonomy_lineages,
     group_proteins_by_genome,
@@ -508,7 +509,7 @@ def _run_target_concat(
             "across %d markers; block widths [%s]",
             label, len(concat), total_cols, len(partition_map), block_widths_str,
         )
-        log.info(
+        log.debug(
             "Wrote NEXUS partition file (%d charsets, %d columns) → %s",
             len(partition_map), total_cols, partition_path,
         )
@@ -650,7 +651,7 @@ def _run_target_concat(
             else:
                 clade.name = None
         Phylo.write(nwk_tree, str(output_nwk), "newick")
-        log.info("Newick written to %s", output_nwk)
+        log.debug("Newick written to %s", output_nwk)
 
     # 9. Genus/subfamily leaf coloring — sel_records is a list of SeqRecord
     #    proxies (only .id is consulted), short_id_to_meta carries lineage.
@@ -660,7 +661,7 @@ def _run_target_concat(
         for gid in selected_genomes
     }
     genus_inference = family_cfg.get("coloring", {}).get("genus_inference", "none")
-    display_to_color, _short_to_color, genus_to_color, subfamily_to_genera = assign_leaf_colors(
+    display_to_color, short_to_color, genus_to_color, subfamily_to_genera = assign_leaf_colors(
         sel_records, short_id_to_meta, short_to_display, genus_inference=genus_inference,
     )
     n_subfamilies = sum(1 for k in subfamily_to_genera if k != "(unclassified)")
@@ -677,13 +678,12 @@ def _run_target_concat(
 
     # 11. PhyloXML — display names on leaves, source-nuc accession in <accession>.
     xml_path = family_dir / f"{family}_tree_{label}.xml"
-    leaf_metadata = {
-        gid: {"species":        genome_to_species.get(gid, ""),
-              "accession":      gid,
-              "seq_name":       short_to_display.get(gid, gid),
-              "lineage_ranked": species_lineages.get(genome_to_species.get(gid, ""), [])}
-        for gid in selected_genomes
-    }
+    leaf_metadata = _build_concat_leaf_metadata(
+        selected_genomes=selected_genomes,
+        genome_to_species=genome_to_species,
+        short_to_display=short_to_display,
+        species_lineages=species_lineages,
+    )
     write_phyloxml(
         newick_path=annotated_nwk,
         output_xml=xml_path,
@@ -692,11 +692,15 @@ def _run_target_concat(
         family=family,
         tree=bio_tree,
         phylogeny_name=f"{family} [concatenated|{len(marker_order)} markers]",
-        phylogeny_detail=f"concatenated {len(marker_order)}-marker phylogeny "
-                         f"(target_{label}, partitioned)" if label == "100"
-                         else f"concatenated {len(marker_order)}-marker phylogeny (target_{label})",
+        phylogeny_detail=(
+            f"concatenated {len(marker_order)}-marker phylogeny "
+            f"[{', '.join(marker_order)}] (target_{label}, partitioned)"
+            if label == "100"
+            else f"concatenated {len(marker_order)}-marker phylogeny "
+                 f"[{', '.join(marker_order)}] (target_{label})"
+        ),
         confidence_type="SH_aLRT" if label == "100" else "SH_like",
-        leaf_colors=display_to_color,
+        leaf_colors=short_to_color,
     )
 
     # 8. Concat-specific stats: marker coverage, concat length, partition models
@@ -827,7 +831,7 @@ def _fetch_all_species(
     marker_hash = marker_set_hash(marker_set) if seq_cache is not None else ""
     if seq_cache is not None:
         cs = seq_cache.stats()
-        log.info(
+        log.debug(
             "Concat-mode global cache: %s  (%d entries, %.1f MB; marker-set hash %s)",
             seq_cache.cache_dir, cs["entries"], cs["size_mb"], marker_hash,
         )
@@ -973,6 +977,39 @@ _STATS_KEYS = (
 
 def _zero_stats() -> dict:
     return dict.fromkeys(_STATS_KEYS, 0)
+
+
+def _build_concat_leaf_metadata(
+    selected_genomes: dict[str, dict[str, SeqRecord]],
+    genome_to_species: dict[str, str],
+    short_to_display: dict[str, str],
+    species_lineages: dict[str, list[dict]],
+) -> dict[str, dict]:
+    """Build per-genome PhyloXML leaf metadata for concat mode.
+
+    Source-feature fields (host/collection_date/location/strain/taxon_id) are
+    pulled from any one protein record in the genome — they all share the
+    same source feature.  ``"unknown"`` placeholders emitted by
+    ``extract_metadata`` are skipped so absent fields stay absent in the XML.
+    """
+    leaf_metadata: dict[str, dict] = {}
+    for gid in selected_genomes:
+        meta = {
+            "species":        genome_to_species.get(gid, ""),
+            "accession":      gid,
+            "seq_name":       short_to_display.get(gid, gid),
+            "lineage_ranked": species_lineages.get(genome_to_species.get(gid, ""), []),
+        }
+        marker_records = selected_genomes[gid]
+        if marker_records:
+            sample = next(iter(marker_records.values()))
+            extracted = extract_metadata(sample)
+            for field in ("host", "collection_date", "location", "strain", "taxon_id"):
+                value = extracted.get(field, "")
+                if value and value != "unknown":
+                    meta[field] = value
+        leaf_metadata[gid] = meta
+    return leaf_metadata
 
 
 def _emit_skip(

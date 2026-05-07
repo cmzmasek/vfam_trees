@@ -46,14 +46,15 @@ def run_trim(
             f"Unsupported MSA trimming tool: {tool!r}. Supported: 'trimal'."
         )
     _run_trimal(input_fasta, output_fasta, options)
-    log.info("Trim complete: %s", output_fasta)
+    log.debug("Trim complete: %s", output_fasta)
 
 
 def _run_trimal(input_fasta: Path, output_fasta: Path, options: str) -> None:
     cmd = ["trimal", "-in", str(input_fasta), "-out", str(output_fasta)]
     cmd += options.split()
 
-    log.info("Running: %s", " ".join(cmd))
+    log.info("Running trimAl (%s)", options)
+    log.debug("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -72,3 +73,4 @@ def _run_trimal(input_fasta: Path, output_fasta: Path, options: str) -> None:
             "This may indicate a change in trimAl's output behavior — see "
             "stderr above."
         )
+    log.info("trimAl complete")
