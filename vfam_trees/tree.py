@@ -66,6 +66,30 @@ def is_model_finder_spec(model: str) -> bool:
     return root in {"TEST", "TESTONLY", "TESTNEW", "TESTNEWONLY", "MF", "MFP"}
 
 
+def support_type_for(tool: str, options: str) -> str:
+    """Return a short label naming the branch-support measure produced by
+    *tool* under *options* — one of 'SH_like', 'SH_aLRT', 'UFBoot',
+    'SH_aLRT_UFBoot', 'Bootstrap'.
+
+    The IQ-TREE wrapper auto-injects ``-alrt 1000`` whenever no bootstrap
+    flag is present, so plain or ``--fast`` runs yield SH-aLRT.
+    """
+    tool_norm = tool.lower().replace("-", "").replace("_", "")
+    if tool_norm == "fasttree":
+        return "SH_like"
+    parts = options.split() if options else []
+    has_ufboot = "-B" in parts or "--ufboot" in parts or "-bb" in parts
+    has_alrt = "-alrt" in parts
+    has_bootstrap = "-b" in parts
+    if has_ufboot and has_alrt:
+        return "SH_aLRT_UFBoot"
+    if has_ufboot:
+        return "UFBoot"
+    if has_bootstrap:
+        return "Bootstrap"
+    return "SH_aLRT"
+
+
 def parse_iqtree_partition_models(log_path: Path) -> dict[str, str]:
     """Return ``{charset_name: model}`` for a partitioned IQ-TREE run.
 
@@ -283,20 +307,28 @@ def _run_iqtree(
     out_prefix = output_dir / prefix
     model = model_nuc if seq_type == "nucleotide" else model_aa
 
-    # Ensure bootstrap support is always computed unless the user has explicitly
-    # specified a bootstrap flag (-B ultrafast or -b standard).
-    # Note: IQ-TREE's UFBoot (-B) is incompatible with --fast, so --fast is
-    # removed automatically when bootstrap is injected.
+    # Ensure branch support is always computed.  When the caller has not
+    # explicitly chosen a support measure (-alrt, -B, or -b), inject
+    # ``-alrt 1000`` so trees always carry SH-aLRT.  Callers that pass
+    # ``--fast`` continue to do so (--fast is compatible with -alrt; it is
+    # only -B / UFBoot that conflicts with --fast, and that case is the
+    # caller's responsibility to set correctly).
     options_parts = options.split() if options else []
     if "-alrt" not in options_parts and "-B" not in options_parts and "-b" not in options_parts:
         options_parts = ["-alrt", "1000"] + options_parts
         log.debug("Auto-added -alrt 1000 for IQ-TREE SH-aLRT support")
+
+    # Explicitly set the sequence type rather than relying on IQ-TREE's
+    # auto-detection — protein alignments with high A/C/G/T content can be
+    # mis-detected as nucleotide.
+    seqtype_flag = "DNA" if seq_type == "nucleotide" else "AA"
 
     cmd = [
         "iqtree2",
         "-s", str(alignment_fasta),
         "--prefix", str(out_prefix),
         "-m", model,
+        "--seqtype", seqtype_flag,
         "-T", str(threads),
         "--redo",
     ] + options_parts

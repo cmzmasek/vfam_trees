@@ -25,13 +25,13 @@ from .summary import (
     build_status_row, write_status_row,
 )
 from .quality import filter_sequences, remove_length_outliers, deduplicate, write_fasta
-from .rename import assign_short_ids, restore_fasta_names, restore_newick_names
+from .rename import assign_short_ids, restore_fasta_names
 from .subsample import absorb_into_refseqs, adaptive_cluster_species, proportional_merge
 from .msa import run_msa, get_mafft_version, validate_msa
 from .trim import run_trim, get_trimal_version
 from .tree import (
     run_tree, get_tree_tool_version, validate_newick,
-    parse_iqtree_best_model, is_model_finder_spec,
+    parse_iqtree_best_model, is_model_finder_spec, support_type_for,
 )
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
@@ -63,28 +63,9 @@ def _resolve_tree_options(tree_cfg: dict, seq_type: str) -> str:
     return tree_cfg.get("options", "") or ""
 
 
-def _support_type_for(tool: str, options: str) -> str:
-    """Return a short label naming the branch-support measure produced by
-    *tool* under *options* — one of 'SH_like', 'SH_aLRT', 'UFBoot',
-    'SH_aLRT_UFBoot'.
-
-    The IQ-TREE wrapper auto-injects ``-alrt 1000`` whenever no bootstrap
-    flag is present, so plain or ``--fast`` runs yield SH-aLRT.
-    """
-    tool_norm = tool.lower().replace("-", "").replace("_", "")
-    if tool_norm == "fasttree":
-        return "SH_like"
-    parts = options.split() if options else []
-    has_ufboot = "-B" in parts or "--ufboot" in parts or "-bb" in parts
-    has_alrt = "-alrt" in parts
-    has_bootstrap = "-b" in parts
-    if has_ufboot and has_alrt:
-        return "SH_aLRT_UFBoot"
-    if has_ufboot:
-        return "UFBoot"
-    if has_bootstrap:
-        return "Bootstrap"
-    return "SH_aLRT"
+# Backwards-compatible alias — the canonical helper now lives in tree.py
+# so pipeline_concat can share it without circular imports.
+_support_type_for = support_type_for
 
 
 def _write_checkpoint(path: Path, key_obj: dict) -> None:
@@ -1024,10 +1005,14 @@ def _run_target(
         metadata=sel_metadata,
         output_nwk=annotated_nwk,
         lca_min_rank=lca_min_rank,
+        support_type=support_type,
     )
     log.info("Taxonomy annotation complete for tree_%s", label)
 
-    # Write final Newick from in-memory tree — display names on leaves, no internal labels
+    # Write final Newick from in-memory tree — display names on leaves, no internal labels.
+    # If bio_tree is None the annotation step already failed; skip writing the
+    # final Newick rather than emit a string-substituted Newick that may be
+    # malformed when display names contain Newick metacharacters.
     output_nwk = family_dir / f"{family}_tree_{label}.nwk"
     if bio_tree is not None:
         nwk_tree = copy.deepcopy(bio_tree)
@@ -1039,8 +1024,10 @@ def _run_target(
         Phylo.write(nwk_tree, str(output_nwk), "newick")
         log.info("Newick written to %s", output_nwk)
     else:
-        source_nwk = annotated_nwk if annotated_nwk.exists() else treefile
-        restore_newick_names(source_nwk, output_nwk, short_to_display)
+        log.error(
+            "Tree annotation failed for tree_%s — final Newick not written.",
+            label,
+        )
 
     # Assign leaf colors by genus / subfamily
     genus_inference = family_cfg.get("coloring", {}).get("genus_inference", "none")

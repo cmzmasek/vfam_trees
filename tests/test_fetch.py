@@ -7,6 +7,7 @@ from Bio.SeqFeature import FeatureLocation, SeqFeature
 from Bio.SeqRecord import SeqRecord
 
 from vfam_trees.fetch import (
+    _LOCUS_RE,
     _build_marker_query,
     _build_species_query,
     _count_split_submissions,
@@ -90,6 +91,39 @@ def test_protein_marker_does_not_use_nucleotide_gene_only():
     q = _build_species_query(12345, "protein", "DNA polymerase")
     # [Gene] alone (without [Protein Name]) would miss most protein records
     assert '"DNA polymerase"[Protein Name]' in q
+
+
+# ---- _build_marker_query (concat-mode) ----
+
+def test_concat_marker_query_includes_gene_fallback():
+    """Regression for v1.2.12: concat-mode protein queries must search
+    [Gene] as well as [Protein Name] so gene-symbol-named markers
+    (B646L, UL30, ...) match records that only carry the symbol in [Gene]."""
+    marker = {"name": "B646L", "aliases": ["p72", "major capsid protein p72"]}
+    q = _build_marker_query(taxid=137992, marker=marker, species_lineage=None,
+                            exclude_organisms=None)
+    for n in ("B646L", "p72", "major capsid protein p72"):
+        assert f'"{n}"[Protein Name]' in q
+        assert f'"{n}"[Gene]' in q
+
+
+def test_concat_marker_query_subfamily_aliases_get_gene_fallback():
+    """Subfamily-specific aliases (e.g. aliases_Entomopoxvirinae) must also
+    be expanded with the [Gene] fallback."""
+    marker = {
+        "name": "DNA polymerase",
+        "aliases": ["DNA-directed DNA polymerase"],
+        "aliases_Entomopoxvirinae": ["EsV-1-110"],
+    }
+    species_lineage = [
+        {"rank": "subfamily", "name": "Entomopoxvirinae"},
+        {"rank": "species",   "name": "Entomopoxvirus X"},
+    ]
+    q = _build_marker_query(taxid=12345, marker=marker,
+                            species_lineage=species_lineage,
+                            exclude_organisms=None)
+    assert '"EsV-1-110"[Protein Name]' in q
+    assert '"EsV-1-110"[Gene]' in q
 
 
 # ---------------------------------------------------------------------------
@@ -427,3 +461,40 @@ class TestBuildMarkerQuery:
     def test_patent_always_excluded(self):
         q = _build_marker_query(12345, {"name": "X", "aliases": []}, None, None)
         assert "NOT patent[filter]" in q
+
+
+# ---------------------------------------------------------------------------
+# _LOCUS_RE — regex used by _fetch_batch to count returned GenBank records.
+# Regression for v1.2.12: previous implementation used substring counting
+# against a leading-newline "LOCUS " marker which missed the first record
+# and could be inflated by "LOCUS " appearing inside REFERENCE / COMMENT blocks.
+# ---------------------------------------------------------------------------
+
+class TestLocusRegex:
+    def test_counts_first_record(self):
+        # First record has no leading newline — a "\\nLOCUS " substring
+        # search would miss it; the anchored regex must catch it.
+        data = "LOCUS       NC_001234           500 bp\n//\n"
+        assert len(_LOCUS_RE.findall(data)) == 1
+
+    def test_counts_multiple_records(self):
+        data = (
+            "LOCUS       NC_001234           500 bp\n//\n"
+            "LOCUS       MN567890           600 bp\n//\n"
+            "LOCUS       KX111111           700 bp\n//\n"
+        )
+        assert len(_LOCUS_RE.findall(data)) == 3
+
+    def test_does_not_count_locus_in_comment_block(self):
+        # "LOCUS " mid-record (e.g. inside a COMMENT or REFERENCE) must not
+        # be counted as a record.  The regex anchors at line start.
+        data = (
+            "LOCUS       NC_001234           500 bp\n"
+            "COMMENT     This entry references LOCUS NC_999999 in another DB.\n"
+            "//\n"
+        )
+        assert len(_LOCUS_RE.findall(data)) == 1
+
+    def test_empty_string_is_zero(self):
+        assert len(_LOCUS_RE.findall("")) == 0
+

@@ -83,16 +83,6 @@ def restore_fasta_names(input_fasta: Path, output_fasta: Path, id_map: dict[str,
     log.debug("Restored names in %s → %s", input_fasta, output_fasta)
 
 
-def restore_newick_names(input_nwk: Path, output_nwk: Path, id_map: dict[str, str]) -> None:
-    """Replace short IDs with display names in a Newick file."""
-    text = input_nwk.read_text()
-    for short_id, display_name in id_map.items():
-        text = text.replace(short_id, display_name)
-    output_nwk.parent.mkdir(parents=True, exist_ok=True)
-    output_nwk.write_text(text)
-    log.debug("Restored names in %s → %s", input_nwk, output_nwk)
-
-
 def _family_prefix(family: str) -> str:
     """Generate a short uppercase prefix from a family name."""
     consonants = [c for c in family.upper() if c.isalpha() and c not in "AEIOU"]

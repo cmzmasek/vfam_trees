@@ -79,6 +79,7 @@ def get_family_taxid(family: str) -> int | None:
 
 
 def _get_family_taxid(family: str) -> int | None:
+    last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
             with Entrez.esearch(db="taxonomy", term=f'"{family}"[Scientific Name]') as handle:
@@ -86,22 +87,33 @@ def _get_family_taxid(family: str) -> int | None:
             ids = result.get("IdList", [])
             return int(ids[0]) if ids else None
         except Exception as e:
+            last_exc = e
             log.warning("Taxonomy search attempt %d failed: %s", attempt + 1, e)
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_DELAY)
+    log.error(
+        "Taxonomy search for family %r failed after %d attempts: %s",
+        family, MAX_RETRIES, last_exc,
+    )
     return None
 
 
 def _taxonomy_search(query: str, max_records: int) -> list[str]:
+    last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
             with Entrez.esearch(db="taxonomy", term=query, retmax=max_records) as handle:
                 result = Entrez.read(handle)
             return result.get("IdList", [])
         except Exception as e:
+            last_exc = e
             log.warning("Taxonomy search attempt %d failed: %s", attempt + 1, e)
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_DELAY)
+    log.error(
+        "Taxonomy search %r failed after %d attempts — returning empty result: %s",
+        query, MAX_RETRIES, last_exc,
+    )
     return []
 
 
@@ -130,7 +142,10 @@ def fetch_taxonomy_lineages(taxids) -> dict[str, list[dict]]:
     """
     ids = [str(t) for t in taxids if t]
     result: dict[str, list[dict]] = {}
+    n_failed_batches = 0
     for batch in _batched(ids, 500):
+        last_exc: Exception | None = None
+        succeeded = False
         for attempt in range(MAX_RETRIES):
             try:
                 with Entrez.efetch(db="taxonomy", id=",".join(batch), retmode="xml") as handle:
@@ -147,18 +162,35 @@ def fetch_taxonomy_lineages(taxids) -> dict[str, list[dict]]:
                     })
                     result[taxid] = lineage
                 time.sleep(0.2)
+                succeeded = True
                 break
             except Exception as e:
+                last_exc = e
                 log.warning("Taxonomy lineage fetch attempt %d failed: %s", attempt + 1, e)
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(RETRY_DELAY)
+        if not succeeded:
+            n_failed_batches += 1
+            log.error(
+                "Taxonomy lineage fetch for %d taxid(s) failed after %d attempts: %s — "
+                "those lineages will be missing from downstream LCA voting",
+                len(batch), MAX_RETRIES, last_exc,
+            )
+    if n_failed_batches:
+        log.error(
+            "fetch_taxonomy_lineages: %d batch(es) lost — %d/%d taxids resolved",
+            n_failed_batches, len(result), len(ids),
+        )
     return result
 
 
 def _fetch_taxon_names(taxids: list[str]) -> list[dict]:
     """Fetch taxon names for a list of taxids, return list of {taxid, name}."""
     species = []
+    n_failed_batches = 0
     for batch in _batched(taxids, 500):
+        last_exc: Exception | None = None
+        succeeded = False
         for attempt in range(MAX_RETRIES):
             try:
                 with Entrez.efetch(db="taxonomy", id=",".join(batch), retmode="xml") as handle:
@@ -169,11 +201,25 @@ def _fetch_taxon_names(taxids: list[str]) -> list[dict]:
                         "name": rec["ScientificName"],
                     })
                 time.sleep(0.2)
+                succeeded = True
                 break
             except Exception as e:
+                last_exc = e
                 log.warning("Taxon name fetch attempt %d failed: %s", attempt + 1, e)
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(RETRY_DELAY)
+        if not succeeded:
+            n_failed_batches += 1
+            log.error(
+                "Taxon name fetch for %d taxid(s) failed after %d attempts: %s — "
+                "those species will be missing from the discovered list",
+                len(batch), MAX_RETRIES, last_exc,
+            )
+    if n_failed_batches:
+        log.error(
+            "_fetch_taxon_names: %d batch(es) lost — %d/%d taxids resolved",
+            n_failed_batches, len(species), len(taxids),
+        )
     return species
 
 
@@ -339,26 +385,41 @@ def extract_metadata(record: SeqRecord) -> dict:
 # ---------------------------------------------------------------------------
 
 def _search_ids(db: str, query: str, max_records: int) -> list[str]:
+    last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
             with Entrez.esearch(db=db, term=query, retmax=max_records) as handle:
                 result = Entrez.read(handle)
             return result["IdList"]
         except Exception as e:
+            last_exc = e
             log.warning("Search attempt %d failed: %s", attempt + 1, e)
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_DELAY)
+    log.error(
+        "Entrez search on %s failed after %d attempts — returning empty result. "
+        "Query: %r. Last error: %s",
+        db, MAX_RETRIES, query, last_exc,
+    )
     return []
 
 
+# Counts a record by matching the LOCUS keyword anchored at the start of a
+# line.  Substring counting against "\nLOCUS " misses the first record and
+# can also be inflated by "LOCUS " appearing inside REFERENCE / COMMENT blocks
+# of long records.
+_LOCUS_RE = re.compile(r"^LOCUS\s", re.MULTILINE)
+
+
 def _fetch_batch(db: str, ids: list[str]) -> str:
+    last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
             with Entrez.efetch(db=db, id=",".join(ids), rettype="gb", retmode="text") as handle:
                 data = handle.read()
             time.sleep(0.34)
-            # Warn if NCBI returned fewer records than requested
-            n_returned = data.count("\nLOCUS ") + (1 if data.startswith("LOCUS ") else 0)
+            # Warn if NCBI returned fewer records than requested.
+            n_returned = len(_LOCUS_RE.findall(data))
             if n_returned < len(ids):
                 log.warning(
                     "NCBI returned %d record(s) for a batch of %d requested IDs "
@@ -367,9 +428,15 @@ def _fetch_batch(db: str, ids: list[str]) -> str:
                 )
             return data
         except Exception as e:
+            last_exc = e
             log.warning("Fetch attempt %d failed: %s", attempt + 1, e)
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_DELAY)
+    log.error(
+        "Entrez efetch on %s failed after %d attempts for %d ID(s) — "
+        "returning empty payload. Last error: %s",
+        db, MAX_RETRIES, len(ids), last_exc,
+    )
     return ""
 
 
@@ -698,7 +765,16 @@ def _build_marker_query(
     if subfamily:
         names.extend(marker.get(f"aliases_{subfamily}", []))
 
-    or_clause = " OR ".join(f'"{n}"[Protein Name]' for n in names if n)
+    # Search [Protein Name] for descriptive names (e.g. "DNA polymerase") and
+    # [Gene] as a fallback for gene-symbol-named markers (e.g. "B646L", "UL30")
+    # that may live in either field on NCBI protein records.
+    or_terms = []
+    for n in names:
+        if not n:
+            continue
+        or_terms.append(f'"{n}"[Protein Name]')
+        or_terms.append(f'"{n}"[Gene]')
+    or_clause = " OR ".join(or_terms)
     base = f"txid{taxid}[Organism:exp] AND ({or_clause})"
     if refseq_only:
         base += " AND refseq[filter]"

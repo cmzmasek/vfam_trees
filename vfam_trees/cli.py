@@ -1,6 +1,7 @@
 """vfam_trees command-line interface."""
 from __future__ import annotations
 
+import csv
 import json
 import subprocess
 import sys
@@ -840,6 +841,48 @@ def _clear_status(families: list[str], output_dir: Path) -> None:
         if sentinel.exists():
             sentinel.unlink()
             click.echo(f"Cleared status for {family}")
+
+    # Drop any pre-existing rows for these families from summary.tsv and
+    # status.tsv — both files are append-only at the per-family writer, so
+    # without this --force re-runs would leave duplicate rows.
+    families_set = set(families)
+    for tsv_name in ("summary.tsv", "status.tsv"):
+        path = output_dir / tsv_name
+        n_dropped = _filter_tsv_rows(path, families_set)
+        if n_dropped:
+            click.echo(f"Dropped {n_dropped} stale row(s) from {tsv_name}")
+
+
+def _filter_tsv_rows(path: Path, families_to_drop: set[str]) -> int:
+    """Rewrite a TSV in place, removing rows whose 'family' is in the set.
+
+    Returns the number of rows dropped.  No-op (and returns 0) if the file is
+    missing, empty, or has no 'family' column.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return 0
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        if not reader.fieldnames or "family" not in reader.fieldnames:
+            return 0
+        fieldnames = list(reader.fieldnames)
+        kept_rows = []
+        n_dropped = 0
+        for row in reader:
+            if row.get("family", "") in families_to_drop:
+                n_dropped += 1
+            else:
+                kept_rows.append(row)
+    if n_dropped == 0:
+        return 0
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore",
+        )
+        writer.writeheader()
+        for row in kept_rows:
+            writer.writerow(row)
+    return n_dropped
 
 
 def _find_family_dir(family: str, output_dir: Path) -> Path | None:

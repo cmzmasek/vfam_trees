@@ -58,7 +58,9 @@ from .summary import (
     write_summary_row,
 )
 from .taxonomy import annotate_tree
-from .tree import parse_iqtree_partition_models, run_tree, validate_newick
+from .tree import (
+    parse_iqtree_partition_models, run_tree, support_type_for, validate_newick,
+)
 
 log = get_logger(__name__)
 
@@ -627,6 +629,7 @@ def _run_target_concat(
         short_to_display[gid] = f"{sp_safe}|{gid}"
 
     # 7. Annotate tree with LCA labels and root.
+    support_type = support_type_for(tree_tool, tree_options)
     metadata_for_annotation = [
         {
             "short_id":       gid,
@@ -642,6 +645,7 @@ def _run_target_concat(
         metadata=metadata_for_annotation,
         output_nwk=annotated_nwk,
         lca_min_rank=family_cfg.get("taxonomy", {}).get("lca_min_rank", "none"),
+        support_type=support_type,
     )
 
     # 8. Final Newick: deep copy bio_tree, rename terminals to display names,
@@ -703,7 +707,7 @@ def _run_target_concat(
             else f"concatenated {len(marker_order)}-marker phylogeny "
                  f"[{', '.join(marker_order)}] (target_{label})"
         ),
-        confidence_type="SH_aLRT" if label == "100" else "SH_like",
+        confidence_type=support_type,
         leaf_colors=short_to_color,
     )
 
@@ -758,7 +762,7 @@ def _run_target_concat(
         "tree_tool":            tree_tool,
         "tree_model":           model_aa if label == "100" else (tree_cfg.get("model_aa") or ""),
         "tree_options":         tree_options,
-        "support_type":         "SH_aLRT" if label == "100" else "SH_like",
+        "support_type":         support_type,
         "n_outliers_removed":   n_outliers_removed,
         "n_length_outliers_long":  lo_stats["n_long_dropped"],
         "n_length_outliers_short": lo_stats["n_short_dropped"],

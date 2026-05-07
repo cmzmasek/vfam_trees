@@ -1,4 +1,6 @@
 """Tests for vfam_trees.tree helpers (no external tool calls)."""
+from pathlib import Path
+
 import pytest
 
 from vfam_trees.tree import (
@@ -7,6 +9,7 @@ from vfam_trees.tree import (
     is_model_finder_spec,
     parse_iqtree_best_model,
     parse_iqtree_partition_models,
+    support_type_for,
     validate_newick,
 )
 
@@ -224,3 +227,90 @@ end;
             "hel": "JTT+G",
             "ATPase": "LG+F+I+G",
         }
+
+
+# ---------------------------------------------------------------------------
+# support_type_for — branch-support label inferred from tool + options.
+# Regression for v1.2.12: concat-mode tree_100 was hardcoding "SH_aLRT" even
+# when the actual IQ-TREE invocation used "-B 1000" (UFBoot).
+# ---------------------------------------------------------------------------
+
+class TestSupportTypeFor:
+    def test_fasttree_is_sh_like(self):
+        assert support_type_for("fasttree", "") == "SH_like"
+        assert support_type_for("fasttree", "-gtr -gamma") == "SH_like"
+
+    def test_iqtree_default_is_sh_alrt(self):
+        # Wrapper auto-injects -alrt 1000 when no support flag is set.
+        assert support_type_for("iqtree", "") == "SH_aLRT"
+        assert support_type_for("iqtree", "--fast") == "SH_aLRT"
+
+    def test_iqtree_with_ufboot_returns_ufboot(self):
+        # `-B 1000` is the concat-mode protein default — must not be labelled
+        # SH_aLRT in summary.tsv / PhyloXML.
+        assert support_type_for("iqtree", "-B 1000") == "UFBoot"
+
+    def test_iqtree_with_ufboot_and_alrt(self):
+        assert support_type_for("iqtree", "-B 1000 -alrt 1000") == "SH_aLRT_UFBoot"
+
+    def test_iqtree_with_standard_bootstrap(self):
+        assert support_type_for("iqtree", "-b 100") == "Bootstrap"
+
+    def test_iqtree2_alias(self):
+        # tool name canonicalization: "iqtree", "iqtree2", "iq-tree" all OK.
+        assert support_type_for("iqtree2", "") == "SH_aLRT"
+        assert support_type_for("iq-tree", "") == "SH_aLRT"
+
+
+# ---------------------------------------------------------------------------
+# IQ-TREE invocation — must pass --seqtype DNA|AA explicitly so protein
+# alignments with high A/C/G/T content are not misdetected as nucleotide.
+# Regression for v1.2.12.
+# ---------------------------------------------------------------------------
+
+class TestIqtreeSeqtype:
+    @staticmethod
+    def _run_iqtree_and_capture(monkeypatch, tmp_path, seq_type):
+        from vfam_trees import tree as tree_mod
+
+        captured = {}
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, *a, **k):
+            captured["cmd"] = list(cmd)
+            # Synthesize the output the wrapper expects so it doesn't raise.
+            i = cmd.index("--prefix")
+            prefix = cmd[i + 1]
+            Path(prefix).parent.mkdir(parents=True, exist_ok=True)
+            Path(prefix + ".treefile").write_text("(A:1,B:1);")
+            return _Result()
+
+        monkeypatch.setattr(tree_mod.subprocess, "run", fake_run)
+        aln = tmp_path / "aln.fasta"
+        aln.write_text(">A\nATGC\n>B\nATGC\n")
+        tree_mod._run_iqtree(
+            alignment_fasta=aln,
+            output_dir=tmp_path,
+            prefix="tree_test",
+            seq_type=seq_type,
+            model_nuc="GTR+G",
+            model_aa="LG+G",
+            options="",
+            threads=1,
+        )
+        return captured["cmd"]
+
+    def test_nucleotide_passes_dna_seqtype(self, tmp_path, monkeypatch):
+        cmd = self._run_iqtree_and_capture(monkeypatch, tmp_path, "nucleotide")
+        i = cmd.index("--seqtype")
+        assert cmd[i + 1] == "DNA"
+
+    def test_protein_passes_aa_seqtype(self, tmp_path, monkeypatch):
+        cmd = self._run_iqtree_and_capture(monkeypatch, tmp_path, "protein")
+        i = cmd.index("--seqtype")
+        assert cmd[i + 1] == "AA"
+

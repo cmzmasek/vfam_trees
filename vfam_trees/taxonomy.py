@@ -47,6 +47,7 @@ def annotate_tree(
     metadata: list[dict],
     output_nwk: Path,
     lca_min_rank: str = "none",
+    support_type: str = "",
 ) -> BioTree | None:
     """Load tree, root it optimally, annotate internal nodes with LCA taxonomy.
 
@@ -62,6 +63,11 @@ def annotate_tree(
         id_map: short_id → display_name
         metadata: list of metadata dicts (each must have 'short_id' and 'lineage')
         output_nwk: path to write annotated Newick
+        support_type: branch-support label ('SH_like', 'SH_aLRT', 'UFBoot',
+                      'SH_aLRT_UFBoot', 'Bootstrap'). When set, controls
+                      whether confidences get rescaled from [0,1] to [0,100]
+                      (only SH_like uses fractional support); falls back to
+                      a max-value heuristic when empty.
 
     Returns:
         Annotated BioPython Tree, or None on failure.
@@ -119,7 +125,7 @@ def annotate_tree(
     else:
         log.warning("No lineage data available — skipping taxonomy annotation")
 
-    _normalize_bootstrap(tree)
+    _normalize_bootstrap(tree, support_type=support_type)
 
     output_nwk.parent.mkdir(parents=True, exist_ok=True)
     Phylo.write(tree, str(output_nwk), "newick")
@@ -549,15 +555,26 @@ def _keep_deepest_labels(tree: BioTree) -> None:
     log.info("Kept crown label for %d distinct taxa", len(seen_taxa))
 
 
-def _normalize_bootstrap(tree: BioTree) -> None:
-    """Scale confidence values to 0–100 if they appear to be in 0–1 range, then round to integer."""
+def _normalize_bootstrap(tree: BioTree, support_type: str = "") -> None:
+    """Scale confidence values to 0–100 and round to integer.
+
+    Only ``SH_like`` (FastTree) uses the [0,1] range; ``SH_aLRT``,
+    ``UFBoot``, ``SH_aLRT_UFBoot``, and ``Bootstrap`` natively use [0,100].
+    When support_type is provided, rescaling is decided deterministically by
+    that label.  When it is empty (legacy callers), fall back to the
+    max-value heuristic (max ≤ 1.0 → rescale).
+    """
     confidences = [
         c.confidence for c in tree.find_clades()
         if c.confidence is not None
     ]
     if not confidences:
         return
-    if max(confidences) <= 1.0:
+    if support_type:
+        rescale = (support_type == "SH_like")
+    else:
+        rescale = max(confidences) <= 1.0
+    if rescale:
         for clade in tree.find_clades():
             if clade.confidence is not None:
                 clade.confidence = round(clade.confidence * 100)

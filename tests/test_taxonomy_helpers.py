@@ -176,3 +176,26 @@ class TestNormalizeBootstrap:
         _normalize_bootstrap(t)
         confs = sorted(c.confidence for c in t.find_clades() if c.confidence is not None)
         assert confs == [50, 100]
+
+    def test_explicit_sh_like_rescales(self):
+        # support_type="SH_like" forces [0,1] → [0,100], even when the heuristic
+        # would have left them alone (e.g. all small, but explicitly fractional).
+        t = self._tree_with_confidences([0.3, 0.7])
+        _normalize_bootstrap(t, support_type="SH_like")
+        confs = sorted(c.confidence for c in t.find_clades() if c.confidence is not None)
+        assert confs == [30, 70]
+
+    def test_explicit_ufboot_does_not_rescale(self):
+        # Pathological case: a tree whose UFBoot values are all small (highly
+        # unsupported) — the heuristic would wrongly multiply by 100.  An
+        # explicit support_type must short-circuit that.
+        t = self._tree_with_confidences([0.4, 0.8])
+        _normalize_bootstrap(t, support_type="UFBoot")
+        confs = sorted(c.confidence for c in t.find_clades() if c.confidence is not None)
+        assert confs == [0, 1]  # rounded, no rescale
+
+    def test_explicit_sh_alrt_does_not_rescale(self):
+        t = self._tree_with_confidences([85.4, 95.6])
+        _normalize_bootstrap(t, support_type="SH_aLRT")
+        confs = sorted(c.confidence for c in t.find_clades() if c.confidence is not None)
+        assert confs == [85, 96]

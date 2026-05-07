@@ -8,7 +8,6 @@ from vfam_trees.rename import (
     assign_short_ids,
     load_id_map,
     restore_fasta_names,
-    restore_newick_names,
 )
 
 
@@ -127,27 +126,6 @@ def test_load_id_map_roundtrip(tmp_path):
     _, short_to_display = assign_short_ids(records, metas, "Flaviviridae", id_map_path)
     loaded = load_id_map(id_map_path)
     assert loaded == short_to_display
-
-
-# ---------------------------------------------------------------------------
-# restore_newick_names
-# ---------------------------------------------------------------------------
-
-def test_restore_newick_names_replaces_short_ids(tmp_path):
-    nwk_in = tmp_path / "in.nwk"
-    nwk_out = tmp_path / "out.nwk"
-    nwk_in.write_text("((FLVV_000001:0.1,FLVV_000002:0.2):0.05,FLVV_000003:0.3);")
-    id_map = {
-        "FLVV_000001": "Dengue|s|A",
-        "FLVV_000002": "Zika|s|B",
-        "FLVV_000003": "YFV|s|C",
-    }
-    restore_newick_names(nwk_in, nwk_out, id_map)
-    out = nwk_out.read_text()
-    assert "Dengue|s|A" in out
-    assert "Zika|s|B" in out
-    assert "YFV|s|C" in out
-    assert "FLVV_" not in out
 
 
 # ---------------------------------------------------------------------------
