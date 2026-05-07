@@ -738,8 +738,9 @@ def _run_target(
     log.info("Clustering complete: %d total representatives across %d species",
              total_reps, len(species_reps))
 
-    # Proportional merge (prefers RefSeqs when subsampling within a species)
-    sel_records = proportional_merge(
+    # Proportional merge (prefers RefSeqs when subsampling within a species,
+    # and prefers RefSeq-bearing species first when species count > target).
+    sel_records, merge_stats = proportional_merge(
         species_reps, target_n, priority_ids=refseq_short_ids,
     )
     log.info("Proportional merge: selected %d sequences for tree_%s", len(sel_records), label)
@@ -1072,6 +1073,8 @@ def _run_target(
         "n_refseq_absorbed":     n_refseq_absorbed,
         "n_genera":              len(genus_to_color),
         "n_subfamilies":         n_subfamilies,
+        "n_species_dropped_at_cap":        merge_stats.get("n_species_dropped_at_cap", 0),
+        "n_refseq_species_dropped_at_cap": merge_stats.get("n_refseq_species_dropped_at_cap", 0),
     }
     if trim_enabled:
         pre_stats = compute_msa_stats(msa_short_fasta)

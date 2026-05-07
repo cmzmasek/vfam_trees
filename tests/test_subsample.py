@@ -21,17 +21,22 @@ def _reps(sp_name, n):
 # ---------------------------------------------------------------------------
 
 def test_empty_input_returns_empty():
-    assert proportional_merge({}, 10) == []
+    out, stats = proportional_merge({}, 10)
+    assert out == []
+    assert stats["n_species_dropped_at_cap"] == 0
 
 
 def test_all_empty_species_returns_empty():
-    assert proportional_merge({"A": [], "B": []}, 10) == []
+    out, stats = proportional_merge({"A": [], "B": []}, 10)
+    assert out == []
+    assert stats["n_species_dropped_at_cap"] == 0
 
 
 def test_total_reps_leq_target_uses_all():
     species = {"A": _reps("A", 3), "B": _reps("B", 2)}
-    out = proportional_merge(species, 10)
+    out, stats = proportional_merge(species, 10)
     assert len(out) == 5
+    assert stats["n_species_dropped_at_cap"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -40,13 +45,13 @@ def test_total_reps_leq_target_uses_all():
 
 def test_proportional_allocation_hits_target():
     species = {"A": _reps("A", 50), "B": _reps("B", 30), "C": _reps("C", 20)}
-    out = proportional_merge(species, 10)
+    out, _ = proportional_merge(species, 10)
     assert len(out) == 10
 
 
 def test_proportional_allocation_preserves_ratios():
     species = {"A": _reps("A", 80), "B": _reps("B", 20)}
-    out = proportional_merge(species, 10)
+    out, _ = proportional_merge(species, 10)
     assert len(out) == 10
     a_count = sum(1 for r in out if r.id.startswith("A_"))
     b_count = sum(1 for r in out if r.id.startswith("B_"))
@@ -62,15 +67,18 @@ def test_proportional_allocation_preserves_ratios():
 def test_hits_target_when_more_species_than_target():
     # 20 species × 1 rep each, target 5. Old code returned 20; fix returns 5.
     species = {f"SP{i:02d}": _reps(f"SP{i:02d}", 1) for i in range(20)}
-    out = proportional_merge(species, 5)
+    out, stats = proportional_merge(species, 5)
     assert len(out) == 5
+    assert stats["n_species_dropped_at_cap"] == 15
+    assert stats["n_refseq_species_dropped_at_cap"] == 0
 
 
 def test_hits_target_when_every_species_at_quota_floor():
     # 10 species × 1 rep, target 4
     species = {f"SP{i}": _reps(f"SP{i}", 1) for i in range(10)}
-    out = proportional_merge(species, 4)
+    out, stats = proportional_merge(species, 4)
     assert len(out) == 4
+    assert stats["n_species_dropped_at_cap"] == 6
 
 
 def test_prefers_species_with_more_reps_when_oversubscribed():
@@ -82,7 +90,7 @@ def test_prefers_species_with_more_reps_when_oversubscribed():
         "tiny":  _reps("tiny",  2),
         "one":   _reps("one",   1),
     }
-    out = proportional_merge(species, 3)
+    out, _ = proportional_merge(species, 3)
     assert len(out) == 3
     chosen_prefixes = {r.id.split("_")[0] for r in out}
     assert chosen_prefixes == {"big", "mid", "small"}
@@ -98,7 +106,7 @@ def test_priority_ids_preferred_when_subsampling_species():
         "A": [_rec("A_refseq"), _rec("A_2"), _rec("A_3"), _rec("A_4")],
         "B": [_rec("B_1"), _rec("B_2"), _rec("B_3"), _rec("B_4")],
     }
-    out = proportional_merge(species, 2, priority_ids={"A_refseq"})
+    out, _ = proportional_merge(species, 2, priority_ids={"A_refseq"})
     ids = {r.id for r in out}
     assert "A_refseq" in ids
 
@@ -110,10 +118,82 @@ def test_priority_ids_survive_when_oversubscribed_at_species_level():
     for i in range(10):
         species[f"SP{i}"] = [_rec(f"SP{i}_refseq"), _rec(f"SP{i}_2")]
     priority = {f"SP{i}_refseq" for i in range(10)}
-    out = proportional_merge(species, 3, priority_ids=priority)
+    out, stats = proportional_merge(species, 3, priority_ids=priority)
     assert len(out) == 3
     # Each chosen species contributes its RefSeq (ties broken by name)
     assert all(r.id.endswith("_refseq") for r in out)
+    # All 10 species had a RefSeq → 7 RefSeq-bearing species got dropped at cap.
+    assert stats["n_species_dropped_at_cap"] == 7
+    assert stats["n_refseq_species_dropped_at_cap"] == 7
+
+
+# ---------------------------------------------------------------------------
+# v1.2.14: RefSeq-bearing species kept first when species count > target
+# ---------------------------------------------------------------------------
+
+def test_refseq_bearing_species_kept_first_when_capped():
+    # 10 species; only 3 have RefSeqs.  Target 5.  All 3 RefSeq-bearing
+    # species must make the cut, regardless of rep counts.  The 5th slot
+    # is the largest non-RefSeq species.
+    species = {}
+    refseq_ids = set()
+    # 3 RefSeq-bearing species, each with a single sequence.
+    for i in range(3):
+        sp = f"REF{i}"
+        species[sp] = _reps(sp, 1)
+        refseq_ids.add(species[sp][0].id)
+    # 7 non-RefSeq species with progressively more reps.
+    for i in range(7):
+        sp = f"NRF{i}"
+        species[sp] = _reps(sp, i + 2)  # 2..8 reps
+    out, stats = proportional_merge(species, 5, priority_ids=refseq_ids)
+    assert len(out) == 5
+    # All 3 RefSeq-bearing species selected.
+    chosen_prefixes = {r.id.rsplit("_", 1)[0] for r in out}
+    assert {"REF0", "REF1", "REF2"} <= chosen_prefixes
+    # 2 of the 7 NRF species filled the remaining slots — the rep-count
+    # winners (NRF6 with 8 reps, NRF5 with 7 reps).
+    assert "NRF6" in chosen_prefixes
+    assert "NRF5" in chosen_prefixes
+    # 5 species dropped, 0 of which were RefSeq-bearing.
+    assert stats["n_species_dropped_at_cap"] == 5
+    assert stats["n_refseq_species_dropped_at_cap"] == 0
+
+
+def test_dropped_refseq_species_counted_when_more_refseqs_than_target():
+    # 110 species, 105 with RefSeqs, target 100 → 10 dropped, 5 of which
+    # had a RefSeq.  Surfaces in stats["n_refseq_species_dropped_at_cap"].
+    species = {}
+    refseq_ids = set()
+    for i in range(105):
+        sp = f"REF{i:03d}"
+        species[sp] = _reps(sp, 1)
+        refseq_ids.add(species[sp][0].id)
+    for i in range(5):
+        sp = f"NRF{i}"
+        species[sp] = _reps(sp, 1)
+    out, stats = proportional_merge(species, 100, priority_ids=refseq_ids)
+    assert len(out) == 100
+    assert stats["n_species_dropped_at_cap"] == 10
+    # 5 RefSeq species dropped (alphabetical tie-break: REF100..REF104)
+    assert stats["n_refseq_species_dropped_at_cap"] == 5
+
+
+def test_warning_emitted_when_species_dropped_at_cap(caplog):
+    import logging
+    species = {f"SP{i:02d}": _reps(f"SP{i:02d}", 1) for i in range(10)}
+    with caplog.at_level(logging.WARNING, logger="vfam_trees.subsample"):
+        proportional_merge(species, 5)
+    assert any("species exceeds target" in r.getMessage() for r in caplog.records)
+
+
+def test_no_warning_when_species_fit_within_target(caplog):
+    import logging
+    species = {f"SP{i:02d}": _reps(f"SP{i:02d}", 1) for i in range(3)}
+    with caplog.at_level(logging.WARNING, logger="vfam_trees.subsample"):
+        out, stats = proportional_merge(species, 100)
+    assert stats["n_species_dropped_at_cap"] == 0
+    assert not any("species exceeds target" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -122,9 +202,22 @@ def test_priority_ids_survive_when_oversubscribed_at_species_level():
 
 def test_same_seed_gives_same_result():
     species = {f"SP{i}": _reps(f"SP{i}", 5) for i in range(6)}
-    a = proportional_merge(species, 10, seed=123)
-    b = proportional_merge(species, 10, seed=123)
+    a, _ = proportional_merge(species, 10, seed=123)
+    b, _ = proportional_merge(species, 10, seed=123)
     assert [r.id for r in a] == [r.id for r in b]
+
+
+def test_returns_tuple_of_list_and_dict():
+    """API shape: ensure callers always unpack (records, stats)."""
+    out = proportional_merge({"A": _reps("A", 2)}, 10)
+    assert isinstance(out, tuple)
+    assert len(out) == 2
+    records, stats = out
+    assert isinstance(records, list)
+    assert isinstance(stats, dict)
+    for key in ("n_species_dropped_at_cap", "n_refseq_species_dropped_at_cap",
+                "n_priority_kept", "n_priority_total"):
+        assert key in stats
 
 
 # ---------------------------------------------------------------------------

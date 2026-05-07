@@ -88,6 +88,10 @@ COLUMNS = [
     "tree100_n_genera",
     "tree500_n_subfamilies",
     "tree100_n_subfamilies",
+    "tree500_n_species_dropped_at_cap",
+    "tree100_n_species_dropped_at_cap",
+    "tree500_n_refseq_species_dropped_at_cap",
+    "tree100_n_refseq_species_dropped_at_cap",
     # concat-mode columns (CONCAT_DESIGN.md §6.1).  Empty in single-protein /
     # whole-genome runs.
     "tree500_concat_n_markers_target",
@@ -356,6 +360,8 @@ def build_summary_row(
         row[f"{prefix}_n_refseq_absorbed"]       = stats.get("n_refseq_absorbed", "")
         row[f"{prefix}_n_genera"]                = stats.get("n_genera", "")
         row[f"{prefix}_n_subfamilies"]           = stats.get("n_subfamilies", "")
+        row[f"{prefix}_n_species_dropped_at_cap"]        = stats.get("n_species_dropped_at_cap", "")
+        row[f"{prefix}_n_refseq_species_dropped_at_cap"] = stats.get("n_refseq_species_dropped_at_cap", "")
         # Concat-mode columns (empty in single-protein / whole-genome runs)
         row[f"{prefix}_concat_n_markers_target"] = stats.get("concat_n_markers_target", "")
         row[f"{prefix}_concat_n_markers_used"]   = stats.get("concat_n_markers_used", "")

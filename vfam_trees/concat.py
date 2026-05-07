@@ -200,7 +200,7 @@ def cluster_and_merge_genomes(
             )
 
     # Cross-species proportional merge — RefSeq priority preserved
-    merged = proportional_merge(
+    merged, merge_stats = proportional_merge(
         species_reps, target_n, seed=seed, priority_ids=refseq_ids,
     )
     selected = {rec.id for rec in merged}
@@ -212,6 +212,8 @@ def cluster_and_merge_genomes(
         "n_selected":            len(selected),
         "cluster_thresh_min":    round(min(thresholds_used), 4) if thresholds_used else "",
         "cluster_thresh_max":    round(max(thresholds_used), 4) if thresholds_used else "",
+        "n_species_dropped_at_cap":        merge_stats.get("n_species_dropped_at_cap", 0),
+        "n_refseq_species_dropped_at_cap": merge_stats.get("n_refseq_species_dropped_at_cap", 0),
     }
     return selected, stats
 

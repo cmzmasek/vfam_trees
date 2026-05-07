@@ -774,6 +774,8 @@ def _run_target_concat(
         "marker_models":           marker_models_str,
         "n_genera":                len(genus_to_color),
         "n_subfamilies":           n_subfamilies,
+        "n_species_dropped_at_cap":        sel_stats.get("n_species_dropped_at_cap", 0),
+        "n_refseq_species_dropped_at_cap": sel_stats.get("n_refseq_species_dropped_at_cap", 0),
         # Carried for post-loop image rendering (not written into summary.tsv)
         "_display_tree":           display_tree,
         "_display_to_color":       display_to_color,

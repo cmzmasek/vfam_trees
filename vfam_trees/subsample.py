@@ -238,12 +238,17 @@ def proportional_merge(
     target: int,
     seed: int = 42,
     priority_ids: set[str] | None = None,
-) -> list[SeqRecord]:
+) -> tuple[list[SeqRecord], dict]:
     """Select sequences proportionally across species to hit target count.
 
     Each species contributes slots proportional to its cluster count.
     Species with zero representatives are skipped.
     The total is trimmed or padded (using leftover slots) to hit exactly target.
+
+    When the number of species exceeds *target* (cap branch), species with at
+    least one priority (e.g. RefSeq) record are kept first, then remaining
+    slots fill by rep count.  Counts of dropped species — and how many of the
+    dropped ones carried a priority record — are returned in *stats*.
 
     Args:
         species_reps: mapping of species_name → list of representative SeqRecords
@@ -255,30 +260,61 @@ def proportional_merge(
                       records are taken first and the remainder is randomised.
 
     Returns:
-        Flat list of selected SeqRecords (length ≤ target).
+        Tuple of (selected SeqRecords, stats dict).  Stats keys:
+            n_species_dropped_at_cap          — species discarded because the
+                                                species count exceeded target.
+            n_refseq_species_dropped_at_cap   — subset of the above that had at
+                                                least one priority record.
+            n_priority_kept                   — priority records selected.
+            n_priority_total                  — priority records seen across
+                                                all species (informational).
     """
     random.seed(seed)
     priority_ids = priority_ids or set()
 
+    stats = {
+        "n_species_dropped_at_cap":         0,
+        "n_refseq_species_dropped_at_cap":  0,
+        "n_priority_kept":                  0,
+        "n_priority_total":                 0,
+    }
+
     non_empty = {sp: reps for sp, reps in species_reps.items() if reps}
     if not non_empty:
-        return []
+        return [], stats
 
     total_reps = sum(len(reps) for reps in non_empty.values())
 
     if total_reps <= target:
         log.info("Total representatives (%d) ≤ target (%d), using all.", total_reps, target)
-        return [rec for reps in non_empty.values() for rec in reps]
+        selected_all = [rec for reps in non_empty.values() for rec in reps]
+        stats["n_priority_kept"] = sum(1 for r in selected_all if r.id in priority_ids)
+        stats["n_priority_total"] = stats["n_priority_kept"]
+        return selected_all, stats
 
     # When there are more species than slots, we cannot give every species a
-    # slot.  Prefer species with more representatives (ties broken alphabetically
-    # for reproducibility) and give each one exactly one slot.
+    # slot.  Tier species: those with at least one priority (RefSeq) record
+    # first; within each tier, more reps win, ties broken alphabetically.
     if len(non_empty) > target:
+        def _has_priority(sp: str) -> bool:
+            return any(r.id in priority_ids for r in non_empty[sp])
+
         sorted_species = sorted(
             non_empty.keys(),
-            key=lambda s: (-len(non_empty[s]), s),
+            key=lambda s: (
+                not _has_priority(s),   # False (has priority) sorts first
+                -len(non_empty[s]),
+                s,
+            ),
         )
         chosen_species = sorted_species[:target]
+        dropped_species = sorted_species[target:]
+
+        n_dropped = len(dropped_species)
+        n_refseq_dropped = sum(1 for s in dropped_species if _has_priority(s))
+        stats["n_species_dropped_at_cap"] = n_dropped
+        stats["n_refseq_species_dropped_at_cap"] = n_refseq_dropped
+
         selected: list[SeqRecord] = []
         n_priority_taken = 0
         n_priority_total = sum(
@@ -292,17 +328,33 @@ def proportional_merge(
                 n_priority_taken += 1
             else:
                 selected.append(random.choice(reps))
+        stats["n_priority_kept"] = n_priority_taken
+        stats["n_priority_total"] = n_priority_total
+
         if priority_ids and n_priority_total:
             log.info(
                 "Proportional merge: kept %d / %d priority record(s) (e.g. RefSeqs)",
                 n_priority_taken, n_priority_total,
             )
-        log.info(
-            "Proportional merge: %d species (%d total reps) but target %d — "
-            "selected 1 rep from %d largest species",
-            len(non_empty), total_reps, target, len(chosen_species),
-        )
-        return selected
+        # Emit a WARNING (not info) so this surfaces in stdout/log without
+        # raising the global log level.  Loud when RefSeq-bearing species are
+        # also being dropped — that means the cap is small enough to lose
+        # bona-fide reference genomes.
+        if n_refseq_dropped:
+            log.warning(
+                "Proportional merge: %d species exceeds target %d — %d species dropped "
+                "(%d of them had a RefSeq).  Selected 1 rep from %d species "
+                "(RefSeq-bearing species kept first, then by rep count).",
+                len(non_empty), target, n_dropped, n_refseq_dropped, len(chosen_species),
+            )
+        else:
+            log.warning(
+                "Proportional merge: %d species exceeds target %d — %d species dropped. "
+                "Selected 1 rep from %d species "
+                "(RefSeq-bearing species kept first, then by rep count).",
+                len(non_empty), target, n_dropped, len(chosen_species),
+            )
+        return selected, stats
 
     # Compute per-species quota proportional to cluster count
     quotas: dict[str, int] = {}
@@ -353,6 +405,9 @@ def proportional_merge(
         else:
             selected.extend(random.sample(reps, quota))
 
+    stats["n_priority_kept"] = n_priority_taken
+    stats["n_priority_total"] = n_priority_total
+
     if priority_ids and n_priority_total:
         log.info(
             "Proportional merge: kept %d / %d priority record(s) (e.g. RefSeqs)",
@@ -363,7 +418,7 @@ def proportional_merge(
         "Proportional merge: %d species, %d total reps → %d selected (target %d)",
         len(non_empty), total_reps, len(selected), target,
     )
-    return selected
+    return selected, stats
 
 
 # ---------------------------------------------------------------------------
