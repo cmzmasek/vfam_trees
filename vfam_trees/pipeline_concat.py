@@ -408,6 +408,7 @@ def _run_target_concat(
         clustering_tool=clustering_tool,
         refseq_absorption_enabled=absorb_enabled,
         refseq_absorption_threshold=absorb_threshold,
+        threads=threads,
     )
     log.info(
         "Clustering complete (tree_%s): %d total representative genome(s) "

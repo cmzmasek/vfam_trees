@@ -722,6 +722,7 @@ def _run_target(
                 seq_type=seq_type,
                 work_dir=sp_work / "absorb",
                 clustering_tool=clustering_tool,
+                threads=threads,
             )
             if n_absorbed:
                 log.info(
@@ -738,6 +739,7 @@ def _run_target(
             seq_type=seq_type,
             work_dir=sp_work,
             clustering_tool=clustering_tool,
+            threads=threads,
         )
         species_reps[sp_name] = reps
         thresholds_used.append(threshold_used)

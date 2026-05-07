@@ -116,6 +116,7 @@ def cluster_and_merge_genomes(
     refseq_absorption_enabled: bool = True,
     refseq_absorption_threshold: float = 0.99,
     seed: int = 42,
+    threads: int = 1,
 ) -> tuple[set[str], dict]:
     """Reduce per-genome diversity to the target tree size.
 
@@ -165,6 +166,7 @@ def cluster_and_merge_genomes(
                 seq_type="protein",
                 work_dir=sp_work / "absorb",
                 clustering_tool=clustering_tool,
+                threads=threads,
             )
             if n_absorbed:
                 log.info(
@@ -187,6 +189,7 @@ def cluster_and_merge_genomes(
             seq_type="protein",
             work_dir=sp_work / "cluster",
             clustering_tool=clustering_tool,
+            threads=threads,
         )
         species_reps[sp_name] = reps
         thresholds_used.append(threshold_used)

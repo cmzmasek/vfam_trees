@@ -133,7 +133,7 @@ def test_same_seed_gives_same_result():
 
 def _mock_membership(monkeypatch, clusters: list[set[str]]):
     """Patch _cluster_membership to return *clusters* verbatim."""
-    def _fake(records, threshold, seq_type, work_dir, clustering_tool):
+    def _fake(records, threshold, seq_type, work_dir, clustering_tool, *args, **kwargs):
         return clusters
     monkeypatch.setattr(subsample, "_cluster_membership", _fake)
 
@@ -201,3 +201,120 @@ def test_absorb_refseq_alone_in_cluster_unchanged(tmp_path, monkeypatch):
     kept_ids = {r.id for r in kept}
     assert kept_ids == {"NC_1", "X1", "X2"}
     assert n == 0
+
+
+# ---------------------------------------------------------------------------
+# Threads plumbing — regression for v1.2.11.  Earlier code hard-coded
+# `--threads 1` in the MMseqs2 invocation and `-T 1` in the CD-HIT
+# invocation, so MAFFT/IQ-TREE got the requested threads but clustering
+# always ran single-threaded.
+# ---------------------------------------------------------------------------
+
+class _CapturedRun:
+    """subprocess.run stand-in: captures argv, simulates a clean exit, and
+    writes the minimum output files the wrappers expect."""
+
+    def __init__(self):
+        self.cmds: list[list[str]] = []
+
+    def __call__(self, cmd, *args, **kwargs):
+        self.cmds.append(list(cmd))
+        # Synthesize the output the parser expects so the wrapper does not
+        # raise a FileNotFoundError after subprocess.run "completes".
+        if cmd[0] == "mmseqs":
+            out_prefix = Path(cmd[3])  # easy-linclust positional 2 → output prefix
+            (out_prefix.parent).mkdir(parents=True, exist_ok=True)
+            (Path(str(out_prefix) + "_rep_seq.fasta")).write_text(">A\nATGC\n")
+            (out_prefix.parent / "output_cluster.tsv").write_text("A\tA\n")
+        elif cmd[0] in ("cd-hit", "cd-hit-est"):
+            i = cmd.index("-o")
+            out = Path(cmd[i + 1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(">A\nATGC\n")
+            (out.parent / "output.fasta.clstr").write_text(">Cluster 0\n0\t4nt, >A...\n")
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return _R()
+
+
+def _arg_after(cmd: list[str], flag: str) -> str:
+    return cmd[cmd.index(flag) + 1]
+
+
+class TestClusteringThreadsPlumbing:
+    def test_mmseqs2_receives_threads_flag(self, tmp_path, monkeypatch):
+        run = _CapturedRun()
+        monkeypatch.setattr(subsample.subprocess, "run", run)
+        subsample._mmseqs2_cluster(
+            [_rec("A")], 0.99, "nucleotide", tmp_path, threads=8,
+        )
+        assert run.cmds, "mmseqs invocation never happened"
+        assert _arg_after(run.cmds[0], "--threads") == "8"
+
+    def test_mmseqs2_default_threads_is_one(self, tmp_path, monkeypatch):
+        run = _CapturedRun()
+        monkeypatch.setattr(subsample.subprocess, "run", run)
+        subsample._mmseqs2_cluster([_rec("A")], 0.99, "nucleotide", tmp_path)
+        assert _arg_after(run.cmds[0], "--threads") == "1"
+
+    def test_cdhit_receives_threads_flag_protein(self, tmp_path, monkeypatch):
+        run = _CapturedRun()
+        monkeypatch.setattr(subsample.subprocess, "run", run)
+        subsample._cdhit_cluster(
+            [SeqRecord(Seq("MMMM"), id="A")], 0.9, "protein", tmp_path, threads=4,
+        )
+        assert run.cmds[0][0] == "cd-hit"
+        assert _arg_after(run.cmds[0], "-T") == "4"
+
+    def test_cdhit_receives_threads_flag_nucleotide(self, tmp_path, monkeypatch):
+        run = _CapturedRun()
+        monkeypatch.setattr(subsample.subprocess, "run", run)
+        subsample._cdhit_cluster(
+            [_rec("A")], 0.95, "nucleotide", tmp_path, threads=6,
+        )
+        assert run.cmds[0][0] == "cd-hit-est"
+        assert _arg_after(run.cmds[0], "-T") == "6"
+
+    def test_threads_flow_through_adaptive_cluster_species(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end: adaptive_cluster_species(threads=N) must reach the
+        actual mmseqs argv."""
+        run = _CapturedRun()
+        monkeypatch.setattr(subsample.subprocess, "run", run)
+        records = [SeqRecord(Seq("ATGC" * 20), id=f"r{i}") for i in range(10)]
+        subsample.adaptive_cluster_species(
+            records=records,
+            max_reps=3,
+            threshold_min=0.7,
+            threshold_max=0.99,
+            seq_type="nucleotide",
+            work_dir=tmp_path,
+            clustering_tool="mmseqs2",
+            threads=8,
+        )
+        assert run.cmds, "mmseqs was never invoked"
+        # Every mmseqs invocation in the binary search must use --threads 8.
+        for cmd in run.cmds:
+            assert _arg_after(cmd, "--threads") == "8", cmd
+
+    def test_threads_flow_through_absorb_into_refseqs(
+        self, tmp_path, monkeypatch
+    ):
+        run = _CapturedRun()
+        monkeypatch.setattr(subsample.subprocess, "run", run)
+        records = [_rec("NC_1"), _rec("X1"), _rec("X2")]
+        absorb_into_refseqs(
+            records=records,
+            refseq_ids={"NC_1"},
+            threshold=0.99,
+            seq_type="nucleotide",
+            work_dir=tmp_path,
+            clustering_tool="mmseqs2",
+            threads=4,
+        )
+        assert run.cmds, "mmseqs was never invoked"
+        assert _arg_after(run.cmds[0], "--threads") == "4"

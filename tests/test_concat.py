@@ -382,10 +382,11 @@ class TestClusterAndMergeGenomes:
         Skips the actual MMseqs2 invocation so the test runs offline and
         deterministically.
         """
-        def fake_absorb(records, refseq_ids, threshold, seq_type, work_dir, clustering_tool="mmseqs2"):
+        def fake_absorb(records, refseq_ids, threshold, seq_type, work_dir,
+                        clustering_tool="mmseqs2", **kwargs):
             return records, 0
         def fake_cluster(records, max_reps, threshold_min, threshold_max,
-                         seq_type, work_dir, clustering_tool="mmseqs2"):
+                         seq_type, work_dir, clustering_tool="mmseqs2", **kwargs):
             # Just return up to max_reps records
             return records[:max_reps], threshold_max
         monkeypatch.setattr(concat_module, "absorb_into_refseqs", fake_absorb)
@@ -464,7 +465,7 @@ class TestClusterAndMergeGenomes:
             called.append(True)
             return a[0], 0
         def fake_cluster(records, max_reps, threshold_min, threshold_max,
-                         seq_type, work_dir, clustering_tool="mmseqs2"):
+                         seq_type, work_dir, clustering_tool="mmseqs2", **kwargs):
             return records[:max_reps], threshold_max
         monkeypatch.setattr(concat_module, "absorb_into_refseqs", boom_absorb)
         monkeypatch.setattr(concat_module, "adaptive_cluster_species", fake_cluster)

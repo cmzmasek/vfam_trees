@@ -23,6 +23,7 @@ def absorb_into_refseqs(
     seq_type: str,
     work_dir: Path,
     clustering_tool: str = "mmseqs2",
+    threads: int = 1,
 ) -> tuple[list[SeqRecord], int]:
     """Drop non-RefSeq sequences that are near-identical to a RefSeq in the same set.
 
@@ -51,7 +52,7 @@ def absorb_into_refseqs(
     if not (record_ids & refseq_ids):
         return records, 0
 
-    clusters = _cluster_membership(records, threshold, seq_type, work_dir, clustering_tool)
+    clusters = _cluster_membership(records, threshold, seq_type, work_dir, clustering_tool, threads)
     keep_ids: set[str] = set()
     n_absorbed = 0
     for members in clusters:
@@ -77,6 +78,7 @@ def _cluster_membership(
     seq_type: str,
     work_dir: Path,
     clustering_tool: str,
+    threads: int = 1,
 ) -> list[set[str]]:
     """Cluster *records* and return the full membership of each cluster.
 
@@ -85,9 +87,9 @@ def _cluster_membership(
     """
     tool = clustering_tool.lower().replace("-", "").replace("_", "")
     if tool == "mmseqs2":
-        return _mmseqs2_membership(records, threshold, seq_type, work_dir)
+        return _mmseqs2_membership(records, threshold, seq_type, work_dir, threads)
     if tool in ("cdhit", "cdhitest"):
-        return _cdhit_membership(records, threshold, seq_type, work_dir)
+        return _cdhit_membership(records, threshold, seq_type, work_dir, threads)
     raise ValueError(
         f"Unsupported clustering tool: {clustering_tool!r}. "
         "Supported: 'mmseqs2', 'cdhit'."
@@ -99,9 +101,10 @@ def _mmseqs2_membership(
     threshold: float,
     seq_type: str,
     work_dir: Path,
+    threads: int = 1,
 ) -> list[set[str]]:
     """Run MMseqs2 easy-linclust and parse the cluster TSV for full membership."""
-    _mmseqs2_cluster(records, threshold, seq_type, work_dir)
+    _mmseqs2_cluster(records, threshold, seq_type, work_dir, threads)
     cluster_tsv = work_dir / "output_cluster.tsv"
     if not cluster_tsv.exists():
         raise FileNotFoundError(
@@ -125,9 +128,10 @@ def _cdhit_membership(
     threshold: float,
     seq_type: str,
     work_dir: Path,
+    threads: int = 1,
 ) -> list[set[str]]:
     """Run CD-HIT and parse the .clstr file for full membership."""
-    _cdhit_cluster(records, threshold, seq_type, work_dir)
+    _cdhit_cluster(records, threshold, seq_type, work_dir, threads)
     clstr_file = work_dir / "output.fasta.clstr"
     if not clstr_file.exists():
         raise FileNotFoundError(
@@ -160,6 +164,7 @@ def adaptive_cluster_species(
     seq_type: str,
     work_dir: Path,
     clustering_tool: str = "mmseqs2",
+    threads: int = 1,
 ) -> tuple[list[SeqRecord], float]:
     """Find the tightest identity threshold that yields ≤ max_reps for one species.
 
@@ -187,7 +192,8 @@ def adaptive_cluster_species(
 
     # Check if even the most aggressive threshold is sufficient
     reps_at_min = _cluster_at(records, threshold_min, seq_type,
-                               work_dir / f"t{threshold_min:.2f}", clustering_tool)
+                               work_dir / f"t{threshold_min:.2f}", clustering_tool,
+                               threads)
     if len(reps_at_min) > max_reps:
         log.debug("threshold_min=%.2f still gives %d reps > max_reps %d — using threshold_min.",
                   threshold_min, len(reps_at_min), max_reps)
@@ -195,7 +201,8 @@ def adaptive_cluster_species(
 
     # Check if no clustering is needed at threshold_max
     reps_at_max = _cluster_at(records, threshold_max, seq_type,
-                               work_dir / f"t{threshold_max:.2f}", clustering_tool)
+                               work_dir / f"t{threshold_max:.2f}", clustering_tool,
+                               threads)
     if len(reps_at_max) <= max_reps:
         log.info("threshold_max=%.2f gives %d reps ≤ max_reps %d — using threshold_max.",
                  threshold_max, len(reps_at_max), max_reps)
@@ -210,7 +217,8 @@ def adaptive_cluster_species(
     for _ in range(BINARY_SEARCH_ITERATIONS):
         mid = round((lo + hi) / 2, 4)
         reps = _cluster_at(records, mid, seq_type,
-                            work_dir / f"t{mid:.4f}", clustering_tool)
+                            work_dir / f"t{mid:.4f}", clustering_tool,
+                            threads)
         if len(reps) <= max_reps:
             best_reps = reps
             best_threshold = mid
@@ -368,13 +376,14 @@ def _cluster_at(
     seq_type: str,
     work_dir: Path,
     clustering_tool: str,
+    threads: int = 1,
 ) -> list[SeqRecord]:
     """Cluster records at a given threshold and return representative SeqRecords."""
     tool = clustering_tool.lower().replace("-", "").replace("_", "")
     if tool == "mmseqs2":
-        rep_ids = _mmseqs2_cluster(records, threshold, seq_type, work_dir)
+        rep_ids = _mmseqs2_cluster(records, threshold, seq_type, work_dir, threads)
     elif tool in ("cdhit", "cdhitest"):
-        rep_ids = _cdhit_cluster(records, threshold, seq_type, work_dir)
+        rep_ids = _cdhit_cluster(records, threshold, seq_type, work_dir, threads)
     else:
         raise ValueError(
             f"Unsupported clustering tool: {clustering_tool!r}. "
@@ -390,6 +399,7 @@ def _mmseqs2_cluster(
     threshold: float,
     seq_type: str,
     work_dir: Path,
+    threads: int = 1,
 ) -> list[str]:
     work_dir.mkdir(parents=True, exist_ok=True)
     input_fasta = work_dir / "input.fasta"
@@ -405,11 +415,12 @@ def _mmseqs2_cluster(
         str(input_fasta), str(output_prefix), str(tmp_dir),
         "--min-seq-id", str(threshold),
         "--dbtype", dbtype,
-        "--threads", "1",
+        "--threads", str(threads),
         "-v", "0",
     ]
 
-    log.info("Running MMseqs2 easy-linclust (--min-seq-id %.4f)", threshold)
+    log.info("Running MMseqs2 easy-linclust (--min-seq-id %.4f, threads=%d)",
+             threshold, threads)
     log.debug("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -441,6 +452,7 @@ def _cdhit_cluster(
     threshold: float,
     seq_type: str,
     work_dir: Path,
+    threads: int = 1,
 ) -> list[str]:
     work_dir.mkdir(parents=True, exist_ok=True)
     input_fasta = work_dir / "input.fasta"
@@ -452,13 +464,13 @@ def _cdhit_cluster(
     if seq_type == "protein":
         cmd = ["cd-hit", "-i", str(input_fasta), "-o", str(output_fasta),
                "-c", str(threshold), "-n", _word_size_protein(threshold),
-               "-T", "1", "-M", "0", "-d", "0"]
+               "-T", str(threads), "-M", "0", "-d", "0"]
     else:
         cmd = ["cd-hit-est", "-i", str(input_fasta), "-o", str(output_fasta),
                "-c", str(threshold), "-n", _word_size_nuc(threshold),
-               "-T", "1", "-M", "0", "-d", "0"]
+               "-T", str(threads), "-M", "0", "-d", "0"]
 
-    log.info("Running %s (-c %.4f)", cmd[0], threshold)
+    log.info("Running %s (-c %.4f, threads=%d)", cmd[0], threshold, threads)
     log.debug("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
