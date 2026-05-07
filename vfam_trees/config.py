@@ -430,13 +430,13 @@ DEFAULT_FAMILY_CONFIG: dict = {
     },
     "msa_500": {
         "tool": "mafft",
-        "options_nuc": "--6merpair --retree 1",
+        "options_nuc": "--6merpair --retree 2",
         "options_aa": "--auto",
     },
     "msa_100": {
         "tool": "mafft",
-        "options_nuc": "--retree 2",
-        "options_aa": "--auto",
+        "options_nuc": "--retree 3",
+        "options_aa": "--maxiterate 1000 --localpair",
     },
     "msa_trim": {
         "enabled": True,

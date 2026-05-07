@@ -400,13 +400,13 @@ defaults:
 
   msa_500:
     tool: mafft
-    options_nuc: "--6merpair --retree 1"
+    options_nuc: "--6merpair --retree 2"
     options_aa: "--auto"
 
   msa_100:
     tool: mafft
-    options_nuc: "--retree 2"
-    options_aa: "--auto"
+    options_nuc: "--retree 3"
+    options_aa: "--maxiterate 1000 --localpair"
 
   # Column trimming applied between MAFFT and tree inference (both tree_500
   # and tree_100).  Removes poorly-aligned positions that add noise to the

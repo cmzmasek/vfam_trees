@@ -233,13 +233,13 @@ targets:
 
 msa_500:
   tool: mafft
-  options_nuc: "--6merpair --retree 1"   # used for nucleotide sequences
+  options_nuc: "--6merpair --retree 2"   # used for nucleotide sequences
   options_aa: "--auto"                   # used for amino acid sequences (MAFFT auto-selects strategy)
 
 msa_100:
   tool: mafft
-  options_nuc: "--retree 2"             # used for nucleotide sequences
-  options_aa: "--auto"                  # used for amino acid sequences (MAFFT auto-selects strategy)
+  options_nuc: "--retree 3"                       # used for nucleotide sequences
+  options_aa: "--maxiterate 1000 --localpair"     # used for amino acid sequences (MAFFT L-INS-i; high accuracy, slower)
 
 msa_trim:
   enabled: true                  # drop poorly-aligned columns before tree inference
