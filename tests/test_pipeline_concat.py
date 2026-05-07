@@ -15,7 +15,7 @@ from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 
 from vfam_trees import pipeline_concat
-from vfam_trees.pipeline_concat import _build_concat_leaf_metadata
+from vfam_trees.pipeline_concat import _build_concat_leaf_metadata, _outlier_display
 
 
 # ---------------------------------------------------------------------------
@@ -25,6 +25,32 @@ from vfam_trees.pipeline_concat import _build_concat_leaf_metadata
 def test_run_family_concat_is_exported():
     assert hasattr(pipeline_concat, "run_family_concat")
     assert callable(pipeline_concat.run_family_concat)
+
+
+# ---------------------------------------------------------------------------
+# _outlier_display — log-line formatter used by the iterative branch-length
+# outlier loop (regression for v1.2.15: bring concat outlier logs to parity
+# with the single-protein "species|...|accession" display name).
+# ---------------------------------------------------------------------------
+
+class TestOutlierDisplay:
+    def test_species_with_accession(self):
+        m = {"NC_001234.1": "Influenzavirus A"}
+        assert _outlier_display("NC_001234.1", m) == "Influenzavirus_A|NC_001234.1"
+
+    def test_species_with_spaces_underscored(self):
+        m = {"MN908947.3": "Severe acute respiratory syndrome coronavirus 2"}
+        assert _outlier_display("MN908947.3", m) == \
+            "Severe_acute_respiratory_syndrome_coronavirus_2|MN908947.3"
+
+    def test_unknown_genome_falls_back_to_question_mark(self):
+        # Genome accession not in the species map (shouldn't happen in
+        # practice but the logger must not crash on it).
+        assert _outlier_display("XX000000.1", {}) == "?|XX000000.1"
+
+    def test_empty_species_falls_back_to_question_mark(self):
+        m = {"NC_001234.1": ""}
+        assert _outlier_display("NC_001234.1", m) == "?|NC_001234.1"
 
 
 # ---------------------------------------------------------------------------

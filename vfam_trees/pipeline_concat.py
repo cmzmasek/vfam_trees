@@ -65,6 +65,20 @@ from .tree import (
 log = get_logger(__name__)
 
 
+def _outlier_display(oid: str, genome_to_species: dict[str, str]) -> str:
+    """Return ``Species_name|accession`` for outlier log lines.
+
+    Mirrors the single-protein pipeline's ``species|strain|accession|host``
+    display name as closely as possible — strain and host are not retained
+    per genome in concat mode, so we fall back to species + source-nuc
+    accession.  Spaces in the species name are underscored to keep grep /
+    awk friendliness on the per-family log.
+    """
+    sp = genome_to_species.get(oid, "")
+    sp_safe = sp.replace(" ", "_") if sp else "?"
+    return f"{sp_safe}|{oid}"
+
+
 def run_family_concat(
     *,
     family: str,
@@ -574,14 +588,15 @@ def _run_target_concat(
             "threshold (median + %.1f×MAD)=%.5f",
             label, iteration, median_bl, mad, outlier_factor, threshold,
         )
-        for oid in protected_outliers:
+        for oid in sorted(protected_outliers):
+            display = _outlier_display(oid, genome_to_species)
             bl = bl_map.get(oid, float("nan"))
             mads_above = (bl - median_bl) / mad if mad else float("nan")
             log.warning(
-                "tree_%s iteration %d: RefSeq genome %r looks like a "
+                "tree_%s iteration %d: RefSeq genome '%s' looks like a "
                 "branch-length outlier — branch length %.5f (%.1f× MAD above "
                 "median, threshold=%.5f) — KEEPING (RefSeq protected)",
-                label, iteration, oid, bl, mads_above, threshold,
+                label, iteration, display, bl, mads_above, threshold,
             )
 
         if not removable_outliers:
@@ -600,13 +615,14 @@ def _run_target_concat(
             )
             break
 
-        for oid in removable_outliers:
+        for oid in sorted(removable_outliers):
+            display = _outlier_display(oid, genome_to_species)
             bl = bl_map.get(oid, float("nan"))
             mads_above = (bl - median_bl) / mad if mad else float("nan")
             log.info(
-                "tree_%s iteration %d: removing outlier genome %r — branch length "
-                "%.5f (%.1f× MAD above median, threshold=%.5f)",
-                label, iteration, oid, bl, mads_above, threshold,
+                "tree_%s iteration %d: removing outlier genome '%s' — "
+                "branch length %.5f (%.1f× MAD above median, threshold=%.5f)",
+                label, iteration, display, bl, mads_above, threshold,
             )
         for oid in removable_outliers:
             selected_genomes.pop(oid, None)
