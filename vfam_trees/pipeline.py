@@ -647,6 +647,7 @@ def run_family(
         bio_trees=bio_trees,
         tree_leaf_colors=tree_leaf_colors,
         branch_linewidth=branch_linewidth,
+        summary_row=summary_row,
     )
 
     # Persist tree_100 leaf colors so generate_overview_png can read them back
@@ -850,8 +851,8 @@ def _run_target(
             log.info("Reusing cached MSA%s for tree_%s (iteration %d)",
                      " + trim" if trim_enabled else "", label, iteration)
         else:
-            log.info("Running MAFFT (%s) on %d sequences for tree_%s (iteration %d) ...",
-                     msa_options, len(sel_records), label, iteration)
+            log.info("Running MAFFT (%s, thread=%d) on %d sequences for tree_%s (iteration %d) ...",
+                     msa_options, threads, len(sel_records), label, iteration)
             write_fasta(sel_records, raw_short_fasta)
             run_msa(
                 input_fasta=raw_short_fasta,

@@ -286,6 +286,7 @@ def save_tree_images(
     bio_trees: dict[str, Any],
     tree_leaf_colors: dict[str, dict] | None = None,
     branch_linewidth: float = 0.5,
+    summary_row: dict | None = None,
 ) -> None:
     """Save standalone PDF and PNG images of the tree_100 and tree_500 visualizations."""
     try:
@@ -317,6 +318,7 @@ def save_tree_images(
             genus_to_color=genus_to_color,
             subfamily_to_genera=subfamily_to_genera,
             branch_linewidth=branch_linewidth,
+            summary_row=summary_row,
         )
         if fig is not None:
             stem = f"{family}_tree_{label}"
@@ -338,6 +340,7 @@ def save_tree_images(
             genus_to_color=genus_to_color,
             subfamily_to_genera=subfamily_to_genera,
             branch_linewidth=branch_linewidth,
+            summary_row=summary_row,
         )
         if fig_ur is not None:
             stem_ur = f"{family}_tree_{label}_ur"
@@ -471,6 +474,132 @@ def save_tree_icon(
         plt.close("all")
 
 
+def _build_tree_caption_info(summary_row: dict | None, label: str) -> str:
+    """Build a 2-line, figure-legend-style info caption for a tree.
+
+    Line 1: tree method · alignment summary (length, MSA tool, trim, gap%).
+    Line 2: branch-support summary · genus/subfamily counts · species coverage · version.
+    Returns "" when summary_row is missing.
+    """
+    if not summary_row:
+        return ""
+    prefix = f"tree{label}"
+
+    def g(key, default=""):
+        v = summary_row.get(f"{prefix}_{key}", default)
+        return v if v not in ("", None) else default
+
+    tree_tool    = str(g("tree_tool"))
+    tree_model   = str(g("tree_model"))
+    msa_tool     = str(g("msa_tool"))
+    msa_options  = str(g("msa_options"))
+    msa_length   = g("msa_length")
+    msa_gap_pct  = g("msa_gap_pct")
+    trim_tool    = str(g("trim_tool"))
+    trim_options = str(g("trim_options"))
+    support_type = str(g("support_type")).replace("_", "-")
+    support_med  = g("support_median")
+    support_q1   = g("support_q1")
+    support_q3   = g("support_q3")
+    n_genera     = g("n_genera")
+    n_subfams    = g("n_subfamilies")
+    n_outliers   = g("n_outliers_removed")
+    concat_used  = g("concat_n_markers_used")
+    concat_targ  = g("concat_n_markers_target")
+
+    species_with = summary_row.get("species_with_seqs", "")
+    species_disc = summary_row.get("species_discovered", "")
+
+    # Line 1 — method · alignment
+    _TREE_TOOL_DISPLAY = {"iqtree": "IQ-TREE", "fasttree": "FastTree"}
+    method_bits = []
+    if tree_tool:
+        method_bits.append("ML phylogeny")
+        tname = _TREE_TOOL_DISPLAY.get(tree_tool.lower(), tree_tool)
+        method_bits.append(f"{tname} {tree_model}".strip())
+
+    align_inner = []
+    if concat_used and concat_targ:
+        align_inner.append(f"concat {concat_used}/{concat_targ} markers")
+    if msa_tool:
+        align_inner.append(f"{msa_tool} {msa_options}".strip())
+    if trim_tool:
+        align_inner.append(f"{trim_tool} {trim_options}".strip())
+    if msa_gap_pct != "":
+        try:
+            align_inner.append(f"{int(round(float(msa_gap_pct)))}% gaps")
+        except (TypeError, ValueError):
+            pass
+
+    align_part = ""
+    if msa_length not in ("", None):
+        try:
+            align_part = f"{int(msa_length):,} cols"
+        except (TypeError, ValueError):
+            align_part = f"{msa_length} cols"
+    if align_part and align_inner:
+        align_part += f" ({', '.join(align_inner)})"
+    elif align_inner:
+        align_part = ", ".join(align_inner)
+
+    line1_parts = [" · ".join(method_bits)] if method_bits else []
+    if align_part:
+        line1_parts.append(align_part)
+    line1 = " · ".join(p for p in line1_parts if p)
+
+    # Line 2 — support · coloring · species · version
+    parts2: list[str] = []
+    if support_type and support_med != "":
+        try:
+            sm = float(support_med)
+            q1 = float(support_q1) if support_q1 != "" else None
+            q3 = float(support_q3) if support_q3 != "" else None
+            # FastTree SH-like values are in [0,1]; bootstrap/aLRT in [0,100].
+            fmt = "{:.2f}" if sm <= 1.0 else "{:.0f}"
+            if q1 is not None and q3 is not None:
+                parts2.append(
+                    f"{support_type} median {fmt.format(sm)} "
+                    f"(IQR {fmt.format(q1)}–{fmt.format(q3)})"
+                )
+            else:
+                parts2.append(f"{support_type} median {fmt.format(sm)}")
+        except (TypeError, ValueError):
+            pass
+
+    color_bits = []
+    try:
+        ng = int(n_genera) if n_genera not in ("", None) else 0
+        if ng:
+            color_bits.append(f"{ng} genus" if ng == 1 else f"{ng} genera")
+    except (TypeError, ValueError):
+        pass
+    try:
+        nsf = int(n_subfams) if n_subfams not in ("", None) else 0
+        if nsf:
+            color_bits.append(f"{nsf} subfamily" if nsf == 1 else f"{nsf} subfamilies")
+    except (TypeError, ValueError):
+        pass
+    if color_bits:
+        parts2.append(" / ".join(color_bits))
+
+    if species_with != "" and species_disc != "":
+        parts2.append(f"{species_with} / {species_disc} species")
+
+    try:
+        no = int(n_outliers) if n_outliers not in ("", None) else 0
+        if no > 0:
+            parts2.append(f"{no} outlier" + ("" if no == 1 else "s") + " removed")
+    except (TypeError, ValueError):
+        pass
+
+    parts2.append(f"vfam_trees v{__version__}")
+    line2 = " · ".join(parts2)
+
+    if line1 and line2:
+        return f"{line1}\n{line2}"
+    return line1 or line2
+
+
 # Internal node labels are only shown for these ranks.
 # Species-level annotations (and unranked nodes) are suppressed on internal
 # nodes to reduce clutter; leaf labels are always shown in full.
@@ -501,6 +630,7 @@ def _draw_tree_fig(
     genus_to_color: dict[str, str] | None = None,
     subfamily_to_genera: dict[str, list[str]] | None = None,
     branch_linewidth: float = 0.5,
+    summary_row: dict | None = None,
 ):
     """Return a matplotlib Figure of the tree, or None on error."""
     try:
@@ -540,7 +670,13 @@ def _draw_tree_fig(
             )
         _thin_tree_lines(ax, branch_linewidth)
         ax.axis("off")
-        ax.set_title(f"{family} tree_{label}", fontsize=11, fontweight="bold")
+        info = _build_tree_caption_info(summary_row, label)
+        fig.suptitle(
+            f"{family} ({n_leaves} external nodes)",
+            fontsize=11, fontweight="bold", y=0.995,
+        )
+        if info:
+            ax.set_title(info, fontsize=8, color="#555555", linespacing=1.4)
         font_size = max(4, min(8, int(200 / max(n_leaves, 1))))
 
         n_colored = 0
@@ -579,6 +715,7 @@ def _draw_unrooted_tree_fig(
     genus_to_color: dict[str, str] | None = None,
     subfamily_to_genera: dict[str, list[str]] | None = None,
     branch_linewidth: float = 0.5,
+    summary_row: dict | None = None,
 ):
     """Return a matplotlib Figure with an equal-angle unrooted (radial) tree layout.
 
@@ -637,7 +774,13 @@ def _draw_unrooted_tree_fig(
         fig, ax = plt.subplots(figsize=(fig_w, sz))
         ax.set_aspect("equal")
         ax.axis("off")
-        ax.set_title(f"{family} tree_{label} (unrooted)", fontsize=11, fontweight="bold")
+        info = _build_tree_caption_info(summary_row, label)
+        fig.suptitle(
+            f"{family} ({n_total} external nodes) — unrooted",
+            fontsize=11, fontweight="bold", y=0.995,
+        )
+        if info:
+            ax.set_title(info, fontsize=8, color="#555555", linespacing=1.4)
 
         # Draw branches
         def _draw_branches(clade):

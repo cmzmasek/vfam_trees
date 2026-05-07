@@ -84,7 +84,7 @@ def _run_mafft(
     cmd += ["--out", str(output_fasta)]
     cmd += [str(input_fasta)]
 
-    log.info("Running MAFFT (%s)", options)
+    log.info("Running MAFFT (%s, thread=%d)", options, threads)
     log.debug("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 

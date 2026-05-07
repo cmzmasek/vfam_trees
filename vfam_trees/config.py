@@ -431,7 +431,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
     "msa_500": {
         "tool": "mafft",
         "options_nuc": "--6merpair --retree 1",
-        "options_aa": "--6merpair --retree 1",
+        "options_aa": "--auto",
     },
     "msa_100": {
         "tool": "mafft",
@@ -512,7 +512,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
         # "deepest" — suffix first, then fall back to the deepest lineage entry
         #             that is above species level (e.g. an unranked clade or a
         #             subfamily node), maximally aggressive.
-        "genus_inference": "none",
+        "genus_inference": "deepest",
     },
     "taxonomy": {
         # Minimum rank a leaf lineage must reach to participate in internal-node
@@ -520,7 +520,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
         # from the LCA vote (they stay in the tree but do not blur internal
         # annotations).  "none" keeps the current behaviour (all leaves vote).
         # Typical values: "genus", "species", "subfamily".
-        "lca_min_rank": "none",
+        "lca_min_rank": "species",
     },
 }
 

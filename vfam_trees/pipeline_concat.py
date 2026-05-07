@@ -252,32 +252,10 @@ def run_family_concat(
     icon_bg_color     = icon_cfg.get("bg_color", "#EAF3F2")
     icon_branch_color = icon_cfg.get("branch_color", "#000000")
 
-    if bio_trees:
-        save_tree_images(
-            family=family,
-            output_dir=family_dir,
-            bio_trees=bio_trees,
-            tree_leaf_colors=tree_leaf_colors,
-            branch_linewidth=branch_linewidth,
-        )
-        # Persist tree_100 leaf colors so generate_overview_png can read them back
-        colors_100 = tree_leaf_colors.get("100", {}).get("display_to_color")
-        if colors_100:
-            with open(family_dir / f"{family}_colors_100.json", "w") as f:
-                json.dump(colors_100, f)
-        save_tree_icon(
-            family=family,
-            output_dir=family_dir,
-            bio_trees=bio_trees,
-            icon_size=icon_size,
-            icon_bg_color=icon_bg_color,
-            icon_branch_color=icon_branch_color,
-            branch_linewidth=branch_linewidth,
-            leaf_colors=tree_leaf_colors.get("100", {}).get("display_to_color"),
-        )
-
     # -------------------------------------------------------------------------
     # Summary + status
+    # Built before tree image rendering so save_tree_images can embed the
+    # figure-legend caption (method, alignment, support, taxonomy).
     # -------------------------------------------------------------------------
     seq_lengths_all = [
         len(rec.seq)
@@ -301,6 +279,31 @@ def run_family_concat(
     )
     if summary_path is not None:
         write_summary_row(summary_path, summary_row_for_report)
+
+    if bio_trees:
+        save_tree_images(
+            family=family,
+            output_dir=family_dir,
+            bio_trees=bio_trees,
+            tree_leaf_colors=tree_leaf_colors,
+            branch_linewidth=branch_linewidth,
+            summary_row=summary_row_for_report,
+        )
+        # Persist tree_100 leaf colors so generate_overview_png can read them back
+        colors_100 = tree_leaf_colors.get("100", {}).get("display_to_color")
+        if colors_100:
+            with open(family_dir / f"{family}_colors_100.json", "w") as f:
+                json.dump(colors_100, f)
+        save_tree_icon(
+            family=family,
+            output_dir=family_dir,
+            bio_trees=bio_trees,
+            icon_size=icon_size,
+            icon_bg_color=icon_bg_color,
+            icon_branch_color=icon_branch_color,
+            branch_linewidth=branch_linewidth,
+            leaf_colors=tree_leaf_colors.get("100", {}).get("display_to_color"),
+        )
     # ---- Per-family report PDF (parity with single-protein, plus a
     #      per-marker coverage page — CONCAT_DESIGN.md §6.3) ----
     tree_seq_lengths = {

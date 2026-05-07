@@ -28,9 +28,9 @@ Two trees are produced per family:
 - FastTree (tree_500) and IQ-TREE (tree_100) tree inference; tree_100 has per-sequence-type options — `options_nuc: "--fast"` (SH-aLRT support, auto-added by the wrapper) and `options_aa: "-B 1000"` (UFBoot ultrafast bootstrap, more robust on divergent protein families)
 - Branch-support measure is picked automatically per tree and recorded as `tree{500,100}_support_type` in `summary.tsv` (`SH_like` / `SH_aLRT` / `UFBoot`); support-value stats are reported under generic `tree{500,100}_support_{min,q1,median,q3,max,iqr}` columns so a single schema covers all three measures; the PhyloXML `<confidence type="…">` attribute mirrors the same label
 - Taxonomy-guided tree rooting using LCA specificity scoring, with MAD and midpoint fallbacks
-- Configurable LCA depth filter (`taxonomy.lca_min_rank`): exclude leaves whose lineage does not reach a given rank (e.g. `genus`, `species`) from internal-node LCA voting, preventing shallow lineages from dragging ancestor labels back toward the root
+- Configurable LCA depth filter (`taxonomy.lca_min_rank`): exclude leaves whose lineage does not reach a given rank (e.g. `genus`, `species`) from internal-node LCA voting, preventing shallow lineages from dragging ancestor labels back toward the root (default `species`)
 - LCA-based internal node annotation using NCBI ranked lineages
-- Optional **genus inference** (`coloring.genus_inference`) for leaves whose NCBI lineage lacks a formal `genus` rank — three modes: `none` (default, color only formal genera), `suffix` (treat any single-word taxon ending in "virus" as genus, per ICTV convention), `deepest` (suffix first, then deepest rank above species)
+- Optional **genus inference** (`coloring.genus_inference`) for leaves whose NCBI lineage lacks a formal `genus` rank — three modes: `none` (color only formal genera), `suffix` (treat any single-word taxon ending in "virus" as genus, per ICTV convention), `deepest` (default — suffix first, then deepest rank above species)
 - PhyloXML output with:
   - `<phylogeny rooted="true" rerootable="false">` — prevents downstream viewers from re-rooting the carefully rooted output
   - `<confidence type="SH_like|SH_aLRT|UFBoot">` (type chosen per tree, matches the actual support measure computed)
@@ -52,7 +52,7 @@ Two trees are produced per family:
   - Per-tree sequence length histograms for tree_500 and tree_100 (sequences actually used to build each tree)
   - SH support value histograms for both trees
   - tree_100 visualization with genus/subfamily color legend
-- Standalone PDF and PNG tree images for both tree_100 and tree_500, with genus/subfamily color legend. Each tree is exported in two layouts:
+- Standalone PDF and PNG tree images for both tree_100 and tree_500, with genus/subfamily color legend and a two-line figure-legend caption embedded above each tree (method · alignment summary; support stats · genus / subfamily counts · species coverage · outliers removed · pipeline version). Each tree is exported in two layouts:
   - **Rooted rectangular** (`<Family>_tree_{100,500}.pdf/png`): taxonomy-annotated internal labels (genus / subgenus / subfamily / family only); support values below 50% are suppressed to reduce visual noise
   - **Unrooted radial** (`<Family>_tree_{100,500}_ur.pdf/png`): equal-angle layout with leaf labels drawn radially (rotated outward); no internal labels, no support values; same genus coloring as the rooted layout
 - **Overview PNG** (`overview_tree_100.png`): thumbnail grid of all tree_100 trees across all processed families, automatically generated at the end of `vfam_trees run`; thumbnails are shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) using NCBI lineage data; regenerate at any time with `vfam_trees overview`
@@ -234,7 +234,7 @@ targets:
 msa_500:
   tool: mafft
   options_nuc: "--6merpair --retree 1"   # used for nucleotide sequences
-  options_aa: "--6merpair --retree 1"   # used for amino acid sequences
+  options_aa: "--auto"                   # used for amino acid sequences (MAFFT auto-selects strategy)
 
 msa_100:
   tool: mafft
@@ -273,16 +273,17 @@ outlier_removal:
   min_seqs: 40                  # only remove outliers when ≥ min_seqs sequences remain after removal
 
 coloring:
-  genus_inference: none         # none: only formal NCBI genus-rank entries are colored
+  genus_inference: deepest      # none: only formal NCBI genus-rank entries are colored
                                 # suffix: single-word taxa ending in "virus" treated as genus
                                 #         (recovers ICTV genus names that NCBI still has at "no rank")
-                                # deepest: suffix first, then deepest lineage entry above species rank
+                                # deepest (default): suffix first, then deepest lineage entry
+                                #         above species rank
 
 taxonomy:
-  lca_min_rank: none            # none: every leaf contributes to internal-node LCA voting
-                                # subfamily / genus / species: exclude leaves whose lineage does
-                                #   not reach this rank, so shallow lineages cannot drag ancestor
-                                #   labels back toward the root
+  lca_min_rank: species         # none: every leaf contributes to internal-node LCA voting
+                                # subfamily / genus / species (default): exclude leaves whose
+                                #   lineage does not reach this rank, so shallow lineages cannot
+                                #   drag ancestor labels back toward the root
 ```
 
 These two keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.

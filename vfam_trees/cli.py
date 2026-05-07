@@ -181,10 +181,15 @@ def run(
         "threads": threads,
     }
 
+    # Snakemake clamps a rule's per-job threads to --cores. To let
+    # `-j N -t M` actually run N families × M threads each, --cores must be
+    # at least N*M; otherwise rule run_family (threads: M) silently falls
+    # back to --cores threads, and MAFFT/IQ-TREE only receive that many.
+    total_cores = cores * threads
     cmd = [
         "snakemake",
         "--snakefile", str(WORKFLOW_DIR / "Snakefile"),
-        "--cores", str(cores),
+        "--cores", str(total_cores),
         "--config", *[f"{k}={_yaml_encode(v)}" for k, v in snakemake_cfg.items()],
         "--rerun-incomplete",
         "--printshellcmds",
@@ -395,7 +400,7 @@ defaults:
   msa_500:
     tool: mafft
     options_nuc: "--6merpair --retree 1"
-    options_aa: "--6merpair --retree 1"
+    options_aa: "--auto"
 
   msa_100:
     tool: mafft
@@ -457,7 +462,7 @@ defaults:
   #             above species level as a grouping key (maximally aggressive —
   #             useful for poorly annotated families).
   coloring:
-    genus_inference: none
+    genus_inference: deepest
 
   # Minimum lineage depth a leaf must reach to participate in the LCA vote
   # used for internal-node taxonomy annotation.  Leaves whose lineage ends
@@ -469,7 +474,7 @@ defaults:
   #   genus     — exclude leaves whose lineage does not reach genus level.
   #   species   — require species-level lineage to participate.
   taxonomy:
-    lca_min_rank: none
+    lca_min_rank: species
 """
 
 
