@@ -510,7 +510,7 @@ def _build_tree_caption_info(summary_row: dict | None, label: str) -> str:
     species_with = summary_row.get("species_with_seqs", "")
     species_disc = summary_row.get("species_discovered", "")
 
-    # Line 1 — method · alignment
+    # Line 1 — molecule/region · method · alignment
     _TREE_TOOL_DISPLAY = {"iqtree": "IQ-TREE", "fasttree": "FastTree"}
     method_bits = []
     if tree_tool:
@@ -519,7 +519,8 @@ def _build_tree_caption_info(summary_row: dict | None, label: str) -> str:
         method_bits.append(f"{tname} {tree_model}".strip())
 
     align_inner = []
-    if concat_used and concat_targ:
+    is_concat = bool(concat_used and concat_targ)
+    if is_concat:
         align_inner.append(f"concat {concat_used}/{concat_targ} markers")
     if msa_tool:
         align_inner.append(f"{msa_tool} {msa_options}".strip())
@@ -542,7 +543,12 @@ def _build_tree_caption_info(summary_row: dict | None, label: str) -> str:
     elif align_inner:
         align_part = ", ".join(align_inner)
 
-    line1_parts = [" · ".join(method_bits)] if method_bits else []
+    line1_parts = []
+    mol_region = summary_row.get("molecule_region", "")
+    if mol_region and not is_concat:
+        line1_parts.append(mol_region)
+    if method_bits:
+        line1_parts.append(" · ".join(method_bits))
     if align_part:
         line1_parts.append(align_part)
     line1 = " · ".join(p for p in line1_parts if p)
@@ -598,6 +604,43 @@ def _build_tree_caption_info(summary_row: dict | None, label: str) -> str:
     if line1 and line2:
         return f"{line1}\n{line2}"
     return line1 or line2
+
+
+def _place_figure_header(fig, title: str, info: str) -> float:
+    """Place bold title and optional description at the top of *fig*.
+
+    Both elements are written with ``fig.text`` in figure coordinates so they
+    are positioned relative to each other — avoiding the large gap that
+    ``fig.suptitle`` + ``ax.set_title`` produces, because matplotlib
+    automatically shifts the axes down when a suptitle is present.
+
+    Returns ``axes_top``: the figure-fraction y-coordinate below which the
+    caller should place the axes (pass to ``fig.subplots_adjust(top=...)``).
+    """
+    pts_per_frac = fig.get_figheight() * 72.0  # figure-fraction per point
+
+    TITLE_Y    = 0.99
+    TITLE_SIZE = 11
+    INFO_SIZE  = 8
+    INFO_LS    = 1.4
+    GAP_PTS    = 3  # gap between title baseline and info cap-line
+
+    title_frac = TITLE_SIZE / pts_per_frac
+    fig.text(0.5, TITLE_Y, title,
+             ha="center", va="top", fontsize=TITLE_SIZE, fontweight="bold")
+
+    if info:
+        n_lines   = info.count("\n") + 1
+        info_y    = TITLE_Y - title_frac - GAP_PTS / pts_per_frac
+        info_frac = INFO_SIZE * INFO_LS * n_lines / pts_per_frac
+        fig.text(0.5, info_y, info,
+                 ha="center", va="top", fontsize=INFO_SIZE,
+                 color="#555555", linespacing=INFO_LS)
+        axes_top = info_y - info_frac - GAP_PTS / pts_per_frac
+    else:
+        axes_top = TITLE_Y - title_frac - GAP_PTS / pts_per_frac
+
+    return float(max(0.50, min(0.97, axes_top)))
 
 
 # Internal node labels are only shown for these ranks.
@@ -668,15 +711,14 @@ def _draw_tree_fig(
                 label_func=_internal_label,
                 branch_labels=_confidence_label,
             )
+        ax.set_title("")  # Phylo.draw sets ax.title = tree.name; clear it so our header shows cleanly
         _thin_tree_lines(ax, branch_linewidth)
         ax.axis("off")
         info = _build_tree_caption_info(summary_row, label)
-        fig.suptitle(
-            f"{family} ({n_leaves} external nodes)",
-            fontsize=11, fontweight="bold", y=0.995,
+        axes_top = _place_figure_header(
+            fig, f"{family} ({n_leaves} external nodes)", info
         )
-        if info:
-            ax.set_title(info, fontsize=8, color="#555555", linespacing=1.4)
+        fig.subplots_adjust(top=axes_top)
         font_size = max(4, min(8, int(200 / max(n_leaves, 1))))
 
         n_colored = 0
@@ -775,12 +817,9 @@ def _draw_unrooted_tree_fig(
         ax.set_aspect("equal")
         ax.axis("off")
         info = _build_tree_caption_info(summary_row, label)
-        fig.suptitle(
-            f"{family} ({n_total} external nodes) — unrooted",
-            fontsize=11, fontweight="bold", y=0.995,
+        axes_top = _place_figure_header(
+            fig, f"{family} ({n_total} external nodes) — unrooted", info
         )
-        if info:
-            ax.set_title(info, fontsize=8, color="#555555", linespacing=1.4)
 
         # Draw branches
         def _draw_branches(clade):
@@ -826,7 +865,7 @@ def _draw_unrooted_tree_fig(
         if has_legend and genus_to_color:
             _draw_taxonomy_legend(ax, genus_to_color, subfamily_to_genera or {})
 
-        plt.tight_layout()
+        plt.tight_layout(rect=[0, 0, 1, axes_top])
         return fig
     except Exception as e:
         log.warning("Unrooted tree visualization skipped for %s: %s", family, e)

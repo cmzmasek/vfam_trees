@@ -264,7 +264,8 @@ def run_family_concat(
                    seq_type, region, segment, len(species_list),
                    len(species_genomes), reason,
                    summary_path, status_path,
-                   family_dir, output_dir, mark_skipped)
+                   family_dir, output_dir, mark_skipped,
+                   marker_names=marker_order)
         return
 
     # -------------------------------------------------------------------------
@@ -352,6 +353,7 @@ def run_family_concat(
         seqlen_stats=seqlen_stats,
         tree_stats=tree_stats,
         family_annotation=family_annotation,
+        marker_names=marker_order,
     )
     if summary_path is not None:
         write_summary_row(summary_path, summary_row_for_report)
@@ -424,6 +426,7 @@ def run_family_concat(
             segment=segment,
             status="OK",
             family_annotation=family_annotation,
+            marker_names=marker_order,
         ))
     mark_done(family_dir, family, output_dir)
 
@@ -843,6 +846,8 @@ def _run_target_concat(
         ),
         confidence_type=support_type,
         leaf_colors=short_to_color,
+        aligned_seqs={gid: str(rec.seq) for gid, rec in concat.items()},
+        seq_type="protein",
     )
 
     # 8. Concat-specific stats: marker coverage, concat length, partition models
@@ -864,7 +869,6 @@ def _run_target_concat(
         )
         if models_by_charset:
             # Map sanitized charset names back to canonical marker names
-            from .concat import _safe_charset_name
             sanitized_to_marker = {_safe_charset_name(m): m for m in marker_order}
             marker_models_str = ", ".join(
                 f"{sanitized_to_marker.get(cs, cs)}:{model}"
@@ -1172,6 +1176,7 @@ def _emit_skip(
     family_dir: Path,
     output_dir: Path,
     mark_skipped,
+    marker_names: list[str] | None = None,
 ) -> None:
     if summary_path is not None:
         row = build_summary_row(
@@ -1186,6 +1191,7 @@ def _emit_skip(
             seqlen_stats={},
             tree_stats={},
             family_annotation=family_annotation,
+            marker_names=marker_names,
         )
         write_summary_row(summary_path, row)
     if status_path is not None:
@@ -1198,5 +1204,6 @@ def _emit_skip(
             segment=segment,
             status=reason,
             family_annotation=family_annotation,
+            marker_names=marker_names,
         ))
     mark_skipped(family_dir, family, output_dir, reason)
