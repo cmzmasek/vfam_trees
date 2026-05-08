@@ -306,6 +306,91 @@ class TestWritePhyloxml:
         assert 'ref="style:font_color"' in text
         assert "#ff0000" in text
 
+    def test_no_mol_seq_by_default(self, mini_xml):
+        text = mini_xml.read_text()
+        assert "mol_seq" not in text
+
+    def test_no_type_attr_on_sequence_by_default(self, mini_xml):
+        xml = ET.parse(mini_xml)
+        for seq_el in xml.getroot().iter(f"{NS}sequence"):
+            assert "type" not in seq_el.attrib
+
+
+class TestMolSeq:
+    """Aligned-sequence embedding via aligned_seqs + seq_type."""
+
+    def _write(self, tmp_path, aligned_seqs=None, seq_type=""):
+        tree = _make_mini_tree()
+        meta = _make_meta()
+        out = tmp_path / "out.xml"
+        write_phyloxml(
+            newick_path=tmp_path / "unused.nwk",
+            output_xml=out,
+            id_map={"s1": "Leaf1", "s2": "Leaf2", "s3": "Leaf3"},
+            leaf_metadata=meta,
+            family="Flaviviridae",
+            tree=tree,
+            aligned_seqs=aligned_seqs,
+            seq_type=seq_type,
+        )
+        return out
+
+    def test_mol_seq_present_for_each_leaf(self, tmp_path):
+        seqs = {"s1": "ACDEF-GH", "s2": "ACDE--GH", "s3": "ACDEK-GH"}
+        out = self._write(tmp_path, aligned_seqs=seqs, seq_type="protein")
+        xml = ET.parse(out)
+        mol_seqs = list(xml.getroot().iter(f"{NS}mol_seq"))
+        assert len(mol_seqs) == 3
+        texts = {e.text for e in mol_seqs}
+        assert "ACDEF-GH" in texts
+        assert "ACDEK-GH" in texts
+
+    def test_mol_seq_is_aligned_attribute_true(self, tmp_path):
+        seqs = {"s1": "ACDEF", "s2": "ACDE-", "s3": "ACDE-"}
+        out = self._write(tmp_path, aligned_seqs=seqs, seq_type="protein")
+        xml = ET.parse(out)
+        for mol_el in xml.getroot().iter(f"{NS}mol_seq"):
+            assert mol_el.attrib.get("is_aligned") == "true"
+
+    def test_sequence_type_protein_for_protein(self, tmp_path):
+        seqs = {"s1": "ACDEF", "s2": "ACDE-", "s3": "ACDE-"}
+        out = self._write(tmp_path, aligned_seqs=seqs, seq_type="protein")
+        xml = ET.parse(out)
+        for seq_el in xml.getroot().iter(f"{NS}sequence"):
+            assert seq_el.attrib.get("type") == "protein"
+
+    def test_sequence_type_dna_for_nucleotide(self, tmp_path):
+        seqs = {"s1": "ATCG--", "s2": "ATCGAT", "s3": "ATCG--"}
+        out = self._write(tmp_path, aligned_seqs=seqs, seq_type="nucleotide")
+        xml = ET.parse(out)
+        for seq_el in xml.getroot().iter(f"{NS}sequence"):
+            assert seq_el.attrib.get("type") == "dna"
+
+    def test_mol_seq_absent_when_aligned_seqs_none(self, tmp_path):
+        out = self._write(tmp_path, aligned_seqs=None, seq_type="protein")
+        text = out.read_text()
+        assert "mol_seq" not in text
+
+    def test_mol_seq_absent_for_leaf_missing_from_dict(self, tmp_path):
+        # Only s1 has an aligned sequence; s2 and s3 should not get mol_seq.
+        seqs = {"s1": "ACDEF"}
+        out = self._write(tmp_path, aligned_seqs=seqs, seq_type="protein")
+        xml = ET.parse(out)
+        mol_seqs = list(xml.getroot().iter(f"{NS}mol_seq"))
+        assert len(mol_seqs) == 1
+        assert mol_seqs[0].text == "ACDEF"
+
+    def test_accession_and_mol_seq_coexist_in_same_sequence_el(self, tmp_path):
+        seqs = {"s1": "ACDEF", "s2": "ACDE-", "s3": "ACDE-"}
+        out = self._write(tmp_path, aligned_seqs=seqs, seq_type="protein")
+        xml = ET.parse(out)
+        # Each <sequence> that has an accession should also have a mol_seq child
+        for seq_el in xml.getroot().iter(f"{NS}sequence"):
+            acc = seq_el.find(f"{NS}accession")
+            mol = seq_el.find(f"{NS}mol_seq")
+            if acc is not None:
+                assert mol is not None, "accession without mol_seq"
+
 
 # ---------------------------------------------------------------------------
 # Fields declaration

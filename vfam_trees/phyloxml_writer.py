@@ -64,6 +64,8 @@ def write_phyloxml(
     phylogeny_detail: str | None = None,
     confidence_type: str = "SH_aLRT",
     leaf_colors: dict[str, str] | None = None,
+    aligned_seqs: dict[str, str] | None = None,
+    seq_type: str = "",
 ) -> None:
     """Generate a PhyloXML file from a Newick tree with vipr: metadata properties.
 
@@ -74,6 +76,9 @@ def write_phyloxml(
         leaf_metadata: short_id → metadata dict
         family: viral family name (used in phylogeny description)
         tree: pre-parsed BioPython tree (avoids lossy Newick roundtrip if supplied)
+        aligned_seqs: short_id → aligned sequence string; when provided, each leaf
+            gets a <mol_seq is_aligned="true"> child inside its <sequence> element
+        seq_type: "protein" or "nucleotide"; sets the type= attribute on <sequence>
     """
     if tree is None:
         # Fall back to parsing from file — bootstrap on internal nodes may be
@@ -101,7 +106,7 @@ def write_phyloxml(
     )
 
     _write_clade(phylogeny_el, tree.root, id_map, leaf_metadata, confidence_type,
-                 leaf_colors or {})
+                 leaf_colors or {}, aligned_seqs, seq_type)
 
     output_xml.parent.mkdir(parents=True, exist_ok=True)
     _write_pretty_xml(root, output_xml)
@@ -115,6 +120,8 @@ def _write_clade(
     leaf_metadata: dict[str, dict],
     confidence_type: str = "SH_aLRT",
     leaf_colors: dict[str, str] | None = None,
+    aligned_seqs: dict[str, str] | None = None,
+    seq_type: str = "",
 ) -> ET.Element:
     clade_el = ET.SubElement(parent_el, "clade")
 
@@ -163,17 +170,23 @@ def _write_clade(
             if species:
                 sci_el = ET.SubElement(taxonomy_el, "scientific_name")
                 sci_el.text = species
-        # <sequence> element with accession and title
+        # <sequence> element with accession, title, and (optionally) mol_seq
         accession = meta.get("accession", "")
         seq_name = meta.get("seq_name", "")
-        if accession or seq_name:
-            seq_el = ET.SubElement(clade_el, "sequence")
+        aligned_seq = (aligned_seqs or {}).get(short_id, "")
+        if accession or seq_name or aligned_seq:
+            mol_type = "protein" if seq_type == "protein" else ("dna" if seq_type else "")
+            seq_attrs = {"type": mol_type} if mol_type else {}
+            seq_el = ET.SubElement(clade_el, "sequence", **seq_attrs)
             if accession:
                 acc_el = ET.SubElement(seq_el, "accession", source="ncbi")
                 acc_el.text = accession
             if seq_name:
                 seqname_el = ET.SubElement(seq_el, "name")
                 seqname_el.text = seq_name
+            if aligned_seq:
+                molseq_el = ET.SubElement(seq_el, "mol_seq", is_aligned="true")
+                molseq_el.text = aligned_seq
 
         # Remaining fields as vipr: properties
         for field, datatype, ref_name in METADATA_FIELDS:
@@ -223,7 +236,8 @@ def _write_clade(
 
     # child clades must come last
     for child in clade.clades:
-        _write_clade(clade_el, child, id_map, leaf_metadata, confidence_type, leaf_colors)
+        _write_clade(clade_el, child, id_map, leaf_metadata, confidence_type,
+                     leaf_colors, aligned_seqs, seq_type)
 
     return clade_el
 
