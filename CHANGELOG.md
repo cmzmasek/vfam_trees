@@ -10,6 +10,21 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.25] — 2026-05-08
+
+### Fixed
+- **Spurious "Invalid uid" warnings from the v1.2.24 source-nuc length filter.**
+  Free-text fragments such as `Q8` were occasionally extracted from
+  `coded_by` qualifiers as if they were nuccore accessions, then forwarded
+  to `Entrez.esummary`, where one bad UID makes NCBI reject the entire
+  batch and erase the length map for every well-formed accession alongside
+  it. Two fixes: (1) the accession regex in `_source_nuc_accession` now
+  requires at least 3 digits, so 1- or 2-digit fragments are no longer
+  picked up; (2) `fetch_nuc_lengths` defensively re-validates each UID
+  against the same shape and silently skips malformed entries before the
+  esummary call, so a leaked fragment can't poison a batch even if it
+  somehow survives the upstream check. No config changes required.
+
 ## [1.2.24] — 2026-05-08
 
 ### Added

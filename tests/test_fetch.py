@@ -14,6 +14,7 @@ from vfam_trees.fetch import (
     _extract_isolate,
     _safe_marker_filename,
     _source_nuc_accession,
+    fetch_nuc_lengths,
     group_proteins_by_genome,
 )
 
@@ -203,6 +204,50 @@ class TestSourceNucAccession:
         cds.qualifiers = {"coded_by": ["NC_001234.1:1..300"]}
         rec.features = [cds]
         assert _source_nuc_accession(rec) == "NC_001234.1"
+
+    def test_short_digit_fragment_not_extracted(self):
+        # Real-world: a free-text coded_by fragment like "Q8" must not be
+        # picked up as a source-nuc accession — NCBI's esummary then rejects
+        # the whole batch with "Invalid uid Q8".  Real nuccore accessions have
+        # at least 4 digits, so the regex requires that.
+        rec = SeqRecord(Seq("M" * 100), id="YP_1")
+        cds = SeqFeature(FeatureLocation(0, 100), type="CDS")
+        cds.qualifiers = {"coded_by": ["join(Q8, NC_001234.1:1..300)"]}
+        rec.features = [cds]
+        rec.annotations = {}
+        assert _source_nuc_accession(rec) == "NC_001234.1"
+
+
+# ---- fetch_nuc_lengths input validation ----
+
+class TestFetchNucLengthsInputValidation:
+    def test_malformed_uids_filtered_before_esummary(self, monkeypatch):
+        from vfam_trees import fetch as fetch_mod
+
+        captured_batches: list[list[str]] = []
+
+        class _FakeHandle:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_esummary(db, id):
+            captured_batches.append(id.split(","))
+            return _FakeHandle()
+
+        def fake_read(handle):
+            return []
+
+        monkeypatch.setattr(fetch_mod.Entrez, "esummary", fake_esummary)
+        monkeypatch.setattr(fetch_mod.Entrez, "read", fake_read)
+        monkeypatch.setattr(fetch_mod.time, "sleep", lambda *_: None)
+
+        # Mix of well-formed and malformed accessions
+        fetch_mod.fetch_nuc_lengths(
+            ["NC_001234.1", "Q8", "AB123456", "", "X1", "NC_001234.1"]
+        )
+        assert captured_batches == [["NC_001234.1", "AB123456"]]
 
 
 # ---- _extract_isolate ----

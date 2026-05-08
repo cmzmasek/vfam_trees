@@ -410,6 +410,10 @@ def _search_ids(db: str, query: str, max_records: int) -> list[str]:
 # of long records.
 _LOCUS_RE = re.compile(r"^LOCUS\s", re.MULTILINE)
 
+# Strict nuccore-accession shape used to validate UIDs before sending them to
+# Entrez esummary.  See _ACCESSION_RE for the rationale on the digit minimum.
+_NUCCORE_ACCESSION_RE = re.compile(r"^[A-Z]{1,4}_?\d{3,}(?:\.\d+)?$")
+
 
 def fetch_nuc_lengths(accessions: Iterable[str]) -> dict[str, int]:
     """Return ``{accession: length_bp}`` for nucleotide accessions via esummary.
@@ -425,7 +429,27 @@ def fetch_nuc_lengths(accessions: Iterable[str]) -> dict[str, int]:
     accessions (``NC_002617``) both work — esummary returns
     ``AccessionVersion`` and we key on the input string when present.
     """
-    accs = list(dict.fromkeys(a for a in accessions if a))  # dedupe, preserve order
+    # Dedupe and drop anything that doesn't look like a nuccore accession —
+    # NCBI rejects the *entire* batch if any single UID is malformed
+    # (e.g. a "Q8" fragment that leaked in from a free-text qualifier),
+    # which would otherwise erase the length map for every well-formed
+    # accession in the same batch.
+    accs: list[str] = []
+    seen: set[str] = set()
+    skipped: list[str] = []
+    for a in accessions:
+        if not a or a in seen:
+            continue
+        seen.add(a)
+        if _NUCCORE_ACCESSION_RE.match(a):
+            accs.append(a)
+        else:
+            skipped.append(a)
+    if skipped:
+        log.debug(
+            "fetch_nuc_lengths: skipping %d malformed accession(s): %s",
+            len(skipped), skipped[:5],
+        )
     result: dict[str, int] = {}
     for batch in _batched(accs, 200):
         last_exc: Exception | None = None
@@ -513,7 +537,11 @@ def _safe_marker_filename(marker_name: str) -> str:
     return slug or "marker"
 
 
-_ACCESSION_RE = re.compile(r"\b([A-Z]{1,3}_?\d+(?:\.\d+)?)\b")
+# Nuccore accession formats: 1+5 (rare, old GenBank), 2+6 (most), 2+_+6 (RefSeq),
+# 4+8/9/10 (WGS).  Require at least 3 digits to keep stray fragments like "Q8"
+# from a free-text qualifier from being mistaken for an accession (3 instead of
+# 4 keeps existing test fixtures with shortened mock accessions working).
+_ACCESSION_RE = re.compile(r"\b([A-Z]{1,4}_?\d{3,}(?:\.\d+)?)\b")
 
 
 def _source_nuc_accession(record: SeqRecord) -> str:
@@ -531,7 +559,7 @@ def _source_nuc_accession(record: SeqRecord) -> str:
                 return m.group(1)
     annotations = getattr(record, "annotations", None) or {}
     db_source = annotations.get("db_source", "") or ""
-    m = re.search(r"accession\s+([A-Z]{1,3}_?\d+(?:\.\d+)?)", db_source, re.IGNORECASE)
+    m = re.search(r"accession\s+([A-Z]{1,4}_?\d{3,}(?:\.\d+)?)", db_source, re.IGNORECASE)
     if m:
         return m.group(1)
     return ""
