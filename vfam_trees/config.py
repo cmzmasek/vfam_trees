@@ -494,8 +494,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
     },
     "length_outlier": {
         "enabled": True,
-        "hi_mult": 3.0,
-        "lo_mult": 0.333,
+        "k": 5.0,
     },
     "outlier_removal": {
         "enabled": True,

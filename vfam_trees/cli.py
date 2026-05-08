@@ -436,14 +436,13 @@ defaults:
     model_aa: TEST
 
   # Pre-MSA sequence-length outlier removal (applied after clustering +
-  # proportional merge, before MAFFT).  Drops sequences whose length
-  # deviates from the median of the selected set by a large factor —
-  # guards against fragment cluster reps and mis-annotated concatenations
-  # distorting the alignment.
+  # proportional merge, before MAFFT).  Drops sequences whose length is a
+  # MAD-on-log outlier — the keep window is exp(median(log L) ± k·σ_log),
+  # with σ_log = 1.4826 × MAD(log L).  Adapts to each family's natural
+  # length variation; no hand-tuned hi/lo cutoffs required.
   length_outlier:
     enabled: true
-    hi_mult: 3.0       # drop seqs longer than hi_mult × median (0 disables)
-    lo_mult: 0.333     # drop seqs shorter than lo_mult × median (0 disables)
+    k: 5.0             # MAD-units on either side of log-median (0 disables)
 
   # Post-tree branch-length outlier removal (iterative).
   # Drops leaves whose terminal branch length exceeds median + factor × MAD.

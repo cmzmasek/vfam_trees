@@ -10,7 +10,7 @@ import statistics
 from pathlib import Path
 
 import yaml
-from Bio import Phylo
+from Bio import Phylo, SeqIO
 from Bio.SeqRecord import SeqRecord
 
 from .config import load_family_config, load_global_config
@@ -752,22 +752,19 @@ def _run_target(
         )
         return {}, [], None
 
-    # Pre-MSA length-outlier removal (two-sided, config-driven)
+    # Pre-MSA length-outlier removal (MAD-on-log, two-sided, config-driven)
     length_outlier_cfg = family_cfg.get("length_outlier", {})
     n_length_long = 0
     n_length_short = 0
     if length_outlier_cfg.get("enabled", True):
-        hi_mult = float(length_outlier_cfg.get("hi_mult", 3.0))
-        lo_mult = float(length_outlier_cfg.get("lo_mult", 0.333))
+        k = float(length_outlier_cfg.get("k", 5.0))
         sel_records, n_length_long, n_length_short = remove_length_outliers(
-            sel_records, hi_mult=hi_mult, lo_mult=lo_mult,
-            protected_ids=refseq_short_ids,
+            sel_records, k=k, protected_ids=refseq_short_ids,
         )
         if n_length_long or n_length_short:
             log.info(
-                "tree_%s: length-outlier removal dropped %d long + %d short "
-                "(hi_mult=%.2f, lo_mult=%.2f)",
-                label, n_length_long, n_length_short, hi_mult, lo_mult,
+                "tree_%s: length-outlier removal dropped %d long + %d short (k=%.1f)",
+                label, n_length_long, n_length_short, k,
             )
     if len(sel_records) < 4:
         log.warning(
@@ -1107,6 +1104,10 @@ def _run_target(
         tree_options=tree_options,
     )
     confidence_type = support_type
+    region = family_cfg["sequence"]["region"]
+    aligned_seqs: dict[str, str] | None = None
+    if region != "whole_genome" and tree_input_fasta.exists():
+        aligned_seqs = {r.id: str(r.seq) for r in SeqIO.parse(tree_input_fasta, "fasta")}
     write_phyloxml(
         newick_path=annotated_nwk,
         output_xml=family_dir / f"{family}_tree_{label}.xml",
@@ -1118,6 +1119,8 @@ def _run_target(
         phylogeny_detail=phylogeny_detail,
         confidence_type=confidence_type,
         leaf_colors=short_to_color,
+        aligned_seqs=aligned_seqs,
+        seq_type=seq_type,
     )
 
     return target_stats, support_vals, bio_tree

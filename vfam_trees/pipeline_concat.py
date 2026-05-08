@@ -183,8 +183,7 @@ def run_family_concat(
     absorb_enabled   = bool(refseq_abs_cfg.get("enabled", True))
     absorb_threshold = float(refseq_abs_cfg.get("threshold", 0.99))
     length_outlier_cfg = family_cfg.get("length_outlier", {}) or {}
-    hi_mult          = float(length_outlier_cfg.get("hi_mult", 3.0))
-    lo_mult          = float(length_outlier_cfg.get("lo_mult", 1.0 / 3.0))
+    length_k         = float(length_outlier_cfg.get("k", 5.0))
 
     log.info("=" * 60)
     log.info("Concatenated mode for %s: %d markers (%s)",
@@ -298,8 +297,7 @@ def run_family_concat(
             clustering_tool=clustering_tool,
             absorb_enabled=absorb_enabled,
             absorb_threshold=absorb_threshold,
-            hi_mult=hi_mult,
-            lo_mult=lo_mult,
+            length_k=length_k,
             family_cfg=family_cfg,
         )
         tree_stats[label] = target_stats
@@ -463,8 +461,7 @@ def _run_target_concat(
     clustering_tool: str,
     absorb_enabled: bool,
     absorb_threshold: float,
-    hi_mult: float,
-    lo_mult: float,
+    length_k: float,
     family_cfg: dict,
 ) -> dict:
     target_work = work_dir / f"target_{label}"
@@ -519,8 +516,7 @@ def _run_target_concat(
     # 3. Per-marker length-outlier (RefSeq exempt)
     refseq_ids = identify_refseq_genomes({"_": selected_genomes})  # bulk shape
     selected_genomes, lo_stats = remove_per_marker_length_outliers(
-        selected_genomes, refseq_genome_ids=refseq_ids,
-        hi_mult=hi_mult, lo_mult=lo_mult,
+        selected_genomes, refseq_genome_ids=refseq_ids, k=length_k,
     )
 
     # 4-5. Iterative align + concat + tree, with branch-length outlier

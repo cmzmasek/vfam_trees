@@ -36,91 +36,83 @@ def _aln(acc: str, sequence: str) -> SeqRecord:
 # remove_per_marker_length_outliers
 # ---------------------------------------------------------------------------
 
+# Realistic per-marker variation so MAD on log-lengths is non-zero.
+def _normal_polB(idx: int) -> SeqRecord:
+    lengths = (980, 990, 995, 1000, 1000, 1005, 1010, 1015, 1020, 1025)
+    return _rec(f"YP_polB_{idx}", lengths[idx % len(lengths)])
+
+
+def _normal_MCP(idx: int) -> SeqRecord:
+    lengths = (580, 590, 595, 600, 600, 605, 610, 615, 620, 625)
+    return _rec(f"YP_MCP_{idx}", lengths[idx % len(lengths)])
+
+
+def _genomes_with_normal_markers(n: int) -> dict[str, dict[str, SeqRecord]]:
+    return {
+        f"NC_{i:03d}": {"polB": _normal_polB(i), "MCP": _normal_MCP(i)}
+        for i in range(n)
+    }
+
+
 class TestPerMarkerLengthOutliers:
     def test_normal_lengths_kept(self):
-        # Three genomes each with 2 markers, all lengths near each marker's median
-        genomes = {
-            "NC_001": {"polB": _rec("YP_1", 1000), "MCP": _rec("YP_2", 600)},
-            "NC_002": {"polB": _rec("YP_3", 1010), "MCP": _rec("YP_4", 590)},
-            "NC_003": {"polB": _rec("YP_5",  990), "MCP": _rec("YP_6", 610)},
-        }
+        genomes = _genomes_with_normal_markers(10)
         updated, stats = remove_per_marker_length_outliers(genomes, set())
         assert stats["n_long_dropped"] == 0
         assert stats["n_short_dropped"] == 0
         assert all(len(m) == 2 for m in updated.values())
 
     def test_long_outlier_dropped(self):
-        # NC_002 polB is 4× the median → dropped (default hi_mult = 3.0)
-        genomes = {
-            "NC_001": {"polB": _rec("YP_1", 1000)},
-            "NC_002": {"polB": _rec("YP_2", 4500)},  # huge
-            "NC_003": {"polB": _rec("YP_3",  990)},
-        }
+        # One polB at ~30× median is clearly out of bounds at any reasonable k.
+        genomes = _genomes_with_normal_markers(10)
+        genomes["NC_999"] = {"polB": _rec("YP_huge", 30000)}
         updated, stats = remove_per_marker_length_outliers(genomes, set())
         assert stats["n_long_dropped"] == 1
-        assert "polB" not in updated["NC_002"]
-        assert "polB" in updated["NC_001"]
-        assert "polB" in updated["NC_003"]
+        assert "polB" not in updated["NC_999"]
 
     def test_short_outlier_dropped(self):
-        # NC_002 polB is 1/4 the median → dropped (default lo_mult = 1/3)
-        genomes = {
-            "NC_001": {"polB": _rec("YP_1", 1000)},
-            "NC_002": {"polB": _rec("YP_2", 250)},
-            "NC_003": {"polB": _rec("YP_3", 990)},
-        }
+        # One polB at ~1/30 the median is dropped.
+        genomes = _genomes_with_normal_markers(10)
+        genomes["NC_999"] = {"polB": _rec("YP_tiny", 30)}
         updated, stats = remove_per_marker_length_outliers(genomes, set())
         assert stats["n_short_dropped"] == 1
-        assert "polB" not in updated["NC_002"]
+        assert "polB" not in updated["NC_999"]
 
     def test_refseq_genome_protected(self, caplog):
-        # NC_002 is RefSeq; its outlier marker is kept and a warning logged
-        genomes = {
-            "NC_001": {"polB": _rec("YP_1", 1000)},
-            "NC_002": {"polB": _rec("YP_2", 4500)},  # outlier
-            "NC_003": {"polB": _rec("YP_3", 990)},
-        }
+        genomes = _genomes_with_normal_markers(10)
+        genomes["NC_999"] = {"polB": _rec("YP_huge", 30000)}
         with caplog.at_level("WARNING"):
             updated, stats = remove_per_marker_length_outliers(
-                genomes, refseq_genome_ids={"NC_002"},
+                genomes, refseq_genome_ids={"NC_999"},
             )
         assert stats["n_long_dropped"] == 0
         assert stats["n_refseq_protected"] == 1
-        assert "polB" in updated["NC_002"]
-        assert any("NC_002" in m and "protected" in m for m in caplog.messages)
+        assert "polB" in updated["NC_999"]
+        assert any("NC_999" in m and "protected" in m for m in caplog.messages)
 
     def test_per_marker_independent(self):
-        # polB outlier in NC_002, MCP normal — only polB dropped for that genome
-        genomes = {
-            "NC_001": {"polB": _rec("YP_1", 1000), "MCP": _rec("YP_2", 600)},
-            "NC_002": {"polB": _rec("YP_3", 4500), "MCP": _rec("YP_4", 590)},
-            "NC_003": {"polB": _rec("YP_5",  990), "MCP": _rec("YP_6", 610)},
-        }
+        # polB outlier on NC_999, MCP normal → only polB dropped for that genome
+        genomes = _genomes_with_normal_markers(10)
+        genomes["NC_999"] = {"polB": _rec("YP_huge", 30000), "MCP": _normal_MCP(0)}
         updated, stats = remove_per_marker_length_outliers(genomes, set())
         assert stats["n_long_dropped"] == 1
-        assert "polB" not in updated["NC_002"]
-        assert "MCP" in updated["NC_002"]
+        assert "polB" not in updated["NC_999"]
+        assert "MCP" in updated["NC_999"]
 
     def test_per_marker_median_recorded(self):
-        genomes = {
-            "NC_001": {"polB": _rec("YP_1", 1000), "MCP": _rec("YP_2", 600)},
-            "NC_002": {"polB": _rec("YP_3", 1010), "MCP": _rec("YP_4", 590)},
-            "NC_003": {"polB": _rec("YP_5",  990), "MCP": _rec("YP_6", 610)},
-        }
+        genomes = _genomes_with_normal_markers(10)
         _, stats = remove_per_marker_length_outliers(genomes, set())
-        assert stats["per_marker_median"]["polB"] == 1000.0
-        assert stats["per_marker_median"]["MCP"] == 600.0
+        # Both marker medians fall on the central pair (1000 / 600).
+        assert stats["per_marker_median"]["polB"] == 1002.5
+        assert stats["per_marker_median"]["MCP"] == 602.5
 
-    def test_disabled_hi_mult(self):
-        # hi_mult=0 disables upper bound; the long sequence is kept.
-        genomes = {
-            "NC_001": {"polB": _rec("YP_1", 1000)},
-            "NC_002": {"polB": _rec("YP_2", 9999)},
-            "NC_003": {"polB": _rec("YP_3", 990)},
-        }
-        updated, stats = remove_per_marker_length_outliers(genomes, set(), hi_mult=0)
+    def test_disabled_k(self):
+        # k=0 disables the filter; the long sequence is kept.
+        genomes = _genomes_with_normal_markers(10)
+        genomes["NC_999"] = {"polB": _rec("YP_huge", 30000)}
+        updated, stats = remove_per_marker_length_outliers(genomes, set(), k=0)
         assert stats["n_long_dropped"] == 0
-        assert "polB" in updated["NC_002"]
+        assert "polB" in updated["NC_999"]
 
 
 # ---------------------------------------------------------------------------

@@ -161,51 +161,77 @@ def test_ambiguity_filter_before_length_filter():
 # remove_length_outliers
 # ---------------------------------------------------------------------------
 
+# Realistic small variation around 300 → MAD on log-lengths is non-zero,
+# so the filter has signal to work with.  Pure [300]*N synthetic data
+# yields MAD = 0 and the filter correctly degenerates to a no-op.
+_NORMAL_LENGTHS = (290, 295, 298, 300, 300, 302, 305, 308, 310, 312)
+
+
 def test_remove_length_outliers_keeps_normal():
-    records = [_rec("A" * 300), _rec("A" * 310), _rec("A" * 290)]
+    records = [_rec("A" * L) for L in _NORMAL_LENGTHS]
     kept, n_long, n_short = remove_length_outliers(records)
     assert n_long == 0
     assert n_short == 0
-    assert len(kept) == 3
+    assert len(kept) == len(_NORMAL_LENGTHS)
 
 
 def test_remove_length_outliers_drops_extreme_long():
-    records = [_rec("A" * 300)] * 10 + [_rec("A" * 30000)]
+    records = [_rec("A" * L) for L in _NORMAL_LENGTHS] + [_rec("A" * 30000)]
     kept, n_long, n_short = remove_length_outliers(records)
     assert n_long == 1
     assert n_short == 0
-    assert len(kept) == 10
+    assert len(kept) == len(_NORMAL_LENGTHS)
 
 
 def test_remove_length_outliers_drops_short():
-    # median = 300; lo_mult default = 1/3 → cutoff ~100, so a 50 bp seq is dropped
-    records = [_rec("A" * 300)] * 10 + [_rec("A" * 50)]
+    records = [_rec("A" * L) for L in _NORMAL_LENGTHS] + [_rec("A" * 30)]
     kept, n_long, n_short = remove_length_outliers(records)
     assert n_long == 0
     assert n_short == 1
-    assert len(kept) == 10
+    assert len(kept) == len(_NORMAL_LENGTHS)
 
 
 def test_remove_length_outliers_two_sided():
-    records = [_rec("A" * 300)] * 10 + [_rec("A" * 30000), _rec("A" * 50)]
+    records = (
+        [_rec("A" * L) for L in _NORMAL_LENGTHS]
+        + [_rec("A" * 30000), _rec("A" * 30)]
+    )
     kept, n_long, n_short = remove_length_outliers(records)
     assert n_long == 1
     assert n_short == 1
-    assert len(kept) == 10
+    assert len(kept) == len(_NORMAL_LENGTHS)
 
 
-def test_remove_length_outliers_lo_disabled():
-    # lo_mult=0 restores the old upper-bound-only behaviour
-    records = [_rec("A" * 300)] * 10 + [_rec("A" * 50)]
-    kept, n_long, n_short = remove_length_outliers(records, lo_mult=0)
+def test_remove_length_outliers_disabled():
+    # k=0 disables the filter entirely
+    records = [_rec("A" * L) for L in _NORMAL_LENGTHS] + [_rec("A" * 30)]
+    kept, n_long, n_short = remove_length_outliers(records, k=0)
+    assert n_long == 0
+    assert n_short == 0
+    assert len(kept) == len(_NORMAL_LENGTHS) + 1
+
+
+def test_remove_length_outliers_zero_mad_is_noop():
+    # All lengths identical → MAD = 0 → no characterization of natural
+    # spread possible → filter is a no-op (does not fabricate a fallback).
+    records = [_rec("A" * 300)] * 10 + [_rec("A" * 30000)]
+    kept, n_long, n_short = remove_length_outliers(records)
     assert n_long == 0
     assert n_short == 0
     assert len(kept) == 11
 
 
+def test_remove_length_outliers_larger_k_more_lenient():
+    # Borderline-short sequence is dropped at k=5 but kept at k=20.
+    borderline = (240,)
+    records = [_rec("A" * L) for L in _NORMAL_LENGTHS + borderline]
+    _, _, n_short_k5 = remove_length_outliers(records, k=5.0)
+    _, _, n_short_k20 = remove_length_outliers(records, k=20.0)
+    assert n_short_k5 >= n_short_k20
+
+
 def test_remove_length_outliers_protects_refseq_long(caplog):
-    # Extreme-long sequence flagged but protected → kept, warning logged
-    normal = [_rec("A" * 300, acc=f"N{i}") for i in range(10)]
+    normal = [_rec("A" * L, acc=f"N{i}") for i, L in enumerate(_NORMAL_LENGTHS)]
     refseq = _rec("A" * 30000, acc="NC_000001")
     records = normal + [refseq]
     with caplog.at_level("WARNING"):
@@ -214,14 +240,14 @@ def test_remove_length_outliers_protects_refseq_long(caplog):
         )
     assert n_long == 0
     assert n_short == 0
-    assert len(kept) == 11
+    assert len(kept) == len(normal) + 1
     assert "NC_000001" in {r.id for r in kept}
     assert any("NC_000001" in m and "protected" in m for m in caplog.messages)
 
 
 def test_remove_length_outliers_protects_refseq_short(caplog):
-    normal = [_rec("A" * 300, acc=f"N{i}") for i in range(10)]
-    refseq = _rec("A" * 50, acc="NC_000002")
+    normal = [_rec("A" * L, acc=f"N{i}") for i, L in enumerate(_NORMAL_LENGTHS)]
+    refseq = _rec("A" * 30, acc="NC_000002")
     records = normal + [refseq]
     with caplog.at_level("WARNING"):
         kept, n_long, n_short = remove_length_outliers(
@@ -229,14 +255,13 @@ def test_remove_length_outliers_protects_refseq_short(caplog):
         )
     assert n_long == 0
     assert n_short == 0
-    assert len(kept) == 11
+    assert len(kept) == len(normal) + 1
     assert "NC_000002" in {r.id for r in kept}
     assert any("NC_000002" in m and "protected" in m for m in caplog.messages)
 
 
 def test_remove_length_outliers_non_protected_still_dropped():
-    # Mix a protected RefSeq and an unprotected outlier — only the latter drops
-    normal = [_rec("A" * 300, acc=f"N{i}") for i in range(10)]
+    normal = [_rec("A" * L, acc=f"N{i}") for i, L in enumerate(_NORMAL_LENGTHS)]
     refseq = _rec("A" * 30000, acc="NC_000001")
     unprotected = _rec("A" * 30000, acc="UNPROT1")
     records = normal + [refseq, unprotected]

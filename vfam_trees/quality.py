@@ -1,6 +1,7 @@
 """Quality filtering of sequences."""
 from __future__ import annotations
 
+import math
 import statistics
 from pathlib import Path
 
@@ -149,20 +150,57 @@ def filter_sequences(
     return passed, fraction_used, qc_stats
 
 
+def log_mad_cutoffs(
+    lengths: list[int],
+    k: float,
+) -> tuple[float | None, float | None, float, float]:
+    """Compute length-outlier cutoffs from MAD on log-lengths.
+
+    Why log-space: protein/CDS length is right-skewed and bounded at zero, so
+    a symmetric ±k·σ window in log-space becomes a multiplicative window
+    around the median — the natural shape for length data.
+
+    Why MAD: the standard deviation of log-lengths would itself be inflated
+    by the very outliers we want to detect.  MAD (median absolute deviation),
+    scaled by 1.4826, is a robust estimator of σ for normal data.
+
+    Returns ``(lo_cutoff, hi_cutoff, sigma_log, median_len)``.  Returns
+    ``(None, None, 0.0, median_len)`` when ``k <= 0`` (filter disabled) or
+    when MAD is exactly zero (data too uniform to characterize natural
+    spread — filter degenerates to a no-op rather than fabricating one).
+    """
+    valid = [L for L in lengths if L > 0]
+    if not valid:
+        return None, None, 0.0, 0.0
+    median_len = float(statistics.median(valid))
+    if k <= 0:
+        return None, None, 0.0, median_len
+    log_lens = [math.log(L) for L in valid]
+    med = statistics.median(log_lens)
+    mad = statistics.median(abs(x - med) for x in log_lens)
+    if mad <= 0:
+        return None, None, 0.0, median_len
+    sigma = 1.4826 * mad
+    return (
+        math.exp(med - k * sigma),
+        math.exp(med + k * sigma),
+        sigma,
+        median_len,
+    )
+
+
 def remove_length_outliers(
     records: list[SeqRecord],
-    hi_mult: float = 3.0,
-    lo_mult: float = 1.0 / 3.0,
+    k: float = 5.0,
     protected_ids: set[str] | None = None,
 ) -> tuple[list[SeqRecord], int, int]:
-    """Remove sequences whose length deviates from the median by large factors.
+    """Remove sequences whose length is a MAD-on-log outlier.
 
     Args:
         records: input sequences
-        hi_mult: sequences longer than hi_mult × median are removed;
-                 set to 0 (or negative) to disable the upper bound
-        lo_mult: sequences shorter than lo_mult × median are removed;
-                 set to 0 (or negative) to disable the lower bound
+        k: number of MAD-units (in log-space, scaled by 1.4826) on either
+           side of the log-median that defines the keep window.  A larger
+           k is more lenient.  k <= 0 disables the filter.
         protected_ids: record IDs that must never be dropped even if flagged —
                        a warning is logged instead.
 
@@ -173,26 +211,24 @@ def remove_length_outliers(
         return records, 0, 0
     protected = protected_ids or set()
     lengths = [len(r.seq) for r in records]
-    median_len = statistics.median(lengths)
-    hi_cutoff = median_len * hi_mult if hi_mult and hi_mult > 0 else None
-    lo_cutoff = median_len * lo_mult if lo_mult and lo_mult > 0 else None
+    lo_cutoff, hi_cutoff, sigma, median_len = log_mad_cutoffs(lengths, k)
+    if lo_cutoff is None or hi_cutoff is None:
+        return records, 0, 0
 
     passed: list[SeqRecord] = []
     n_long = 0
     n_short = 0
     for r in records:
         L = len(r.seq)
-        too_long = hi_cutoff is not None and L > hi_cutoff
-        too_short = lo_cutoff is not None and L < lo_cutoff
+        too_long = L > hi_cutoff
+        too_short = L < lo_cutoff
         if too_long or too_short:
             if r.id in protected:
                 log.warning(
                     "RefSeq '%s' looks like a length outlier "
-                    "(length=%d, median=%d, hi_cutoff=%s, lo_cutoff=%s) — "
+                    "(length=%d, median=%d, lo_cutoff=%.0f, hi_cutoff=%.0f) — "
                     "KEEPING (RefSeq protected)",
-                    r.id, L, int(median_len),
-                    f"{hi_cutoff:.0f}" if hi_cutoff is not None else "disabled",
-                    f"{lo_cutoff:.0f}" if lo_cutoff is not None else "disabled",
+                    r.id, L, int(median_len), lo_cutoff, hi_cutoff,
                 )
                 passed.append(r)
             elif too_long:
@@ -204,11 +240,11 @@ def remove_length_outliers(
 
     if n_long or n_short:
         log.info(
-            "Removed %d length outlier(s) for %d seqs (median=%d): "
-            "%d long (>%.2f×), %d short (<%.2f×)",
+            "Removed %d length outlier(s) for %d seqs "
+            "(median=%d, sigma_log=%.3f, k=%.1f, "
+            "keep window=[%.0f, %.0f]): %d long, %d short",
             n_long + n_short, len(records), int(median_len),
-            n_long, hi_mult if hi_cutoff is not None else 0.0,
-            n_short, lo_mult if lo_cutoff is not None else 0.0,
+            sigma, k, lo_cutoff, hi_cutoff, n_long, n_short,
         )
     return passed, n_long, n_short
 

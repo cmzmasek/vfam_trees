@@ -18,6 +18,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from .logger import get_logger
+from .quality import log_mad_cutoffs
 from .subsample import (
     absorb_into_refseqs,
     adaptive_cluster_species,
@@ -226,10 +227,9 @@ def cluster_and_merge_genomes(
 def remove_per_marker_length_outliers(
     genomes: dict[str, dict[str, SeqRecord]],
     refseq_genome_ids: set[str],
-    hi_mult: float = 3.0,
-    lo_mult: float = 1.0 / 3.0,
+    k: float = 5.0,
 ) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
-    """Drop ``(genome, marker)`` cells whose protein length is a 2-sided
+    """Drop ``(genome, marker)`` cells whose protein length is a MAD-on-log
     outlier within that marker's length distribution across all genomes.
 
     RefSeq genomes (whose source-nuc accession appears in
@@ -240,13 +240,15 @@ def remove_per_marker_length_outliers(
     Args:
         genomes:           {genome_id: {marker_name: SeqRecord}}
         refseq_genome_ids: source-nuc accessions immune to dropping
-        hi_mult:           drop seqs longer than hi_mult × median (0 disables)
-        lo_mult:           drop seqs shorter than lo_mult × median (0 disables)
+        k:                 MAD multiplier (in log-space, scaled by 1.4826)
+                           on either side of the log-median that defines the
+                           keep window. k <= 0 disables the filter.
 
     Returns:
         (updated_genomes, stats):
             updated_genomes — deep-copy with offending cells omitted
-            stats — {n_long_dropped, n_short_dropped, per_marker_median, n_refseq_protected}
+            stats — {n_long_dropped, n_short_dropped, per_marker_median,
+                    per_marker_cutoffs, n_refseq_protected}
     """
     marker_lengths: dict[str, list[int]] = {}
     for mark_to_rec in genomes.values():
@@ -254,9 +256,12 @@ def remove_per_marker_length_outliers(
             marker_lengths.setdefault(marker_name, []).append(len(rec.seq))
 
     medians: dict[str, float] = {}
+    cutoffs: dict[str, tuple[float | None, float | None]] = {}
     for marker_name, lengths in marker_lengths.items():
-        if lengths:
-            medians[marker_name] = float(statistics.median(lengths))
+        lo, hi, _sigma, med = log_mad_cutoffs(lengths, k)
+        if med:
+            medians[marker_name] = med
+        cutoffs[marker_name] = (lo, hi)
 
     n_long = 0
     n_short = 0
@@ -269,8 +274,7 @@ def remove_per_marker_length_outliers(
         for marker_name, rec in mark_to_rec.items():
             median = medians.get(marker_name, 0.0)
             length = len(rec.seq)
-            hi_cut = median * hi_mult if (hi_mult and hi_mult > 0 and median) else None
-            lo_cut = median * lo_mult if (lo_mult and lo_mult > 0 and median) else None
+            lo_cut, hi_cut = cutoffs.get(marker_name, (None, None))
             too_long = hi_cut is not None and length > hi_cut
             too_short = lo_cut is not None and length < lo_cut
 
@@ -278,11 +282,10 @@ def remove_per_marker_length_outliers(
                 if is_refseq:
                     log.warning(
                         "RefSeq genome %s: marker %r length=%d looks like a "
-                        "length outlier (median=%.0f, hi_cutoff=%s, "
-                        "lo_cutoff=%s) — KEEPING (RefSeq protected)",
+                        "length outlier (median=%.0f, lo_cutoff=%.0f, "
+                        "hi_cutoff=%.0f) — KEEPING (RefSeq protected)",
                         genome_id, marker_name, length, median,
-                        f"{hi_cut:.0f}" if hi_cut is not None else "disabled",
-                        f"{lo_cut:.0f}" if lo_cut is not None else "disabled",
+                        lo_cut, hi_cut,
                     )
                     new_markers[marker_name] = rec
                     n_refseq_protected += 1
@@ -302,10 +305,11 @@ def remove_per_marker_length_outliers(
             for m in medians
         )
         log.info(
-            "Per-marker length-outlier scan: per-marker medians [%s] — "
+            "Per-marker length-outlier scan (MAD-on-log, k=%.1f): "
+            "per-marker medians [%s] — "
             "dropped %d long + %d short (genome × marker) cells "
             "(RefSeq-protected: %d)",
-            median_str, n_long, n_short, n_refseq_protected,
+            k, median_str, n_long, n_short, n_refseq_protected,
         )
 
     stats = {
@@ -313,6 +317,7 @@ def remove_per_marker_length_outliers(
         "n_short_dropped":    n_short,
         "n_refseq_protected": n_refseq_protected,
         "per_marker_median":  medians,
+        "per_marker_cutoffs": cutoffs,
     }
     return updated, stats
 
