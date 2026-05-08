@@ -237,6 +237,26 @@ class TestSourceNucAccession:
         rec.annotations = {}
         assert _source_nuc_accession(rec) == "NC_001234.1"
 
+    def test_three_letter_genbank_protein_in_db_source_rejected(self):
+        # 3-letter, no-underscore accessions like "ABO61246.1" are GenBank
+        # *protein* accessions, not nucleotide.  They surface in the
+        # db_source of GenBank protein records as the protein's own home
+        # accession, and would otherwise abort a nuccore esummary batch
+        # with an "Otherdb db=protein" error.
+        rec = SeqRecord(Seq("M" * 100), id="ABO61246.1")
+        rec.annotations = {"db_source": "accession ABO61246.1"}
+        rec.features = []
+        assert _source_nuc_accession(rec) == ""
+
+    def test_three_letter_genbank_protein_in_coded_by_rejected(self):
+        rec = SeqRecord(Seq("M" * 100), id="ABO61246.1")
+        cds = SeqFeature(FeatureLocation(0, 100), type="CDS")
+        # Defensive — fall through to the real source nuc later in the qualifier.
+        cds.qualifiers = {"coded_by": ["ABO61246.1, NC_001234.1:1..300"]}
+        rec.features = [cds]
+        rec.annotations = {}
+        assert _source_nuc_accession(rec) == "NC_001234.1"
+
 
 # ---- fetch_nuc_lengths input validation ----
 
@@ -292,6 +312,34 @@ class TestFetchNucLengthsInputValidation:
             ["YP_009047263.1", "NP_009123456", "XP_555.1",
              "AP_001.1", "WP_002.1", "ZP_003.1", "ELP_004.1",
              "NC_001234.1", "AB123456"]
+        )
+        assert captured_batches == [["NC_001234.1", "AB123456"]]
+
+    def test_three_letter_genbank_protein_filtered(self, monkeypatch):
+        # 3-letter, no-underscore GenBank protein accessions (e.g. ABO61246.1)
+        # match the nuccore-shape regex by length but resolve in the protein
+        # database — must be filtered before esummary.
+        from vfam_trees import fetch as fetch_mod
+
+        captured_batches: list[list[str]] = []
+
+        class _FakeHandle:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_esummary(db, id):
+            captured_batches.append(id.split(","))
+            return _FakeHandle()
+
+        monkeypatch.setattr(fetch_mod.Entrez, "esummary", fake_esummary)
+        monkeypatch.setattr(fetch_mod.Entrez, "read", lambda h: [])
+        monkeypatch.setattr(fetch_mod.time, "sleep", lambda *_: None)
+
+        fetch_mod.fetch_nuc_lengths(
+            ["ABO61246.1", "AAC54321", "BAB12345.1",  # 3-letter GenBank protein
+             "NC_001234.1", "AB123456"]               # real nuc accessions
         )
         assert captured_batches == [["NC_001234.1", "AB123456"]]
 

@@ -412,7 +412,18 @@ _LOCUS_RE = re.compile(r"^LOCUS\s", re.MULTILINE)
 
 # Strict nuccore-accession shape used to validate UIDs before sending them to
 # Entrez esummary.  See _ACCESSION_RE for the rationale on the digit minimum.
-_NUCCORE_ACCESSION_RE = re.compile(r"^[A-Z]{1,4}_?\d{3,}(?:\.\d+)?$")
+# The three alternatives reflect real NCBI conventions:
+#   - [A-Z]{1,4}_\d+       any underscore-separated (RefSeq-style; protein
+#                          prefixes are rejected separately below)
+#   - [A-Z]{1,2}\d+        bare GenBank nucleotide (1+5 or 2+6 forms)
+#   - [A-Z]{4}\d+          WGS nucleotide (4+8/9/10 forms)
+# Note that 3-letter, no-underscore accessions (e.g. ``ABO61246``) are
+# *protein* GenBank accessions and are deliberately excluded — they have
+# the same shape as a nuccore accession but resolve to the protein db,
+# which makes esummary return an "Otherdb db=protein" batch-aborting error.
+_NUCCORE_ACCESSION_RE = re.compile(
+    r"^(?:[A-Z]{1,4}_\d{3,}|[A-Z]{1,2}\d{3,}|[A-Z]{4}\d{3,})(?:\.\d+)?$"
+)
 
 # Known RefSeq *protein* prefixes — any accession with one of these prefixes
 # is the protein record's own accession, not a source nucleotide.  Sending
@@ -555,11 +566,14 @@ def _safe_marker_filename(marker_name: str) -> str:
     return slug or "marker"
 
 
-# Nuccore accession formats: 1+5 (rare, old GenBank), 2+6 (most), 2+_+6 (RefSeq),
-# 4+8/9/10 (WGS).  Require at least 3 digits to keep stray fragments like "Q8"
-# from a free-text qualifier from being mistaken for an accession (3 instead of
-# 4 keeps existing test fixtures with shortened mock accessions working).
-_ACCESSION_RE = re.compile(r"\b([A-Z]{1,4}_?\d{3,}(?:\.\d+)?)\b")
+# Nuccore-shape accession matcher used inside _source_nuc_accession's text
+# scans (coded_by qualifiers, db_source).  Mirrors _NUCCORE_ACCESSION_RE but
+# anchored on word boundaries instead of full-string anchors.  Excludes the
+# 3-letter no-underscore shape (GenBank protein) — see _NUCCORE_ACCESSION_RE
+# for rationale.
+_ACCESSION_RE = re.compile(
+    r"\b((?:[A-Z]{1,4}_\d{3,}|[A-Z]{1,2}\d{3,}|[A-Z]{4}\d{3,})(?:\.\d+)?)\b"
+)
 
 
 def _source_nuc_accession(record: SeqRecord) -> str:
@@ -583,7 +597,7 @@ def _source_nuc_accession(record: SeqRecord) -> str:
     annotations = getattr(record, "annotations", None) or {}
     db_source = annotations.get("db_source", "") or ""
     for m in re.finditer(
-        r"accession\s+([A-Z]{1,4}_?\d{3,}(?:\.\d+)?)",
+        r"accession\s+((?:[A-Z]{1,4}_\d{3,}|[A-Z]{1,2}\d{3,}|[A-Z]{4}\d{3,})(?:\.\d+)?)",
         db_source,
         re.IGNORECASE,
     ):

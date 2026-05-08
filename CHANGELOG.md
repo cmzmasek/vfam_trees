@@ -10,6 +10,22 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.27] — 2026-05-08
+
+### Fixed
+- **Remaining "Otherdb db=protein" warnings from the v1.2.24 source-nuc length
+  filter.** v1.2.26 caught RefSeq protein accessions (`YP_…`, `NP_…`, …) but
+  missed the more common case: bare 3-letter GenBank protein accessions like
+  `ABO61246.1` and `AAC54321.1`. These have nuccore-shape (letters + digits)
+  but always resolve in the protein database, and are exactly the form that
+  the partial single-gene submissions surface in `db_source` for non-RefSeq
+  records. The shape regex now requires either an underscore separator
+  (any 1-4 letter prefix) or a no-underscore prefix that's specifically 1-2
+  letters (GenBank nucleotide) or 4 letters (WGS nucleotide) — 3-letter
+  no-underscore (GenBank protein) is rejected. Combined with the v1.2.26
+  RefSeq protein-prefix deny list, this should make Asfarviridae and similar
+  fragmentation-prone families clean of nuc-length esummary warnings.
+
 ## [1.2.26] — 2026-05-08
 
 ### Fixed
