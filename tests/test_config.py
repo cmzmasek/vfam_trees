@@ -393,6 +393,44 @@ class TestValidateConcatenationBlock:
         with pytest.raises(ValueError, match="min_fraction"):
             _validate_concatenation_block(cfg, "Test")
 
+    def test_source_nuc_min_length_frac_must_be_in_range(self):
+        cfg = self._base(source_nuc_min_length_frac=-0.1)
+        with pytest.raises(ValueError, match="source_nuc_min_length_frac"):
+            _validate_concatenation_block(cfg, "Test")
+        cfg = self._base(source_nuc_min_length_frac=1.0)
+        with pytest.raises(ValueError, match="source_nuc_min_length_frac"):
+            _validate_concatenation_block(cfg, "Test")
+
+    def test_source_nuc_min_length_frac_zero_disables(self):
+        cfg = self._base(source_nuc_min_length_frac=0)
+        _validate_concatenation_block(cfg, "Test")  # no exception
+
+    def test_default_family_config_has_source_nuc_min_length_frac(self):
+        assert DEFAULT_FAMILY_CONFIG["concatenation"]["source_nuc_min_length_frac"] == 0.3
+
+    def test_smart_default_concat_bumps_max_per_species(self):
+        # Concat-mode families auto-get max_per_species=3000 because each
+        # marker is fetched independently and partial single-gene submissions
+        # would otherwise crowd out genome-scale RefSeq proteins under the
+        # 300 default.
+        cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+        # Pick any family in CONCATENATION_FAMILIES — we only care about the
+        # smart-default behaviour, not the marker preset.
+        sample = next(iter(CONCATENATION_FAMILIES))
+        _apply_smart_defaults(sample, cfg)
+        assert cfg["download"]["max_per_species"] == 3000
+
+    def test_smart_default_concat_respects_explicit_max_per_species(self):
+        # Stale user file with max_per_species=300 → smart default still
+        # bumps because 300 is the inherited DEFAULT_FAMILY_CONFIG value, not
+        # an explicit user choice.  But _merge_with_defaults applies user file
+        # AFTER smart defaults, so an explicit value wins overall.
+        sample = next(iter(CONCATENATION_FAMILIES))
+        merged = _merge_with_defaults(
+            {"download": {"max_per_species": 1000}}, MINIMAL_GLOBAL, sample,
+        )
+        assert merged["download"]["max_per_species"] == 1000
+
     def test_default_family_config_has_concatenation_key(self):
         # The concatenation block must be in DEFAULT_FAMILY_CONFIG so user
         # yamls can reference concatenation.* without "unknown key" warnings.

@@ -10,6 +10,30 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.24] — 2026-05-08
+
+### Added
+- **Concat-mode source-nuc length filter** — new
+  `concatenation.source_nuc_min_length_frac` knob (default `0.3`). After the
+  per-marker fetch, source-nucleotide accessions whose parent record is
+  shorter than this fraction of the longest parent in the species' fetch
+  are dropped before the `min_fraction` marker-coverage check. This filters
+  out partial single-gene submissions (very common for ASFV `p72`,
+  papillomavirus `L1`, etc.) that would otherwise show up as 1-marker
+  pseudo-genomes and prevent any complete genome from clearing
+  `min_fraction`. Adds `n_dropped_short_source_nuc` to the per-species and
+  family-level fetch logs. Set to `0` to disable.
+
+### Changed
+- **`max_per_species` default for concat families bumped from 300 → 3000**
+  via the smart-default path. Concat mode fetches one query per marker, so
+  the cap has to cover all markers' worth of partial submissions before the
+  complete-genome RefSeq proteins surface in the result set; 300 was too
+  tight for popular markers like ASFV `p72`. Existing per-family YAMLs with
+  an explicit `max_per_species` still win — only auto-generated configs and
+  files that omit the key pick up the new default. Regenerate with
+  `init-configs --force` to refresh on-disk values.
+
 ## [1.2.23] — 2026-05-08
 
 ### Added

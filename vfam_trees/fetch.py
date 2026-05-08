@@ -5,7 +5,7 @@ import io
 import re
 import time
 from pathlib import Path
-from typing import Generator, TYPE_CHECKING
+from typing import Callable, Generator, Iterable, TYPE_CHECKING
 
 from Bio import Entrez, SeqIO
 from Bio.SeqRecord import SeqRecord
@@ -411,6 +411,59 @@ def _search_ids(db: str, query: str, max_records: int) -> list[str]:
 _LOCUS_RE = re.compile(r"^LOCUS\s", re.MULTILINE)
 
 
+def fetch_nuc_lengths(accessions: Iterable[str]) -> dict[str, int]:
+    """Return ``{accession: length_bp}`` for nucleotide accessions via esummary.
+
+    Used in concat mode to identify partial single-gene submissions: each
+    such submission has its own short source-nuc accession, and length-based
+    filtering against the longest source-nuc in the family lets the pipeline
+    keep only proteins drawn from genome-scale submissions.
+
+    Failures or missing entries are silently omitted from the result so
+    callers can decide whether to skip filtering when the lookup is
+    incomplete.  Versioned accessions (``NC_002617.1``) and unversioned
+    accessions (``NC_002617``) both work — esummary returns
+    ``AccessionVersion`` and we key on the input string when present.
+    """
+    accs = list(dict.fromkeys(a for a in accessions if a))  # dedupe, preserve order
+    result: dict[str, int] = {}
+    for batch in _batched(accs, 200):
+        last_exc: Exception | None = None
+        summaries = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                with Entrez.esummary(db="nuccore", id=",".join(batch)) as handle:
+                    summaries = Entrez.read(handle)
+                break
+            except Exception as e:
+                last_exc = e
+                log.warning("nuc-length esummary attempt %d failed: %s", attempt + 1, e)
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY)
+        if summaries is None:
+            log.error(
+                "Entrez esummary for %d nucleotide accession(s) failed after %d "
+                "attempts — partial length map. Last error: %s",
+                len(batch), MAX_RETRIES, last_exc,
+            )
+            continue
+        # Map back to whatever form the caller passed in (with or without version)
+        batch_set = set(batch)
+        for s in summaries:
+            try:
+                length = int(s.get("Length", 0))
+            except (TypeError, ValueError):
+                continue
+            if length <= 0:
+                continue
+            for key in (s.get("AccessionVersion"), s.get("Caption")):
+                if key and key in batch_set:
+                    result[key] = length
+                    break
+        time.sleep(0.34)  # courtesy throttle, matching efetch path
+    return result
+
+
 def _fetch_batch(db: str, ids: list[str]) -> str:
     last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES):
@@ -529,10 +582,10 @@ def group_proteins_by_genome(
     species_lineage: list[dict] | None,
     min_fraction: float,
     identifier: "MarkerIdentifier | None" = None,
+    source_nuc_min_length_frac: float = 0.0,
+    nuc_length_lookup: Callable[[Iterable[str]], dict[str, int]] | None = None,
 ) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
     """Group fetched proteins into genomes (Policy A) and apply min-fraction drop.
-
-    Pure function — no network calls.  Tests exercise this directly.
 
     Args:
         proteins_by_marker: {marker_name: [SeqRecord]} from per-marker queries.
@@ -542,12 +595,28 @@ def group_proteins_by_genome(
         min_fraction:       genomes covering fewer than ceil(min_fraction × N)
                             markers are dropped.
         identifier:         MarkerIdentifier; defaults to NameMatchIdentifier().
+        source_nuc_min_length_frac:  if > 0, drop source-nuc accessions whose
+                            parent nucleotide record is shorter than this
+                            fraction of the longest source-nuc parent in the
+                            current bucket set.  Filters single-gene partial
+                            submissions whose entire "genome" is one CDS.
+                            0 disables (default — pure / no network).
+        nuc_length_lookup:  callable that maps an iterable of accessions to
+                            ``{accession: length_bp}``.  Required when
+                            ``source_nuc_min_length_frac > 0``.  Defaults to
+                            :func:`fetch_nuc_lengths` (an Entrez esummary call).
+                            Tests inject a stub.
 
     Returns:
         (genomes, stats):
             genomes: {source_nuc_accession: {marker_name: SeqRecord}}
             stats:   diagnostic counters (n_genomes_found, n_genomes_kept,
-                     n_dropped_min_fraction, n_dropped_split_submission).
+                     n_dropped_min_fraction, n_dropped_split_submission,
+                     n_dropped_short_source_nuc).
+
+    The function is pure when ``source_nuc_min_length_frac <= 0`` or a
+    non-network ``nuc_length_lookup`` is injected; the default network path
+    only fires when the caller opts in.
     """
     if identifier is None:
         from .markers import NameMatchIdentifier
@@ -563,6 +632,35 @@ def group_proteins_by_genome(
                 n_orphaned_no_source += 1
                 continue
             bucket.setdefault(src, {}).setdefault(marker_name, []).append(rec)
+
+    # Source-nuc length filter — drops single-gene partial submissions whose
+    # parent nucleotide record is much shorter than the longest in this set.
+    n_dropped_short_source_nuc = 0
+    if source_nuc_min_length_frac > 0 and bucket:
+        if nuc_length_lookup is None:
+            nuc_length_lookup = fetch_nuc_lengths
+        try:
+            lengths = nuc_length_lookup(set(bucket.keys()))
+        except Exception as exc:
+            log.warning(
+                "Source-nuc length lookup failed (%s) — skipping length filter.", exc,
+            )
+            lengths = {}
+        if lengths:
+            longest = max(lengths.values())
+            min_len = source_nuc_min_length_frac * longest
+            short_accs = [acc for acc in bucket if lengths.get(acc, 0) < min_len]
+            for acc in short_accs:
+                bucket.pop(acc, None)
+            n_dropped_short_source_nuc = len(short_accs)
+            if short_accs:
+                log.info(
+                    "Source-nuc length filter dropped %d / %d accession(s) shorter "
+                    "than %.0f bp (< %.0f%% of longest %d bp); kept %d genome(s) "
+                    "for marker assembly",
+                    len(short_accs), len(short_accs) + len(bucket),
+                    min_len, source_nuc_min_length_frac * 100, longest, len(bucket),
+                )
 
     n_genomes_found = len(bucket)
     n_required_markers = max(1, int(round(min_fraction * len(marker_set))))
@@ -583,12 +681,13 @@ def group_proteins_by_genome(
             n_dropped_min_fraction += 1
 
     stats = {
-        "n_genomes_found":            n_genomes_found,
-        "n_genomes_kept":             len(genomes),
-        "n_dropped_min_fraction":     n_dropped_min_fraction,
-        "n_dropped_split_submission": _count_split_submissions(bucket),
-        "n_orphaned_no_source":       n_orphaned_no_source,
-        "n_required_markers":         n_required_markers,
+        "n_genomes_found":              n_genomes_found,
+        "n_genomes_kept":               len(genomes),
+        "n_dropped_min_fraction":       n_dropped_min_fraction,
+        "n_dropped_split_submission":   _count_split_submissions(bucket),
+        "n_dropped_short_source_nuc":   n_dropped_short_source_nuc,
+        "n_orphaned_no_source":         n_orphaned_no_source,
+        "n_required_markers":           n_required_markers,
     }
     return genomes, stats
 
@@ -603,6 +702,8 @@ def fetch_species_genomes(
     min_fraction: float = 0.7,
     exclude_organisms: list[str] | None = None,
     identifier: "MarkerIdentifier | None" = None,
+    source_nuc_min_length_frac: float = 0.0,
+    nuc_length_lookup: Callable[[Iterable[str]], dict[str, int]] | None = None,
 ) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
     """Concatenation-mode counterpart to ``fetch_species_sequences``.
 
@@ -654,6 +755,8 @@ def fetch_species_genomes(
         species_lineage=species_lineage,
         min_fraction=min_fraction,
         identifier=identifier,
+        source_nuc_min_length_frac=source_nuc_min_length_frac,
+        nuc_length_lookup=nuc_length_lookup,
     )
     from .concat import is_refseq_genome  # local to keep fetch standalone-importable
     stats["n_proteins_fetched"] = n_proteins_fetched
@@ -661,10 +764,12 @@ def fetch_species_genomes(
     stats["n_refseq_kept"] = n_refseq_kept
     log.info(
         "%s: fetched %d proteins across %d markers; "
-        "%d genome(s) kept (%d RefSeq), %d dropped (min_fraction)",
+        "%d genome(s) kept (%d RefSeq), %d dropped (min_fraction), "
+        "%d dropped (short source-nuc)",
         species_name, n_proteins_fetched, len(marker_set),
         stats["n_genomes_kept"], n_refseq_kept,
         stats["n_dropped_min_fraction"],
+        stats.get("n_dropped_short_source_nuc", 0),
     )
     return genomes, stats
 

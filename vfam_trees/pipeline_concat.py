@@ -169,6 +169,9 @@ def run_family_concat(
     marker_set       = list(concat_cfg["proteins"])
     marker_order     = [m["name"] for m in marker_set]
     min_fraction     = float(concat_cfg.get("min_fraction", 0.7))
+    source_nuc_min_length_frac = float(
+        concat_cfg.get("source_nuc_min_length_frac", 0.3)
+    )
     quality_cfg      = family_cfg["quality"]
     clustering_cfg   = family_cfg["clustering"]
     clustering_tool  = clustering_cfg.get("tool", "mmseqs2")
@@ -219,6 +222,7 @@ def run_family_concat(
         min_fraction=min_fraction,
         exclude_organisms=quality_cfg.get("exclude_organisms"),
         seq_cache=seq_cache,
+        source_nuc_min_length_frac=source_nuc_min_length_frac,
     )
 
     manual_exclude_seen: set[str] = set()
@@ -251,6 +255,7 @@ def run_family_concat(
         "%d kept after min_fraction (≥%d/%d markers); "
         "%d dropped (multi-accession / Policy A), "
         "%d dropped (low coverage), "
+        "%d dropped (short source-nuc), "
         "%d orphaned (no source-nuc accession) "
         "across %d species",
         fetch_stats["n_proteins_fetched"],
@@ -259,6 +264,7 @@ def run_family_concat(
         n_required_markers, len(marker_set),
         fetch_stats["n_dropped_split_submission"],
         fetch_stats["n_dropped_min_fraction"],
+        fetch_stats.get("n_dropped_short_source_nuc", 0),
         fetch_stats["n_orphaned_no_source"],
         len(species_genomes),
     )
@@ -1028,6 +1034,7 @@ def _fetch_all_species(
     min_fraction: float,
     exclude_organisms: list[str] | None,
     seq_cache: SequenceCache | None = None,
+    source_nuc_min_length_frac: float = 0.0,
 ) -> tuple[dict[str, dict[str, dict[str, SeqRecord]]], dict[str, list[dict]], dict]:
     """Fetch genomes per species and return:
        - species_genomes: {species_name: {genome_id: {marker_name: SeqRecord}}}
@@ -1084,6 +1091,7 @@ def _fetch_all_species(
                 max_per_species=max_per_species,
                 min_fraction=min_fraction,
                 exclude_organisms=exclude_organisms,
+                source_nuc_min_length_frac=source_nuc_min_length_frac,
             )
         except Exception as e:
             log.warning("[%d/%d] Concat fetch failed for %s: %s — skipping species.",
@@ -1112,6 +1120,7 @@ def _fetch_one_species_with_cache(
     max_per_species: int,
     min_fraction: float,
     exclude_organisms: list[str] | None,
+    source_nuc_min_length_frac: float = 0.0,
 ) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
     """Run the per-species fetch, going through the global concat cache when set.
 
@@ -1127,6 +1136,7 @@ def _fetch_one_species_with_cache(
             max_per_species=max_per_species,
             min_fraction=min_fraction,
             exclude_organisms=exclude_organisms,
+            source_nuc_min_length_frac=source_nuc_min_length_frac,
         )
 
     # Fast negative-cache check before paying the lock cost.
@@ -1148,16 +1158,19 @@ def _fetch_one_species_with_cache(
                 marker_set=marker_set,
                 species_lineage=sp_lineage,
                 min_fraction=min_fraction,
+                source_nuc_min_length_frac=source_nuc_min_length_frac,
             )
             stats["n_proteins_fetched"] = n_proteins
             n_refseq_kept = sum(1 for gid in genomes if is_refseq_genome(gid))
             stats["n_refseq_kept"] = n_refseq_kept
             log.info(
                 "%s: loaded %d cached proteins across %d markers; "
-                "%d genome(s) kept (%d RefSeq), %d dropped (min_fraction)",
+                "%d genome(s) kept (%d RefSeq), %d dropped (min_fraction), "
+                "%d dropped (short source-nuc)",
                 species_label, n_proteins, len(marker_set),
                 stats["n_genomes_kept"], n_refseq_kept,
                 stats["n_dropped_min_fraction"],
+                stats.get("n_dropped_short_source_nuc", 0),
             )
             return genomes, stats
         if seq_cache.get_empty_concat(sp_taxid, marker_hash, max_per_species):
@@ -1178,6 +1191,7 @@ def _fetch_one_species_with_cache(
             max_per_species=max_per_species,
             min_fraction=min_fraction,
             exclude_organisms=exclude_organisms,
+            source_nuc_min_length_frac=source_nuc_min_length_frac,
         )
         if stats.get("n_proteins_fetched", 0) == 0:
             seq_cache.store_empty_concat(sp_taxid, marker_hash, max_per_species,
@@ -1194,6 +1208,7 @@ _STATS_KEYS = (
     "n_genomes_kept",
     "n_dropped_min_fraction",
     "n_dropped_split_submission",
+    "n_dropped_short_source_nuc",
     "n_orphaned_no_source",
     "n_refseq_kept",
 )

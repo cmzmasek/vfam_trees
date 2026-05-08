@@ -480,6 +480,14 @@ DEFAULT_FAMILY_CONFIG: dict = {
         #                  enabled in MVP).
         "proteins": [],
         "min_fraction": 0.7,
+        # Source-nuc length filter: drop source-nuc accessions whose parent
+        # nucleotide record is shorter than this fraction of the longest
+        # source-nuc parent in the per-species fetch.  Filters out single-
+        # gene partial submissions (very common for ASFV p72, papillomavirus
+        # L1, etc.) that otherwise crowd out genome-scale proteins under
+        # max_per_species and prevent any genome from clearing min_fraction.
+        # 0 disables the filter.
+        "source_nuc_min_length_frac": 0.3,
         "partition_tree_100": True,
         "partition_tree_500": False,
     },
@@ -623,6 +631,13 @@ def _validate_concatenation_block(cfg: dict, family: str) -> None:
         raise ValueError(
             f"{family}: concatenation.min_fraction must be a number in (0, 1] "
             f"(got {min_fraction!r})."
+        )
+
+    snf = block.get("source_nuc_min_length_frac", 0.3)
+    if not (isinstance(snf, (int, float)) and 0 <= snf < 1):
+        raise ValueError(
+            f"{family}: concatenation.source_nuc_min_length_frac must be a "
+            f"number in [0, 1) (got {snf!r})."
         )
 
 
@@ -788,6 +803,14 @@ def _apply_smart_defaults(family: str, cfg: dict) -> None:
     concat_overrides = CONCATENATION_FAMILIES.get(family)
     if concat_overrides:
         _deep_update(cfg, concat_overrides)
+        # Concat mode fetches one query per marker, so a single capped value
+        # has to cover all markers' worth of partial submissions before the
+        # complete-genome RefSeq proteins surface in the result set.  Bump
+        # to 3000 so families with many partial single-gene submissions
+        # (e.g. Asfarviridae's p72) don't crowd out genome-scale proteins.
+        cfg.setdefault("download", {})
+        if cfg["download"].get("max_per_species") in (None, 300):
+            cfg["download"]["max_per_species"] = 3000
         n_markers = len(cfg.get("concatenation", {}).get("proteins", []))
         log.info(
             "Auto-configured concatenation mode for %s: %d markers",

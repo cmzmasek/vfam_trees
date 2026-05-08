@@ -401,6 +401,75 @@ class TestGroupProteinsByGenome:
         assert stats["n_dropped_min_fraction"] == 2
         assert stats["n_dropped_split_submission"] == 1
 
+    def test_source_nuc_length_filter_drops_short_partial_submission(self):
+        # Mimic the Asfarviridae pattern: one complete genome (NC_001, big
+        # parent nuc) shares the family with a partial single-gene
+        # submission (PG_001, tiny parent nuc) that happens to also hit the
+        # marker query.  Without the filter, the partial submission appears
+        # as a 1-marker "genome" and dilutes the dataset; with the filter
+        # it gets dropped before min_fraction.
+        proteins_by_marker = {
+            "DNA polymerase": [
+                _protein("YP_1", "DNA polymerase", source_acc="NC_001"),
+                _protein("YP_4", "DNA polymerase", source_acc="PG_001"),
+            ],
+            "major capsid protein": [
+                _protein("YP_2", "major capsid protein", source_acc="NC_001"),
+            ],
+            "DNA helicase": [
+                _protein("YP_3", "DNA helicase", source_acc="NC_001"),
+            ],
+        }
+        # Complete genome 200 kb, partial submission 2 kb — partial < 30% of 200kb.
+        lengths = {"NC_001": 200_000, "PG_001": 2_000}
+        genomes, stats = group_proteins_by_genome(
+            proteins_by_marker, [_POLB, _MCP, _HEL], None, min_fraction=0.7,
+            source_nuc_min_length_frac=0.3,
+            nuc_length_lookup=lambda accs: {a: lengths[a] for a in accs if a in lengths},
+        )
+        assert set(genomes.keys()) == {"NC_001"}
+        assert stats["n_dropped_short_source_nuc"] == 1
+        assert stats["n_genomes_found"] == 1   # post-filter count
+        assert stats["n_dropped_min_fraction"] == 0
+
+    def test_source_nuc_length_filter_disabled_by_default(self):
+        # frac=0 means no length lookup is invoked at all; behaviour matches
+        # the legacy pure path.
+        sentinel = {"called": False}
+        def boom(_):
+            sentinel["called"] = True
+            raise AssertionError("should not be called when frac is 0")
+        proteins_by_marker = {
+            "DNA polymerase":         [_protein("YP_1", "DNA polymerase", source_acc="NC_001")],
+            "major capsid protein":   [_protein("YP_2", "major capsid protein", source_acc="NC_001")],
+            "DNA helicase":           [_protein("YP_3", "DNA helicase", source_acc="NC_001")],
+        }
+        genomes, stats = group_proteins_by_genome(
+            proteins_by_marker, [_POLB, _MCP, _HEL], None, min_fraction=0.7,
+            source_nuc_min_length_frac=0.0,
+            nuc_length_lookup=boom,
+        )
+        assert sentinel["called"] is False
+        assert "NC_001" in genomes
+        assert stats["n_dropped_short_source_nuc"] == 0
+
+    def test_source_nuc_length_filter_keeps_all_when_lookup_returns_empty(self):
+        # If the network call returns nothing (e.g. offline / Entrez hiccup),
+        # the filter logs a warning and lets every bucket through unchanged.
+        proteins_by_marker = {
+            "DNA polymerase": [
+                _protein("YP_1", "DNA polymerase", source_acc="NC_001"),
+                _protein("YP_2", "DNA polymerase", source_acc="PG_001"),
+            ],
+        }
+        genomes, stats = group_proteins_by_genome(
+            proteins_by_marker, [_POLB], None, min_fraction=1.0,
+            source_nuc_min_length_frac=0.3,
+            nuc_length_lookup=lambda accs: {},  # empty = lookup failed
+        )
+        assert set(genomes.keys()) == {"NC_001", "PG_001"}
+        assert stats["n_dropped_short_source_nuc"] == 0
+
 
 # ---- _build_marker_query ----
 
