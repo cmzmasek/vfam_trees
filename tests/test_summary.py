@@ -135,6 +135,27 @@ class TestFormatMoleculeRegion:
         assert format_molecule_region("nucleotide", "whole_genome", "segment S") == \
             "nucleotide, segment S"
 
+    def test_concatenated_no_markers(self):
+        assert format_molecule_region("protein", "concatenated", None) == \
+            "protein, gene: concatenated"
+
+    def test_concatenated_with_markers(self):
+        names = ["DNA pol", "membrane protein M", "helicase"]
+        result = format_molecule_region("protein", "concatenated", None, marker_names=names)
+        assert result == "protein, gene: concatenated (DNA pol; membrane protein M; helicase)"
+
+    def test_concatenated_single_marker(self):
+        result = format_molecule_region("protein", "concatenated", None, marker_names=["RdRp"])
+        assert result == "protein, gene: concatenated (RdRp)"
+
+    def test_marker_names_ignored_for_non_concat(self):
+        result = format_molecule_region("protein", "RdRp", None, marker_names=["should", "be", "ignored"])
+        assert result == "protein, gene: RdRp"
+
+    def test_segment_overrides_region_even_with_markers(self):
+        result = format_molecule_region("nucleotide", "concatenated", "segment L", marker_names=["NP"])
+        assert result == "nucleotide, segment L"
+
 
 # ---------------------------------------------------------------------------
 # build_summary_row / write_summary_row
@@ -208,36 +229,10 @@ class TestLoadFamilyAnnotations:
         assert load_family_annotations(p) == {}
 
 
-class TestBaltimoreInSummaryRow:
-    def test_baltimore_populated_from_annotation(self):
-        row = build_summary_row(
-            family="Flaviviridae", family_taxid=11050, family_lineage=[],
-            seq_type="nucleotide", region="whole_genome", segment=None,
-            n_species_discovered=0, n_species_with_seqs=0, seqlen_stats={},
-            tree_stats={},
-            family_annotation={"baltimore_class": "IV", "host_range": "Vertebrates"},
-        )
-        assert row["baltimore_class"] == "IV"
-
-    def test_baltimore_empty_when_no_annotation(self):
-        row = build_summary_row(
-            family="X", family_taxid=None, family_lineage=[],
-            seq_type="nucleotide", region="whole_genome", segment=None,
-            n_species_discovered=0, n_species_with_seqs=0, seqlen_stats={},
-            tree_stats={},
-        )
-        assert row["baltimore_class"] == ""
-
-    def test_baltimore_column_follows_lineage(self):
-        from vfam_trees.summary import COLUMNS
-        assert COLUMNS.index("baltimore_class") == COLUMNS.index("lineage") + 1
-
-
 class TestStatusRow:
     def test_column_order_exact(self):
         assert STATUS_COLUMNS == [
-            "family", "ncbi_taxid", "molecule_region", "status",
-            "lineage", "baltimore_class",
+            "family", "ncbi_taxid", "molecule_region", "status", "lineage",
         ]
 
     def test_ok_status_row(self):
@@ -246,14 +241,12 @@ class TestStatusRow:
             family_lineage=[{"name": "Viruses"}, {"name": "Riboviria"}],
             seq_type="nucleotide", region="whole_genome", segment=None,
             status="OK",
-            family_annotation={"baltimore_class": "IV"},
         )
         assert row["family"] == "Flaviviridae"
         assert row["ncbi_taxid"] == 11050
         assert row["molecule_region"] == "nucleotide, whole genome"
         assert row["status"] == "OK"
         assert "Riboviria" in row["lineage"]
-        assert row["baltimore_class"] == "IV"
 
     def test_skip_reason_row(self):
         row = build_status_row(
@@ -264,15 +257,13 @@ class TestStatusRow:
         assert row["ncbi_taxid"] == ""
         assert row["status"] == "no species found in NCBI taxonomy"
         assert row["lineage"] == ""
-        assert row["baltimore_class"] == ""
 
-    def test_empty_annotation_yields_empty_baltimore(self):
+    def test_molecule_region_in_status_row(self):
         row = build_status_row(
             family="Unknown", family_taxid=1, family_lineage=[],
             seq_type="protein", region="RdRp", segment=None,
             status="OK",
         )
-        assert row["baltimore_class"] == ""
         assert row["molecule_region"] == "protein, gene: RdRp"
 
 
@@ -282,7 +273,6 @@ def test_write_status_row_creates_header_then_appends(tmp_path):
         family="A", family_taxid=1, family_lineage=[],
         seq_type="nucleotide", region="whole_genome", segment=None,
         status="OK",
-        family_annotation={"baltimore_class": "IV"},
     )
     skip = build_status_row(
         family="B", family_taxid=None, family_lineage=[],
@@ -298,9 +288,7 @@ def test_write_status_row_creates_header_then_appends(tmp_path):
     assert len(rows) == 2
     assert rows[0]["family"] == "A"
     assert rows[0]["status"] == "OK"
-    assert rows[0]["baltimore_class"] == "IV"
     assert rows[1]["status"] == "no species found in NCBI taxonomy"
-    assert rows[1]["baltimore_class"] == ""
 
 
 def test_write_summary_row_creates_header_then_appends(tmp_path):

@@ -10,6 +10,7 @@ from vfam_trees.report import (
     _draw_tree_fig,
     _draw_unrooted_tree_fig,
     _internal_label,
+    _place_figure_header,
     _SHOW_INTERNAL_RANKS,
 )
 
@@ -363,6 +364,121 @@ class TestBuildTreeCaptionInfo:
         # `if not summary_row` early-return), the version line should appear.
         info = _build_tree_caption_info({"_marker": 1}, "100")
         assert f"vfam_trees v{VFAM_VERSION}" in info
+
+    def test_molecule_region_in_caption_for_protein_gene(self):
+        row = {
+            "molecule_region": "protein, gene: RdRp",
+            "tree100_tree_tool": "iqtree",
+            "tree100_tree_model": "LG+G",
+        }
+        info = _build_tree_caption_info(row, "100")
+        line1 = info.split("\n")[0]
+        assert "protein, gene: RdRp" in line1
+
+    def test_molecule_region_leads_line1(self):
+        row = {
+            "molecule_region": "nucleotide, segment S",
+            "tree100_tree_tool": "iqtree",
+            "tree100_tree_model": "GTR+G",
+        }
+        info = _build_tree_caption_info(row, "100")
+        line1 = info.split("\n")[0]
+        assert line1.startswith("nucleotide, segment S")
+
+    def test_molecule_region_whole_genome_in_caption(self):
+        row = {
+            "molecule_region": "nucleotide, whole genome",
+            "tree500_tree_tool": "fasttree",
+        }
+        info = _build_tree_caption_info(row, "500")
+        assert "nucleotide, whole genome" in info
+
+    def test_molecule_region_absent_for_concat(self):
+        # concat_n_markers_used/target being present marks a concat run;
+        # molecule_region must not appear in that case.
+        row = {
+            "molecule_region": "protein, gene: concatenated (RdRp; CP)",
+            "tree100_tree_tool": "iqtree",
+            "tree100_concat_n_markers_used": 2,
+            "tree100_concat_n_markers_target": 2,
+            "tree100_msa_length": 3000,
+        }
+        info = _build_tree_caption_info(row, "100")
+        assert "protein, gene: concatenated" not in info
+        assert "concat 2/2 markers" in info
+
+    def test_molecule_region_absent_when_missing(self):
+        row = self._full_row()  # no molecule_region key
+        info = _build_tree_caption_info(row, "100")
+        line1 = info.split("\n")[0]
+        assert line1.startswith("ML phylogeny")
+
+
+# ---------------------------------------------------------------------------
+# _place_figure_header — replaces suptitle + ax.set_title to eliminate the
+# large gap that matplotlib's automatic suptitle spacing produces.
+# ---------------------------------------------------------------------------
+
+class TestPlaceFigureHeader:
+    """Unit tests for the figure-header placement helper."""
+
+    def _make_fig(self, height_in=10.0):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig, _ = plt.subplots(figsize=(11, height_in))
+        return fig
+
+    def test_returns_float_in_valid_range(self):
+        fig = self._make_fig()
+        top = _place_figure_header(fig, "Flaviviridae (120 external nodes)", "info line")
+        assert isinstance(top, float)
+        assert 0.5 <= top <= 0.97
+
+    def test_no_info_returns_higher_top(self):
+        fig_with = self._make_fig()
+        fig_without = self._make_fig()
+        top_with    = _place_figure_header(fig_with,    "Family", "line1\nline2")
+        top_without = _place_figure_header(fig_without, "Family", "")
+        # More info lines → more space needed → lower axes_top
+        assert top_without > top_with
+
+    def test_two_info_lines_lower_than_one(self):
+        fig1 = self._make_fig()
+        fig2 = self._make_fig()
+        top1 = _place_figure_header(fig1, "F", "single line")
+        top2 = _place_figure_header(fig2, "F", "line one\nline two")
+        assert top2 < top1
+
+    def test_title_text_written_to_fig(self):
+        fig = self._make_fig()
+        _place_figure_header(fig, "My Family (50 external nodes)", "")
+        texts = [t.get_text() for t in fig.texts]
+        assert "My Family (50 external nodes)" in texts
+
+    def test_info_text_written_to_fig(self):
+        fig = self._make_fig()
+        _place_figure_header(fig, "Title", "ML phylogeny · IQ-TREE")
+        texts = [t.get_text() for t in fig.texts]
+        assert "ML phylogeny · IQ-TREE" in texts
+
+    def test_no_info_only_one_text_element(self):
+        fig = self._make_fig()
+        _place_figure_header(fig, "Title", "")
+        assert len(fig.texts) == 1
+
+    def test_with_info_two_text_elements(self):
+        fig = self._make_fig()
+        _place_figure_header(fig, "Title", "description")
+        assert len(fig.texts) == 2
+
+    def test_taller_figure_gives_higher_axes_top(self):
+        # For a taller figure, font size is a smaller fraction → less space needed
+        fig_short = self._make_fig(height_in=6.0)
+        fig_tall  = self._make_fig(height_in=24.0)
+        top_short = _place_figure_header(fig_short, "F", "line1\nline2")
+        top_tall  = _place_figure_header(fig_tall,  "F", "line1\nline2")
+        assert top_tall > top_short
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,6 @@ COLUMNS = [
     "family",
     "ncbi_taxid",
     "lineage",
-    "baltimore_class",
     "molecule_region",
     "species_discovered",
     "species_with_seqs",
@@ -112,7 +111,6 @@ STATUS_COLUMNS = [
     "molecule_region",
     "status",
     "lineage",
-    "baltimore_class",
 ]
 
 
@@ -213,7 +211,12 @@ def compute_msa_stats(msa_fasta: Path) -> dict:
     return {"length": aln_len, "gap_pct": gap_pct}
 
 
-def format_molecule_region(seq_type: str, region: str, segment: str | None) -> str:
+def format_molecule_region(
+    seq_type: str,
+    region: str,
+    segment: str | None,
+    marker_names: list[str] | None = None,
+) -> str:
     """Build a human-readable molecule/region string for the summary."""
     mol = "protein" if seq_type == "protein" else "nucleotide"
     if segment:
@@ -222,6 +225,8 @@ def format_molecule_region(seq_type: str, region: str, segment: str | None) -> s
         region_str = "whole genome"
     else:
         region_str = f"gene: {region}"
+        if region == "concatenated" and marker_names:
+            region_str += f" ({'; '.join(marker_names)})"
     return f"{mol}, {region_str}"
 
 
@@ -248,6 +253,7 @@ def build_status_row(
     segment: str | None,
     status: str,
     family_annotation: dict | None = None,
+    marker_names: list[str] | None = None,
 ) -> dict:
     """Assemble a single row for status.tsv.
 
@@ -255,14 +261,12 @@ def build_status_row(
     otherwise the skip reason.
     """
     lineage_str = "; ".join(e["name"] for e in family_lineage) if family_lineage else ""
-    ann = family_annotation or {}
     return {
         "family":           family,
         "ncbi_taxid":       family_taxid if family_taxid is not None else "",
-        "molecule_region":  format_molecule_region(seq_type, region, segment),
+        "molecule_region":  format_molecule_region(seq_type, region, segment, marker_names),
         "status":           status,
         "lineage":          lineage_str,
-        "baltimore_class":  (ann.get("baltimore_class") or "").strip(),
     }
 
 
@@ -295,23 +299,21 @@ def build_summary_row(
     total_seqs_qc: int = 0,
     qc_stats: dict | None = None,
     family_annotation: dict | None = None,
+    marker_names: list[str] | None = None,
 ) -> dict:
     """Assemble a summary row dict from collected pipeline stats.
 
     tree_stats should be keyed by label ("500", "100"), each value a dict with:
         leaves, support (branch-support stats dict), msa (msa stats dict).
-    family_annotation, when supplied, contributes external fields such as
-        baltimore_class (Roman numeral I–VII per Baltimore 1971).
+    family_annotation, when supplied, contributes external annotation fields.
     """
     lineage_str = "; ".join(e["name"] for e in family_lineage) if family_lineage else ""
-    ann = family_annotation or {}
 
     row: dict = {
         "family":             family,
         "ncbi_taxid":         family_taxid if family_taxid is not None else "",
         "lineage":            lineage_str,
-        "baltimore_class":    (ann.get("baltimore_class") or "").strip(),
-        "molecule_region":    format_molecule_region(seq_type, region, segment),
+        "molecule_region":    format_molecule_region(seq_type, region, segment, marker_names),
         "species_discovered":        n_species_discovered,
         "species_with_seqs":         n_species_with_seqs,
         "species_relaxed_threshold": n_species_relaxed,
