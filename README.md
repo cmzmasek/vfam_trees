@@ -25,10 +25,11 @@ An optional shared cache (configurable TTL, per-entry locking, negative-result c
 
 Each species' sequences are filtered in this order:
 
+0. **Manual overrides** (per-family `manual.include` / `manual.exclude` lists) — accessions in `manual.exclude` are dropped immediately; accessions in `manual.include` bypass every QC step below and are protected from removal during clustering, proportional merge, and length-outlier filtering. Match is exact, version included (e.g. `NC_002617.1`).
 1. **Organism exclusion** — case-insensitive substring match against `ORGANISM`, `SOURCE`, and `DEFINITION` (joined with newlines so terms cannot straddle field boundaries). Defaults: `synthetic construct`, `metagenome`, `MAG:`, `uncultured`, `unverified`, `vector`, `recombinant`, `patent`.
 2. **Ambiguity** — `max_ambiguous` cap on the fraction of `N` / `X` / IUPAC degenerate characters.
 3. **Minimum length** — `min_length: null` auto-sets the threshold to 50% of the per-species median, with relaxation fallback to 40% then 30% if too few sequences pass; in all cases a hard floor of 200 bp / 100 aa applies.
-4. **Length-outlier filter** (post-merge, pre-MSA) — two-sided keep window that is the **union** of (a) a MAD-on-log-lengths window and (b) a hard floor `[min_lo_mult, max_hi_mult] × median`. See [Length-outlier behaviour](#length-outlier-behaviour) for the exact form. RefSeqs flagged by the filter are kept with a warning.
+4. **Length-outlier filter** (post-merge, pre-MSA) — two-sided keep window that is the **union** of (a) a MAD-on-log-lengths window and (b) a hard floor `[min_lo_mult, max_hi_mult] × median`. See [Length-outlier behaviour](#length-outlier-behaviour) for the exact form. RefSeqs and `manual.include` records flagged by the filter are kept with a warning.
 
 ### 4. Selection and clustering
 
@@ -279,6 +280,14 @@ taxonomy:
                                 # subfamily / genus / species (default): exclude leaves whose
                                 #   lineage does not reach this rank, so shallow lineages cannot
                                 #   drag ancestor labels back toward the root
+
+manual:                         # curator overrides on per-family record selection
+  include: []                   # exact accessions (with version, e.g. "NC_002617.1") that
+                                # bypass all QC (length, ambiguity, organism exclusion) and
+                                # are protected through clustering, proportional merge, and
+                                # length-outlier filtering — stronger than RefSeq at QC,
+                                # equal to RefSeq downstream
+  exclude: []                   # exact accessions to drop immediately after fetch, before QC
 ```
 
 The `coloring` and `taxonomy` keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.

@@ -118,6 +118,7 @@ def cluster_and_merge_genomes(
     refseq_absorption_threshold: float = 0.99,
     seed: int = 42,
     threads: int = 1,
+    extra_protected_ids: set[str] | None = None,
 ) -> tuple[set[str], dict]:
     """Reduce per-genome diversity to the target tree size.
 
@@ -140,7 +141,9 @@ def cluster_and_merge_genomes(
             stats — diagnostic counters (n_refseq_absorbed, n_clusters_per_species,
                     cluster_thresholds_used).
     """
-    refseq_ids = identify_refseq_genomes(species_genomes)
+    # Treat manual.include genomes as RefSeq-equivalent for absorption + merge
+    # priority — they should never be dropped by clustering reduction.
+    refseq_ids = identify_refseq_genomes(species_genomes) | (extra_protected_ids or set())
 
     species_reps: dict[str, list[SeqRecord]] = {}
     n_refseq_absorbed_total = 0

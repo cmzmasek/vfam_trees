@@ -176,6 +176,13 @@ def run_family(
     max_per_species = family_cfg["download"]["max_per_species"]
     clustering_tool = family_cfg["clustering"].get("tool", "mmseqs2")
     quality_cfg = family_cfg["quality"]
+    manual_cfg = family_cfg.get("manual") or {}
+    manual_include_ids: set[str] = set(manual_cfg.get("include") or [])
+    manual_exclude_ids: set[str] = set(manual_cfg.get("exclude") or [])
+    if manual_include_ids:
+        log.info("manual.include: %d accession(s) will bypass QC", len(manual_include_ids))
+    if manual_exclude_ids:
+        log.info("manual.exclude: %d accession(s) will be dropped after fetch", len(manual_exclude_ids))
 
     # -------------------------------------------------------------------------
     # Step 1: Discover species
@@ -261,7 +268,11 @@ def run_family(
         "n_excluded_length": 0,
         "n_excluded_ambiguity": 0,
         "n_undefined": 0,
+        "n_manual_include_bypassed": 0,
+        "n_manual_exclude_dropped": 0,
     }
+    seen_manual_include: set[str] = set()
+    seen_manual_exclude: set[str] = set()
 
     log.info("Downloading sequences for %d species (max %d per species) ...",
              len(species_list), max_per_species)
@@ -381,10 +392,14 @@ def run_family(
             min_length=quality_cfg["min_length"],
             max_ambiguous=quality_cfg["max_ambiguous"],
             exclude_organisms=quality_cfg.get("exclude_organisms"),
+            manual_include_ids=manual_include_ids,
+            manual_exclude_ids=manual_exclude_ids,
         )
         # Accumulate QC stats
         for k in family_qc_stats:
             family_qc_stats[k] += sp_qc_stats.get(k, 0)
+        seen_manual_include |= sp_qc_stats.get("manual_include_seen", set())
+        seen_manual_exclude |= sp_qc_stats.get("manual_exclude_seen", set())
         pre_lengths = sp_qc_stats.get("pre_length_lengths", [])
         if pre_lengths:
             species_pre_length_lengths[sp_name] = pre_lengths
@@ -430,6 +445,19 @@ def run_family(
             meta["lineage_ranked"] = ranked
             if ranked:
                 meta["lineage"] = [e["name"] for e in ranked]
+
+    unseen_include = manual_include_ids - seen_manual_include
+    if unseen_include:
+        log.warning(
+            "manual.include accessions not seen in fetched records for %s: %s",
+            family, sorted(unseen_include),
+        )
+    unseen_exclude = manual_exclude_ids - seen_manual_exclude
+    if unseen_exclude:
+        log.info(
+            "manual.exclude accessions did not match any fetched record for %s: %s",
+            family, sorted(unseen_exclude),
+        )
 
     seq_lengths_all = [len(r.seq) for d in species_data.values() for r in d["records"]]
     seqlen_stats = compute_seqlen_stats(seq_lengths_all)
@@ -508,6 +536,20 @@ def run_family(
         log.info("Detected %d RefSeq record(s) — will prefer them during subsampling",
                  len(refseq_short_ids))
 
+    # Manual.include records get the same downstream protection as RefSeqs:
+    # protected during cluster absorption, preferred during proportional merge,
+    # and exempt from length-outlier removal. (They've already bypassed QC.)
+    manual_include_short_ids = {
+        short_id for short_id, meta in short_id_to_meta.items()
+        if meta.get("accession", "") in manual_include_ids
+    }
+    protected_short_ids = refseq_short_ids | manual_include_short_ids
+    if manual_include_short_ids:
+        log.info(
+            "manual.include: %d record(s) protected through clustering and length-outlier filter",
+            len(manual_include_short_ids),
+        )
+
     # Rebuild species_data with renamed records
     renamed_iter = iter(renamed_records)
     for sp_name, data in species_data.items():
@@ -540,7 +582,7 @@ def run_family(
             species_data=species_data,
             short_id_to_meta=short_id_to_meta,
             short_to_display=short_to_display,
-            refseq_short_ids=refseq_short_ids,
+            refseq_short_ids=protected_short_ids,
             seq_type=seq_type,
             clustering_tool=clustering_tool,
             clustering_cfg=clustering_cfg,
@@ -664,7 +706,8 @@ def _run_target(
     species_data: dict,
     short_id_to_meta: dict[str, dict],
     short_to_display: dict[str, str],
-    refseq_short_ids: set[str],
+    refseq_short_ids: set[str],  # protected set: RefSeqs ∪ manual.include records
+
     seq_type: str,
     clustering_tool: str,
     clustering_cfg: dict,

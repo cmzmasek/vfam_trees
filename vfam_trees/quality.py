@@ -29,6 +29,8 @@ def filter_sequences(
     min_length: int | None,
     max_ambiguous: float,
     exclude_organisms: list[str] | None = None,
+    manual_include_ids: set[str] | None = None,
+    manual_exclude_ids: set[str] | None = None,
 ) -> tuple[list[SeqRecord], float | None, dict]:
     """Apply quality filters to a list of SeqRecords.
 
@@ -40,32 +42,78 @@ def filter_sequences(
         max_ambiguous: maximum fraction of ambiguous characters
         exclude_organisms: list of substrings matched case-insensitively
                            against the ORGANISM, SOURCE, and DEFINITION fields
+        manual_include_ids: accessions (exact match incl. version) that bypass
+                            all QC and are appended to the passing set unchanged
+        manual_exclude_ids: accessions dropped before any QC step
 
     Returns:
         Tuple of (filtered records, fraction_used, qc_stats).
         fraction_used is None when min_length was user-specified, or the
         median fraction (0.5, 0.4, or 0.3) that yielded >0 sequences.
         qc_stats is a dict with keys: n_excluded_organism, n_excluded_length,
-        n_excluded_ambiguity, n_undefined.
+        n_excluded_ambiguity, n_undefined, n_manual_include_bypassed,
+        n_manual_exclude_dropped, manual_include_seen, manual_exclude_seen.
     """
+    include_set = set(manual_include_ids or ())
+    exclude_set = set(manual_exclude_ids or ())
+
     empty_stats = {
         "n_excluded_organism": 0,
         "n_excluded_length": 0,
         "n_excluded_ambiguity": 0,
         "n_undefined": 0,
+        "n_manual_include_bypassed": 0,
+        "n_manual_exclude_dropped": 0,
+        "manual_include_seen": set(),
+        "manual_exclude_seen": set(),
     }
 
     if not records:
         return [], None, empty_stats
 
+    # Manual exclude/include passes — applied before any QC step.
+    # Excludes win over includes (config validation prevents overlap, but be
+    # defensive in case a caller passes overlapping sets directly).
+    manual_include_seen: set[str] = set()
+    manual_exclude_seen: set[str] = set()
+    bypassed: list[SeqRecord] = []
+    remaining: list[SeqRecord] = []
+    n_manual_exclude_dropped = 0
+    for rec in records:
+        if rec.id in exclude_set:
+            manual_exclude_seen.add(rec.id)
+            n_manual_exclude_dropped += 1
+            log.info("manual.exclude dropping %s", rec.id)
+            continue
+        if rec.id in include_set:
+            manual_include_seen.add(rec.id)
+            bypassed.append(rec)
+            continue
+        remaining.append(rec)
+
+    n_manual_include_bypassed = len(bypassed)
+    if n_manual_include_bypassed:
+        log.info(
+            "manual.include bypassed QC for %d record(s): %s",
+            n_manual_include_bypassed,
+            ", ".join(sorted(manual_include_seen)),
+        )
+
     exclude_lower = [t.lower() for t in (exclude_organisms or [])]
+
+    manual_stats = {
+        "n_manual_include_bypassed": n_manual_include_bypassed,
+        "n_manual_exclude_dropped": n_manual_exclude_dropped,
+        "manual_include_seen": manual_include_seen,
+        "manual_exclude_seen": manual_exclude_seen,
+    }
 
     # Organism exclusion — applied before length filtering to keep median accurate.
     # Terms are matched against ORGANISM, SOURCE, and DEFINITION (case-insensitive
     # substring), joined with a newline to prevent cross-field false matches.
     passed_organism = []
     n_excluded_organism = 0
-    for rec in records:
+    for rec in remaining:
         search_text = "\n".join([
             rec.annotations.get("organism", ""),
             rec.annotations.get("source", ""),
@@ -81,7 +129,12 @@ def filter_sequences(
         log.info("Excluded %d sequences matching organism exclusion list", n_excluded_organism)
 
     if not passed_organism:
-        return [], None, {**empty_stats, "n_excluded_organism": n_excluded_organism}
+        # Bypassed records still go through even when nothing else survives QC.
+        return list(bypassed), None, {
+            **empty_stats,
+            "n_excluded_organism": n_excluded_organism,
+            **manual_stats,
+        }
 
     floor = MIN_LENGTH_NUC if seq_type == "nucleotide" else MIN_LENGTH_AA
     ambig_chars = AMBIGUOUS_NUC if seq_type == "nucleotide" else AMBIGUOUS_AA
@@ -109,8 +162,9 @@ def filter_sequences(
             "n_excluded_ambiguity": n_ambig,
             "n_undefined": n_undefined,
             "pre_length_lengths": pre_length_lengths,
+            **manual_stats,
         }
-        return passed, None, qc_stats
+        return list(bypassed) + passed, None, qc_stats
 
     # Auto mode: try fractions from most to least strict; stop when >0 sequences pass
     fraction_used = _AUTO_FRACTIONS[-1]
@@ -146,8 +200,9 @@ def filter_sequences(
         "n_excluded_ambiguity": n_ambig,
         "n_undefined": n_undefined,
         "pre_length_lengths": pre_length_lengths,
+        **manual_stats,
     }
-    return passed, fraction_used, qc_stats
+    return list(bypassed) + passed, fraction_used, qc_stats
 
 
 def log_mad_cutoffs(

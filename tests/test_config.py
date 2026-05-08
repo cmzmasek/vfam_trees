@@ -15,6 +15,7 @@ from vfam_trees.config import (
     _deep_update,
     _merge_with_defaults,
     _validate_concatenation_block,
+    _validate_manual_block,
     _warn_smart_default_conflicts,
     load_family_config,
     make_minimal_global_cfg,
@@ -404,3 +405,74 @@ class TestValidateConcatenationBlock:
         for fam in CONCATENATION_FAMILIES:
             merged = _merge_with_defaults({}, MINIMAL_GLOBAL, fam)
             _validate_concatenation_block(merged, fam)
+
+
+# ---------------------------------------------------------------------------
+# manual block — include/exclude lists
+# ---------------------------------------------------------------------------
+
+class TestManualBlock:
+    def test_default_family_config_has_manual_key(self):
+        assert "manual" in DEFAULT_FAMILY_CONFIG
+        assert DEFAULT_FAMILY_CONFIG["manual"]["include"] == []
+        assert DEFAULT_FAMILY_CONFIG["manual"]["exclude"] == []
+
+    def test_empty_lists_pass(self):
+        cfg = {"manual": {"include": [], "exclude": []}}
+        _validate_manual_block(cfg, "Test")  # no exception
+
+    def test_missing_block_treated_as_empty(self):
+        cfg = {}
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"] == {"include": [], "exclude": []}
+
+    def test_include_and_exclude_overlap_rejected(self):
+        cfg = {"manual": {"include": ["NC_001.1"], "exclude": ["NC_001.1"]}}
+        with pytest.raises(ValueError, match="overlap"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_non_string_entry_rejected(self):
+        cfg = {"manual": {"include": [123], "exclude": []}}
+        with pytest.raises(ValueError, match="string accession"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_empty_string_entry_rejected(self):
+        cfg = {"manual": {"include": ["  "], "exclude": []}}
+        with pytest.raises(ValueError, match="empty"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_non_list_block_rejected(self):
+        cfg = {"manual": {"include": "NC_001.1", "exclude": []}}
+        with pytest.raises(ValueError, match="must be a list"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_whitespace_stripped(self):
+        cfg = {"manual": {"include": ["  NC_001.1  "], "exclude": []}}
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include"] == ["NC_001.1"]
+
+    def test_duplicates_deduped(self):
+        cfg = {"manual": {"include": ["NC_001.1", "NC_001.1"], "exclude": []}}
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include"] == ["NC_001.1"]
+
+    def test_loaded_config_has_empty_manual_block(self, tmp_path):
+        cfg_dir = tmp_path / "configs"
+        cfg_dir.mkdir()
+        # Stale config without a manual: block should still load fine.
+        (cfg_dir / "Flaviviridae.yaml").write_text(
+            yaml.dump({"sequence": {"type": "nucleotide", "region": "whole_genome"}})
+        )
+        cfg, _ = load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
+        assert cfg["manual"]["include"] == []
+        assert cfg["manual"]["exclude"] == []
+
+    def test_load_rejects_yaml_with_overlap(self, tmp_path):
+        cfg_dir = tmp_path / "configs"
+        cfg_dir.mkdir()
+        (cfg_dir / "Flaviviridae.yaml").write_text(yaml.dump({
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "manual": {"include": ["NC_X.1"], "exclude": ["NC_X.1"]},
+        }))
+        with pytest.raises(ValueError, match="overlap"):
+            load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)

@@ -186,6 +186,15 @@ def run_family_concat(
     length_k           = float(length_outlier_cfg.get("k", 5.0))
     length_min_lo_mult = float(length_outlier_cfg.get("min_lo_mult", 0.20))
     length_max_hi_mult = float(length_outlier_cfg.get("max_hi_mult", 5.0))
+    manual_cfg         = family_cfg.get("manual") or {}
+    manual_include_ids: set[str] = set(manual_cfg.get("include") or [])
+    manual_exclude_ids: set[str] = set(manual_cfg.get("exclude") or [])
+    if manual_include_ids:
+        log.info("manual.include: %d accession(s) will be protected through clustering",
+                 len(manual_include_ids))
+    if manual_exclude_ids:
+        log.info("manual.exclude: %d accession(s) will be dropped after fetch",
+                 len(manual_exclude_ids))
 
     log.info("=" * 60)
     log.info("Concatenated mode for %s: %d markers (%s)",
@@ -211,6 +220,29 @@ def run_family_concat(
         exclude_organisms=quality_cfg.get("exclude_organisms"),
         seq_cache=seq_cache,
     )
+
+    manual_exclude_seen: set[str] = set()
+    if manual_exclude_ids:
+        for sp_name in list(species_genomes):
+            genomes = species_genomes[sp_name]
+            kept = {gid: prots for gid, prots in genomes.items()
+                    if gid not in manual_exclude_ids}
+            for gid in genomes:
+                if gid in manual_exclude_ids:
+                    manual_exclude_seen.add(gid)
+            if kept:
+                species_genomes[sp_name] = kept
+            else:
+                del species_genomes[sp_name]
+        if manual_exclude_seen:
+            log.info("manual.exclude dropped %d genome(s) for %s after fetch",
+                     len(manual_exclude_seen), family)
+        unseen_excl = manual_exclude_ids - manual_exclude_seen
+        if unseen_excl:
+            log.info(
+                "manual.exclude accessions did not match any fetched genome for %s: %s",
+                family, sorted(unseen_excl),
+            )
 
     n_genomes_total = sum(len(g) for g in species_genomes.values())
     n_required_markers = max(1, int(round(min_fraction * len(marker_set))))
@@ -255,6 +287,28 @@ def run_family_concat(
             "clustering/merge and exempt from per-marker length-outlier and "
             "branch-length outlier removal",
             len(refseq_genome_ids), n_genomes_total,
+        )
+
+    # Manual.include genomes get RefSeq-equivalent downstream protection. In
+    # concat mode the curator's force-keep semantics still apply post-fetch:
+    # any include accession that survived the fetch (i.e. covered enough
+    # markers to clear min_fraction) is protected through clustering, length-
+    # outlier, and branch-length outlier removal.
+    all_genome_ids = {gid for genomes in species_genomes.values() for gid in genomes}
+    manual_include_seen = manual_include_ids & all_genome_ids
+    unseen_include = manual_include_ids - manual_include_seen
+    if unseen_include:
+        log.warning(
+            "manual.include accessions not seen in fetched genomes for %s: %s "
+            "(in concat mode, includes still need to clear min_fraction at fetch time)",
+            family, sorted(unseen_include),
+        )
+    protected_genome_ids = refseq_genome_ids | manual_include_seen
+    if manual_include_seen:
+        log.info(
+            "manual.include: %d genome(s) protected through clustering and "
+            "length/branch outlier filtering",
+            len(manual_include_seen),
         )
 
     if n_genomes_total < 4:
@@ -303,6 +357,7 @@ def run_family_concat(
             length_min_lo_mult=length_min_lo_mult,
             length_max_hi_mult=length_max_hi_mult,
             family_cfg=family_cfg,
+            extra_protected_ids=manual_include_seen,
         )
         tree_stats[label] = target_stats
 
@@ -343,6 +398,10 @@ def run_family_concat(
         for rec in proteins.values()
     ]
     seqlen_stats = compute_seqlen_stats(seq_lengths_all)
+    concat_qc_stats = {
+        "n_manual_include_bypassed": len(manual_include_seen),
+        "n_manual_exclude_dropped":  len(manual_exclude_seen),
+    }
     summary_row_for_report = build_summary_row(
         family=family,
         family_taxid=family_taxid,
@@ -354,6 +413,7 @@ def run_family_concat(
         n_species_with_seqs=len(species_genomes),
         seqlen_stats=seqlen_stats,
         tree_stats=tree_stats,
+        qc_stats=concat_qc_stats,
         family_annotation=family_annotation,
         marker_names=marker_order,
     )
@@ -419,6 +479,16 @@ def run_family_concat(
         log.warning("Per-family report PDF skipped: %s", e)
 
     if status_path is not None:
+        # For the OK row, list markers actually used in the alignment (those
+        # retained in ≥1 genome after per-marker length-outlier filtering),
+        # not the target marker preset.  Prefer tree_100's set since that
+        # is the more refined tree; fall back to tree_500 then to the target
+        # list if neither tree built successfully.
+        markers_used_for_status = (
+            tree_stats.get("100", {}).get("_markers_used")
+            or tree_stats.get("500", {}).get("_markers_used")
+            or marker_order
+        )
         write_status_row(status_path, build_status_row(
             family=family,
             family_taxid=family_taxid,
@@ -428,7 +498,7 @@ def run_family_concat(
             segment=segment,
             status="OK",
             family_annotation=family_annotation,
-            marker_names=marker_order,
+            marker_names=markers_used_for_status,
         ))
     mark_done(family_dir, family, output_dir)
 
@@ -469,6 +539,7 @@ def _run_target_concat(
     length_min_lo_mult: float,
     length_max_hi_mult: float,
     family_cfg: dict,
+    extra_protected_ids: set[str] | None = None,
 ) -> dict:
     target_work = work_dir / f"target_{label}"
     target_work.mkdir(parents=True, exist_ok=True)
@@ -491,6 +562,7 @@ def _run_target_concat(
         refseq_absorption_enabled=absorb_enabled,
         refseq_absorption_threshold=absorb_threshold,
         threads=threads,
+        extra_protected_ids=extra_protected_ids,
     )
     log.info(
         "Clustering complete (tree_%s): %d total representative genome(s) "
@@ -519,8 +591,9 @@ def _run_target_concat(
                 selected_genomes[genome_id] = proteins
                 genome_to_species[genome_id] = sp_name
 
-    # 3. Per-marker length-outlier (RefSeq exempt)
+    # 3. Per-marker length-outlier (RefSeq + manual.include exempt)
     refseq_ids = identify_refseq_genomes({"_": selected_genomes})  # bulk shape
+    refseq_ids = refseq_ids | (extra_protected_ids or set())
     selected_genomes, lo_stats = remove_per_marker_length_outliers(
         selected_genomes, refseq_genome_ids=refseq_ids,
         k=length_k,
@@ -917,6 +990,7 @@ def _run_target_concat(
         "n_species_dropped_at_cap":        sel_stats.get("n_species_dropped_at_cap", 0),
         "n_refseq_species_dropped_at_cap": sel_stats.get("n_refseq_species_dropped_at_cap", 0),
         # Carried for post-loop image rendering (not written into summary.tsv)
+        "_markers_used":           list(markers_used),
         "_display_tree":           display_tree,
         "_display_to_color":       display_to_color,
         "_genus_to_color":         genus_to_color,

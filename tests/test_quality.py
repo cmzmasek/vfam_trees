@@ -158,6 +158,81 @@ def test_ambiguity_filter_before_length_filter():
 
 
 # ---------------------------------------------------------------------------
+# manual.include / manual.exclude
+# ---------------------------------------------------------------------------
+
+
+def test_manual_exclude_drops_record_before_qc():
+    keeper = _rec(GOOD_SEQ, acc="KEEP.1")
+    drop = _rec(GOOD_SEQ, acc="DROP.1")
+    passed, _, stats = filter_sequences(
+        [keeper, drop], seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=[],
+        manual_exclude_ids={"DROP.1"},
+    )
+    assert {r.id for r in passed} == {"KEEP.1"}
+    assert stats["n_manual_exclude_dropped"] == 1
+    assert stats["manual_exclude_seen"] == {"DROP.1"}
+
+
+def test_manual_include_bypasses_length_and_ambiguity():
+    # A short, fully-ambiguous record would normally fail both length and
+    # ambiguity checks; manual.include should keep it anyway.
+    forced = _rec("N" * 50, acc="FORCE.1")
+    other = _rec(GOOD_SEQ, acc="OTHER.1")
+    passed, _, stats = filter_sequences(
+        [forced, other], seq_type="nucleotide", min_length=1000,
+        max_ambiguous=0.01, exclude_organisms=[],
+        manual_include_ids={"FORCE.1"},
+    )
+    assert "FORCE.1" in {r.id for r in passed}
+    assert stats["n_manual_include_bypassed"] == 1
+    assert stats["manual_include_seen"] == {"FORCE.1"}
+
+
+def test_manual_include_bypasses_organism_exclusion():
+    # Even a "synthetic construct" gets through if the user explicitly listed it.
+    forced = _rec(GOOD_SEQ, acc="FORCE.1", organism="synthetic construct")
+    passed, _, stats = filter_sequences(
+        [forced], seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=["synthetic construct"],
+        manual_include_ids={"FORCE.1"},
+    )
+    assert {r.id for r in passed} == {"FORCE.1"}
+    assert stats["n_excluded_organism"] == 0
+    assert stats["n_manual_include_bypassed"] == 1
+
+
+def test_manual_exclude_wins_when_listed_in_both():
+    # Defensive: config validation prevents overlap, but if a caller passes
+    # overlapping sets the exclude must win (drop the record).
+    rec = _rec(GOOD_SEQ, acc="DUP.1")
+    passed, _, stats = filter_sequences(
+        [rec], seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=[],
+        manual_include_ids={"DUP.1"},
+        manual_exclude_ids={"DUP.1"},
+    )
+    assert passed == []
+    assert stats["n_manual_exclude_dropped"] == 1
+    assert stats["n_manual_include_bypassed"] == 0
+
+
+def test_manual_seen_only_reports_matching_ids():
+    other = _rec(GOOD_SEQ, acc="OTHER.1")
+    _, _, stats = filter_sequences(
+        [other], seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, exclude_organisms=[],
+        manual_include_ids={"NOT_FETCHED.1"},
+        manual_exclude_ids={"ALSO_NOT_FETCHED.1"},
+    )
+    assert stats["manual_include_seen"] == set()
+    assert stats["manual_exclude_seen"] == set()
+    assert stats["n_manual_include_bypassed"] == 0
+    assert stats["n_manual_exclude_dropped"] == 0
+
+
+# ---------------------------------------------------------------------------
 # remove_length_outliers
 # ---------------------------------------------------------------------------
 

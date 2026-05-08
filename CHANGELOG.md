@@ -10,6 +10,35 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.23] — 2026-05-08
+
+### Added
+- **Per-family `manual.include` / `manual.exclude` lists** — new optional
+  block in per-family YAML configs for curator overrides on record
+  selection. Both lists hold exact accessions (with version, e.g.
+  `NC_002617.1`).
+  - `manual.exclude` accessions are dropped immediately after fetch,
+    before QC.
+  - `manual.include` accessions bypass all QC (length, ambiguity,
+    organism exclusion) and are protected through clustering, proportional
+    merge, and length/branch-length outlier removal — i.e. stronger than
+    RefSeq at QC, equal to RefSeq downstream.
+  - Validation rejects overlap between the two lists, non-string entries,
+    and empty strings; whitespace is stripped and duplicates deduped.
+  - Two new `summary.tsv` columns: `qc_manual_include_bypassed` and
+    `qc_manual_exclude_dropped`.
+  - Existing per-family YAMLs without a `manual:` block continue to load
+    unchanged (defaults to two empty lists).
+  - In concat mode, manual.include genomes still need to clear
+    `min_fraction` at fetch time to be visible to the override.
+
+### Changed
+- **Concat-mode `status.tsv`** now lists the markers actually used in the
+  alignment (those retained in ≥1 genome after per-marker length-outlier
+  filtering) for the `OK` row, taken from the tree_100 set when present
+  and falling back to tree_500. Skip-row markers stay as the target
+  preset since no analysis ran.
+
 ## [1.2.22] — 2026-05-08
 
 ### Changed

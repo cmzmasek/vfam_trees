@@ -523,6 +523,17 @@ DEFAULT_FAMILY_CONFIG: dict = {
         # Typical values: "genus", "species", "subfamily".
         "lca_min_rank": "species",
     },
+    "manual": {
+        # Curator overrides on per-family record selection.  Both lists hold
+        # exact accessions with version (e.g. "NC_002617.1").
+        # include: force-keep — bypasses all QC (length, ambiguity, organism
+        #          exclusion) and is protected through clustering, proportional
+        #          merge, and length-outlier filtering (stronger than RefSeq at
+        #          QC, equal to RefSeq downstream).
+        # exclude: dropped immediately after fetch, before QC.
+        "include": [],
+        "exclude": [],
+    },
 }
 
 
@@ -615,6 +626,56 @@ def _validate_concatenation_block(cfg: dict, family: str) -> None:
         )
 
 
+def _validate_manual_block(cfg: dict, family: str) -> None:
+    """Validate the optional manual.include / manual.exclude lists.
+
+    Both must be lists of non-empty accession strings; the two lists must be
+    disjoint.  Whitespace is stripped and duplicates within a list are deduped
+    in-place with a warning — typos are easier to spot at the line level than
+    after a full pipeline run.
+    """
+    block = cfg.get("manual") or {}
+    if not isinstance(block, dict):
+        raise ValueError(
+            f"{family}: 'manual' must be a mapping with 'include' and 'exclude' lists."
+        )
+
+    for key in ("include", "exclude"):
+        raw = block.get(key) or []
+        if not isinstance(raw, list):
+            raise ValueError(
+                f"{family}: manual.{key} must be a list of accession strings (got {type(raw).__name__})."
+            )
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for i, entry in enumerate(raw):
+            if not isinstance(entry, str):
+                raise ValueError(
+                    f"{family}: manual.{key}[{i}] must be a string accession (got {type(entry).__name__})."
+                )
+            stripped = entry.strip()
+            if not stripped:
+                raise ValueError(
+                    f"{family}: manual.{key}[{i}] is empty — remove the entry or fill it in."
+                )
+            if stripped in seen:
+                log.warning("%s: duplicate accession %r in manual.%s — deduped.",
+                            family, stripped, key)
+                continue
+            seen.add(stripped)
+            cleaned.append(stripped)
+        block[key] = cleaned
+
+    overlap = set(block.get("include", [])) & set(block.get("exclude", []))
+    if overlap:
+        raise ValueError(
+            f"{family}: manual.include and manual.exclude overlap on "
+            f"{sorted(overlap)} — an accession cannot be both forced-in and dropped."
+        )
+
+    cfg["manual"] = block
+
+
 def _warn_unknown_keys(cfg: dict, path: Path) -> None:
     """Warn about top-level keys in a user config that are not recognised."""
     unknown = [
@@ -644,10 +705,12 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
         _warn_smart_default_conflicts(family, file_cfg, config_path)
         cfg = _merge_with_defaults(file_cfg, global_cfg, family)
         _validate_concatenation_block(cfg, family)
+        _validate_manual_block(cfg, family)
         return cfg, False
     else:
         cfg = _generate_default_family_config(family, global_cfg)
         _validate_concatenation_block(cfg, family)
+        _validate_manual_block(cfg, family)
         _write_family_config(cfg, config_path)
         log.warning(
             "No config found for %s — auto-generated default at %s. "
