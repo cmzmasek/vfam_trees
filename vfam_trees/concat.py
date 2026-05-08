@@ -306,20 +306,26 @@ def remove_per_marker_length_outliers(
                 new_markers[marker_name] = rec
         updated[genome_id] = new_markers
 
-    # Always log the per-marker median sample so users can spot annotation
+    # Always log the per-marker breakdown so users can spot annotation
     # issues even when no cells are dropped.
     if medians:
-        median_str = ", ".join(
-            f"{m}:{int(medians[m])}(n={len(marker_lengths[m])})"
-            for m in medians
-        )
+        per_marker_strs = []
+        for m in medians:
+            lo, hi = cutoffs.get(m, (None, None))
+            lo_s = f"{lo:.0f}" if lo is not None else "—"
+            hi_s = f"{hi:.0f}" if hi is not None else "—"
+            per_marker_strs.append(
+                f"{m} (n={len(marker_lengths[m])}, median={int(medians[m])}, "
+                f"keep=[{lo_s}, {hi_s}])"
+            )
         log.info(
-            "Per-marker length-outlier scan (MAD-on-log, k=%.1f, "
-            "floor=[%.2fx, %.2fx]): per-marker medians [%s] — "
-            "dropped %d long + %d short (genome × marker) cells "
-            "(RefSeq-protected: %d)",
-            k, min_lo_mult, max_hi_mult, median_str,
-            n_long, n_short, n_refseq_protected,
+            "Per-marker length-outlier filter: dropped %d short + %d long "
+            "cell(s); RefSeq-protected: %d. "
+            "Per-marker windows: %s "
+            "(MAD-on-log k=%.1f, floor=[%.2fx, %.2fx])",
+            n_short, n_long, n_refseq_protected,
+            "; ".join(per_marker_strs),
+            k, min_lo_mult, max_hi_mult,
         )
 
     stats = {

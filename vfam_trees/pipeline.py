@@ -24,7 +24,13 @@ from .summary import (
     build_summary_row, write_summary_row, load_family_annotations,
     build_status_row, write_status_row,
 )
-from .quality import filter_sequences, remove_length_outliers, deduplicate, write_fasta
+from .quality import (
+    filter_sequences,
+    remove_length_outliers,
+    log_mad_cutoffs,
+    deduplicate,
+    write_fasta,
+)
 from .rename import assign_short_ids, restore_fasta_names
 from .subsample import absorb_into_refseqs, adaptive_cluster_species, proportional_merge
 from .msa import run_msa, get_mafft_version, validate_msa
@@ -756,22 +762,25 @@ def _run_target(
     length_outlier_cfg = family_cfg.get("length_outlier", {})
     n_length_long = 0
     n_length_short = 0
+    length_filter_median: float | None = None
+    length_filter_lo_cutoff: float | None = None
+    length_filter_hi_cutoff: float | None = None
     if length_outlier_cfg.get("enabled", True):
         k = float(length_outlier_cfg.get("k", 5.0))
         min_lo_mult = float(length_outlier_cfg.get("min_lo_mult", 0.20))
         max_hi_mult = float(length_outlier_cfg.get("max_hi_mult", 5.0))
+        # Capture cutoffs from the same length distribution that the filter sees,
+        # for the summary.tsv columns.
+        pre_lengths = [len(r.seq) for r in sel_records]
+        length_filter_lo_cutoff, length_filter_hi_cutoff, _, length_filter_median = log_mad_cutoffs(
+            pre_lengths, k, min_lo_mult=min_lo_mult, max_hi_mult=max_hi_mult,
+        )
+        log.info("tree_%s: applying length-outlier filter ...", label)
         sel_records, n_length_long, n_length_short = remove_length_outliers(
             sel_records, k=k,
             min_lo_mult=min_lo_mult, max_hi_mult=max_hi_mult,
             protected_ids=refseq_short_ids,
         )
-        if n_length_long or n_length_short:
-            log.info(
-                "tree_%s: length-outlier removal dropped %d long + %d short "
-                "(k=%.1f, floor=[%.2fx, %.2fx])",
-                label, n_length_long, n_length_short,
-                k, min_lo_mult, max_hi_mult,
-            )
     if len(sel_records) < 4:
         log.warning(
             "Only %d sequence(s) after length-outlier removal for tree_%s (minimum 4) — skipping.",
@@ -1073,6 +1082,9 @@ def _run_target(
         "n_outliers_removed":    n_outliers_removed,
         "n_length_outliers_long":  n_length_long,
         "n_length_outliers_short": n_length_short,
+        "length_filter_median":    int(length_filter_median) if length_filter_median else "",
+        "length_filter_lo_cutoff": int(length_filter_lo_cutoff) if length_filter_lo_cutoff is not None else "",
+        "length_filter_hi_cutoff": int(length_filter_hi_cutoff) if length_filter_hi_cutoff is not None else "",
         "n_refseq_absorbed":     n_refseq_absorbed,
         "n_genera":              len(genus_to_color),
         "n_subfamilies":         n_subfamilies,

@@ -277,17 +277,18 @@ def remove_length_outliers(
         else:
             passed.append(r)
 
-    if n_long or n_short:
-        log.info(
-            "Removed %d length outlier(s) for %d seqs "
-            "(median=%d, sigma_log=%.3f, k=%.1f, "
-            "keep window=[%s, %s]): %d long, %d short",
-            n_long + n_short, len(records), int(median_len),
-            sigma, k,
-            f"{lo_cutoff:.0f}" if lo_cutoff is not None else "—",
-            f"{hi_cutoff:.0f}" if hi_cutoff is not None else "—",
-            n_long, n_short,
-        )
+    n_kept = len(passed)
+    n_in = len(records)
+    lo_str = f"{lo_cutoff:.0f}" if lo_cutoff is not None else "—"
+    hi_str = f"{hi_cutoff:.0f}" if hi_cutoff is not None else "—"
+    log.info(
+        "Length-outlier filter: kept %d/%d sequences "
+        "(dropped %d short + %d long). "
+        "median length=%d aa/nt, keep window=[%s, %s] "
+        "(MAD-on-log k=%.1f, floor=[%.2fx, %.2fx])",
+        n_kept, n_in, n_short, n_long, int(median_len),
+        lo_str, hi_str, k, min_lo_mult, max_hi_mult,
+    )
     return passed, n_long, n_short
 
 
