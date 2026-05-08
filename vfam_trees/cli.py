@@ -437,12 +437,15 @@ defaults:
 
   # Pre-MSA sequence-length outlier removal (applied after clustering +
   # proportional merge, before MAFFT).  Drops sequences whose length is a
-  # MAD-on-log outlier — the keep window is exp(median(log L) ± k·σ_log),
-  # with σ_log = 1.4826 × MAD(log L).  Adapts to each family's natural
-  # length variation; no hand-tuned hi/lo cutoffs required.
+  # MAD-on-log outlier — keep window = exp(median(log L) ± k·σ_log), with
+  # σ_log = 1.4826 × MAD(log L).  Adapts to each family's natural length
+  # variation.  A hard floor [min_lo_mult, max_hi_mult] × median is unioned
+  # with the MAD window so tight families don't lose moderate truncations.
   length_outlier:
     enabled: true
-    k: 5.0             # MAD-units on either side of log-median (0 disables)
+    k: 5.0             # MAD-units on either side of log-median (0 disables MAD)
+    min_lo_mult: 0.20  # never drop seqs ≥ this × median (0 disables lower floor)
+    max_hi_mult: 5.0   # never drop seqs ≤ this × median (0 disables upper floor)
 
   # Post-tree branch-length outlier removal (iterative).
   # Drops leaves whose terminal branch length exceeds median + factor × MAD.

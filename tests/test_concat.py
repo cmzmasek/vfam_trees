@@ -106,11 +106,14 @@ class TestPerMarkerLengthOutliers:
         assert stats["per_marker_median"]["polB"] == 1002.5
         assert stats["per_marker_median"]["MCP"] == 602.5
 
-    def test_disabled_k(self):
-        # k=0 disables the filter; the long sequence is kept.
+    def test_disabled_k_and_floor(self):
+        # k=0 disables MAD; min_lo_mult=0 + max_hi_mult=0 disables the floor.
+        # All together → filter is fully off, the long sequence is kept.
         genomes = _genomes_with_normal_markers(10)
         genomes["NC_999"] = {"polB": _rec("YP_huge", 30000)}
-        updated, stats = remove_per_marker_length_outliers(genomes, set(), k=0)
+        updated, stats = remove_per_marker_length_outliers(
+            genomes, set(), k=0, min_lo_mult=0, max_hi_mult=0,
+        )
         assert stats["n_long_dropped"] == 0
         assert "polB" in updated["NC_999"]
 

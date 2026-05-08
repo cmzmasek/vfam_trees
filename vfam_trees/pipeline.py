@@ -752,19 +752,25 @@ def _run_target(
         )
         return {}, [], None
 
-    # Pre-MSA length-outlier removal (MAD-on-log, two-sided, config-driven)
+    # Pre-MSA length-outlier removal (MAD-on-log + hard floor, config-driven)
     length_outlier_cfg = family_cfg.get("length_outlier", {})
     n_length_long = 0
     n_length_short = 0
     if length_outlier_cfg.get("enabled", True):
         k = float(length_outlier_cfg.get("k", 5.0))
+        min_lo_mult = float(length_outlier_cfg.get("min_lo_mult", 0.20))
+        max_hi_mult = float(length_outlier_cfg.get("max_hi_mult", 5.0))
         sel_records, n_length_long, n_length_short = remove_length_outliers(
-            sel_records, k=k, protected_ids=refseq_short_ids,
+            sel_records, k=k,
+            min_lo_mult=min_lo_mult, max_hi_mult=max_hi_mult,
+            protected_ids=refseq_short_ids,
         )
         if n_length_long or n_length_short:
             log.info(
-                "tree_%s: length-outlier removal dropped %d long + %d short (k=%.1f)",
-                label, n_length_long, n_length_short, k,
+                "tree_%s: length-outlier removal dropped %d long + %d short "
+                "(k=%.1f, floor=[%.2fx, %.2fx])",
+                label, n_length_long, n_length_short,
+                k, min_lo_mult, max_hi_mult,
             )
     if len(sel_records) < 4:
         log.warning(

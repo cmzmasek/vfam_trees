@@ -203,31 +203,75 @@ def test_remove_length_outliers_two_sided():
 
 
 def test_remove_length_outliers_disabled():
-    # k=0 disables the filter entirely
+    # k=0 disables the MAD test; min_lo_mult=0 + max_hi_mult=0 disables the
+    # floor.  All three together → filter is fully off.
     records = [_rec("A" * L) for L in _NORMAL_LENGTHS] + [_rec("A" * 30)]
-    kept, n_long, n_short = remove_length_outliers(records, k=0)
+    kept, n_long, n_short = remove_length_outliers(
+        records, k=0, min_lo_mult=0, max_hi_mult=0,
+    )
     assert n_long == 0
     assert n_short == 0
     assert len(kept) == len(_NORMAL_LENGTHS) + 1
 
 
-def test_remove_length_outliers_zero_mad_is_noop():
-    # All lengths identical → MAD = 0 → no characterization of natural
-    # spread possible → filter is a no-op (does not fabricate a fallback).
-    records = [_rec("A" * 300)] * 10 + [_rec("A" * 30000)]
+def test_remove_length_outliers_zero_mad_uses_floor_only():
+    # All lengths identical → MAD = 0 → cannot characterize natural spread
+    # but the hard floor [0.20×, 5.0×] still applies.
+    records = [_rec("A" * 300)] * 10 + [_rec("A" * 30000), _rec("A" * 30)]
     kept, n_long, n_short = remove_length_outliers(records)
-    assert n_long == 0
+    # 30000 > 5.0 × 300 = 1500 → dropped
+    # 30   < 0.20 × 300 = 60   → dropped
+    assert n_long == 1
+    assert n_short == 1
+    assert len(kept) == 10
+
+
+def test_remove_length_outliers_floor_keeps_moderate_truncation_in_tight_family():
+    # In a tight family (sequences within ~1% of median 1000), MAD-based
+    # cutoffs are very narrow.  Without the floor, a moderately-truncated
+    # but legitimate variant at 0.40× median would be dropped.  With the
+    # default floor [0.20×, 5.0×], it is kept.
+    tight = [_rec("A" * L) for L in (995, 998, 1000, 1000, 1000, 1000, 1002, 1005)]
+    truncated = [_rec("A" * 400)]  # 0.40× median 1000, above 0.20× floor
+    records = tight + truncated
+    kept, n_long, n_short = remove_length_outliers(records)
     assert n_short == 0
-    assert len(kept) == 11
+    assert len(kept) == len(records)
+
+
+def test_remove_length_outliers_floor_drops_below_lower_bound():
+    # Anything below 0.20× median is dropped by the floor regardless of MAD.
+    tight = [_rec("A" * L) for L in (995, 998, 1000, 1000, 1000, 1000, 1002, 1005)]
+    junk = [_rec("A" * 50)]  # 0.05× median, below floor
+    records = tight + junk
+    kept, n_long, n_short = remove_length_outliers(records)
+    assert n_short == 1
+    assert len(kept) == len(tight)
+
+
+def test_remove_length_outliers_floor_disabled_uses_pure_mad():
+    # min_lo_mult=0 disables the lower floor; tight family + 0.40× truncation
+    # then falls back to MAD-only behaviour (which drops the truncation).
+    tight = [_rec("A" * L) for L in (995, 998, 1000, 1000, 1000, 1000, 1002, 1005)]
+    truncated = [_rec("A" * 400)]
+    records = tight + truncated
+    kept, n_long, n_short = remove_length_outliers(records, min_lo_mult=0)
+    assert n_short == 1
 
 
 def test_remove_length_outliers_larger_k_more_lenient():
-    # Borderline-short sequence is dropped at k=5 but kept at k=20.
-    borderline = (240,)
-    records = [_rec("A" * L) for L in _NORMAL_LENGTHS + borderline]
-    _, _, n_short_k5 = remove_length_outliers(records, k=5.0)
-    _, _, n_short_k20 = remove_length_outliers(records, k=20.0)
-    assert n_short_k5 >= n_short_k20
+    # In a wide-spread family the MAD window dominates; raising k makes the
+    # filter strictly more lenient (n_short non-increasing).  Disable the
+    # floor so MAD alone determines the cutoff.
+    wide = [100, 200, 400, 700, 1200, 2000, 50]
+    records = [_rec("A" * L) for L in wide]
+    _, _, n_short_k1 = remove_length_outliers(
+        records, k=1.0, min_lo_mult=0, max_hi_mult=0,
+    )
+    _, _, n_short_k20 = remove_length_outliers(
+        records, k=20.0, min_lo_mult=0, max_hi_mult=0,
+    )
+    assert n_short_k1 >= n_short_k20
 
 
 def test_remove_length_outliers_protects_refseq_long(caplog):

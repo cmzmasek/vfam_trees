@@ -153,8 +153,11 @@ def filter_sequences(
 def log_mad_cutoffs(
     lengths: list[int],
     k: float,
+    min_lo_mult: float = 0.20,
+    max_hi_mult: float = 5.0,
 ) -> tuple[float | None, float | None, float, float]:
-    """Compute length-outlier cutoffs from MAD on log-lengths.
+    """Compute length-outlier cutoffs from MAD on log-lengths, with a
+    hard-floor safety net.
 
     Why log-space: protein/CDS length is right-skewed and bounded at zero, so
     a symmetric ±k·σ window in log-space becomes a multiplicative window
@@ -164,34 +167,60 @@ def log_mad_cutoffs(
     by the very outliers we want to detect.  MAD (median absolute deviation),
     scaled by 1.4826, is a robust estimator of σ for normal data.
 
+    Why the floor: in tight families (sequences within a few percent of the
+    median) MAD on log-lengths gives a very narrow keep window that would
+    cut legitimate moderately-truncated variants.  The floor guarantees a
+    minimum keep window of ``[min_lo_mult, max_hi_mult] × median``, taking
+    the **union** of the MAD window and the floor.  Set either floor knob
+    to 0 to disable that side.
+
     Returns ``(lo_cutoff, hi_cutoff, sigma_log, median_len)``.  Returns
-    ``(None, None, 0.0, median_len)`` when ``k <= 0`` (filter disabled) or
-    when MAD is exactly zero (data too uniform to characterize natural
-    spread — filter degenerates to a no-op rather than fabricating one).
+    ``(None, None, 0.0, median_len)`` when both MAD and floor are disabled.
     """
     valid = [L for L in lengths if L > 0]
     if not valid:
         return None, None, 0.0, 0.0
     median_len = float(statistics.median(valid))
-    if k <= 0:
-        return None, None, 0.0, median_len
-    log_lens = [math.log(L) for L in valid]
-    med = statistics.median(log_lens)
-    mad = statistics.median(abs(x - med) for x in log_lens)
-    if mad <= 0:
-        return None, None, 0.0, median_len
-    sigma = 1.4826 * mad
-    return (
-        math.exp(med - k * sigma),
-        math.exp(med + k * sigma),
-        sigma,
-        median_len,
-    )
+
+    floor_lo = median_len * min_lo_mult if min_lo_mult > 0 else None
+    floor_hi = median_len * max_hi_mult if max_hi_mult > 0 else None
+
+    sigma = 0.0
+    mad_lo: float | None = None
+    mad_hi: float | None = None
+    if k > 0:
+        log_lens = [math.log(L) for L in valid]
+        med = statistics.median(log_lens)
+        mad = statistics.median(abs(x - med) for x in log_lens)
+        if mad > 0:
+            sigma = 1.4826 * mad
+            mad_lo = math.exp(med - k * sigma)
+            mad_hi = math.exp(med + k * sigma)
+
+    # Take the union: MAD widens the floor when the data warrants it, but
+    # the floor never narrows a wider MAD window.
+    if mad_lo is None:
+        final_lo = floor_lo
+    elif floor_lo is None:
+        final_lo = mad_lo
+    else:
+        final_lo = min(mad_lo, floor_lo)
+
+    if mad_hi is None:
+        final_hi = floor_hi
+    elif floor_hi is None:
+        final_hi = mad_hi
+    else:
+        final_hi = max(mad_hi, floor_hi)
+
+    return final_lo, final_hi, sigma, median_len
 
 
 def remove_length_outliers(
     records: list[SeqRecord],
     k: float = 5.0,
+    min_lo_mult: float = 0.20,
+    max_hi_mult: float = 5.0,
     protected_ids: set[str] | None = None,
 ) -> tuple[list[SeqRecord], int, int]:
     """Remove sequences whose length is a MAD-on-log outlier.
@@ -200,7 +229,13 @@ def remove_length_outliers(
         records: input sequences
         k: number of MAD-units (in log-space, scaled by 1.4826) on either
            side of the log-median that defines the keep window.  A larger
-           k is more lenient.  k <= 0 disables the filter.
+           k is more lenient.  k <= 0 disables the MAD test.
+        min_lo_mult: hard-floor lower bound — sequences ≥ ``min_lo_mult ×
+                     median`` are never dropped, regardless of MAD.  0
+                     disables the lower floor.
+        max_hi_mult: hard-floor upper bound — sequences ≤ ``max_hi_mult ×
+                     median`` are never dropped, regardless of MAD.  0
+                     disables the upper floor.
         protected_ids: record IDs that must never be dropped even if flagged —
                        a warning is logged instead.
 
@@ -211,8 +246,10 @@ def remove_length_outliers(
         return records, 0, 0
     protected = protected_ids or set()
     lengths = [len(r.seq) for r in records]
-    lo_cutoff, hi_cutoff, sigma, median_len = log_mad_cutoffs(lengths, k)
-    if lo_cutoff is None or hi_cutoff is None:
+    lo_cutoff, hi_cutoff, sigma, median_len = log_mad_cutoffs(
+        lengths, k, min_lo_mult=min_lo_mult, max_hi_mult=max_hi_mult,
+    )
+    if lo_cutoff is None and hi_cutoff is None:
         return records, 0, 0
 
     passed: list[SeqRecord] = []
@@ -220,15 +257,17 @@ def remove_length_outliers(
     n_short = 0
     for r in records:
         L = len(r.seq)
-        too_long = L > hi_cutoff
-        too_short = L < lo_cutoff
+        too_long = hi_cutoff is not None and L > hi_cutoff
+        too_short = lo_cutoff is not None and L < lo_cutoff
         if too_long or too_short:
             if r.id in protected:
                 log.warning(
                     "RefSeq '%s' looks like a length outlier "
-                    "(length=%d, median=%d, lo_cutoff=%.0f, hi_cutoff=%.0f) — "
+                    "(length=%d, median=%d, lo_cutoff=%s, hi_cutoff=%s) — "
                     "KEEPING (RefSeq protected)",
-                    r.id, L, int(median_len), lo_cutoff, hi_cutoff,
+                    r.id, L, int(median_len),
+                    f"{lo_cutoff:.0f}" if lo_cutoff is not None else "disabled",
+                    f"{hi_cutoff:.0f}" if hi_cutoff is not None else "disabled",
                 )
                 passed.append(r)
             elif too_long:
@@ -242,9 +281,12 @@ def remove_length_outliers(
         log.info(
             "Removed %d length outlier(s) for %d seqs "
             "(median=%d, sigma_log=%.3f, k=%.1f, "
-            "keep window=[%.0f, %.0f]): %d long, %d short",
+            "keep window=[%s, %s]): %d long, %d short",
             n_long + n_short, len(records), int(median_len),
-            sigma, k, lo_cutoff, hi_cutoff, n_long, n_short,
+            sigma, k,
+            f"{lo_cutoff:.0f}" if lo_cutoff is not None else "—",
+            f"{hi_cutoff:.0f}" if hi_cutoff is not None else "—",
+            n_long, n_short,
         )
     return passed, n_long, n_short
 
