@@ -1,0 +1,275 @@
+# Changelog
+
+All notable user-facing changes are recorded here. Format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+The full per-commit history is in `git log`; this file summarizes only
+changes that affect outputs, configuration, CLI behaviour, or other
+user-visible surface area.
+
+## [Unreleased]
+
+## [1.2.22] — 2026-05-08
+
+### Changed
+- **Leaf-label naming convention** — single canonical format applied
+  consistently across sequence FASTA outputs, PhyloXML `<name>` elements,
+  Newick leaves, and rendered tree images (rooted/unrooted, PDF/PNG):
+  `<species>|<accession>` when host is unknown / empty, or
+  `<species>|<accession>|<host>` when host is known. The strain field is
+  no longer part of the label. Both single-protein and concat modes share
+  one builder (`canonical_leaf_label`) so byte-identical labels are
+  produced for the same `(species, accession, host)` inputs.
+- **Logging hygiene** — all path-bearing INFO log lines demoted to DEBUG
+  except the global sequence cache message (`Global sequence cache: ...`),
+  which is the only INFO line that may print a full filesystem path.
+  Affected lines include id-map written, cache invalidation, sequence-
+  length plot written, overview PNG written, tree image written, and
+  Newick written.
+
+### Fixed
+- **Concat PhyloXML `<name>` and `<description>`** now report the number
+  and list of markers actually present in the alignment (i.e. retained in
+  ≥ 1 genome after per-marker length-outlier filtering), not the full
+  target marker preset. `summary.tsv` `concat_n_markers_used` is
+  numerically unchanged but is now derived from the same list, so all
+  three outputs (PhyloXML, summary, report) agree.
+
+## [1.2.21] — 2026-05-08
+
+### Added
+- New `summary.tsv` columns per tree: `length_filter_median`,
+  `length_filter_lo_cutoff`, `length_filter_hi_cutoff` — the resolved
+  median and final keep window from the pre-MSA length-outlier filter.
+  Empty in concat-mode rows (per-marker breakdown stays in the log).
+
+### Changed
+- Pre-MSA length-outlier filter logs one user-readable INFO line per call
+  (kept / dropped counts, median, resolved keep window, `k`, floor),
+  always emitted when the filter is enabled.
+
+## [1.2.20] — 2026-05-07
+
+### Changed
+- Length-outlier filter adds a hard-floor safety net unioned with the MAD
+  window. Defaults: `min_lo_mult: 0.20`, `max_hi_mult: 5.0`. In tight
+  families where MAD on log-lengths gives a very narrow window,
+  moderately-truncated legitimate variants are kept; gross outliers are
+  still caught. Either knob set to `0` disables that side of the floor.
+
+## [1.2.19] — 2026-05-07
+
+### Changed
+- Pre-MSA length-outlier filter switched from a flat
+  `lo_mult: 0.333 / hi_mult: 3.0` rule to a robust **MAD-on-log-lengths**
+  window: `exp(median(log L) ± k · σ_log)` with `σ_log = 1.4826 · MAD(log L)`
+  (default `k: 5.0`). Adapts to each family's natural length spread.
+  Old config keys (`lo_mult` / `hi_mult`) are silently ignored — re-run
+  `vfam_trees init-configs --force` to regenerate per-family yaml with
+  the new schema.
+
+## [1.2.18] — 2026-05-07
+
+### Fixed
+- Concat-mode `_safe_charset_name` `UnboundLocalError` from a local
+  re-import.
+- Rooted-tree PDF/PNG no longer overlays the family name on the figure
+  caption (clears the auto-set matplotlib title from `Phylo.draw`).
+- PhyloXML `<sequence type="…">` uses the schema-valid value `"protein"`
+  (was `"aa"`).
+
+## [1.2.16] — 2026-05-07
+
+### Added
+- Concat mode publishes the same per-tree outputs as single-protein mode:
+  per-tree `id_map_*.tsv`, `metadata_*.tsv`, and per-marker FASTAs
+  (`<safe_marker>_raw.fasta`, `<safe_marker>_alignment.fasta`) under
+  `<Family>_markers_500/` and `<Family>_markers_100/`.
+
+## [1.2.15] — 2026-05-07
+
+### Changed
+- Concat-mode iterative outlier-removal log lines match the single-
+  protein detail: include branch length, MAD ratio, and threshold per
+  removed leaf.
+
+## [1.2.14] — 2026-05-07
+
+### Changed
+- Proportional cross-species merge keeps RefSeq-bearing species first
+  when the species count exceeds the target; non-RefSeq species fill any
+  remaining slots. The `summary.tsv` columns
+  `tree{500,100}_n_species_dropped_at_cap` and
+  `tree{500,100}_n_refseq_species_dropped_at_cap` quantify both classes.
+
+## [1.2.13] — 2026-05-07
+
+### Changed
+- Tighter MAFFT default options for both tree_500 and tree_100.
+
+## [1.2.12] — 2026-05-07
+
+### Fixed
+- Concat-mode `support_type` correctly reflects the actual measure
+  computed (was sometimes mis-labelled).
+- `vfam_trees run --force` truncates `summary.tsv` / `status.tsv` for
+  re-run families instead of leaving stale rows.
+
+## [1.2.11] — 2026-05-07
+
+### Changed
+- MMseqs2 / CD-HIT cluster wrappers honor the `-t` thread setting end to
+  end.
+
+## [1.2.10] — 2026-05-07
+
+### Fixed
+- `vfam_trees run -j N` clamps `--cores` correctly when N > available
+  cores; tree-image captions render reliably; per-family default tweaks.
+
+## [1.2.7] — 2026-05-06
+
+### Changed
+- Broad log-level cleanup; concat PhyloXML metadata reaches parity with
+  single-protein output (`vipr:Host`, `vipr:Year`, etc.).
+
+## [1.2.0] — 2026-05-02
+
+### Added
+- **Multi-marker protein concatenation** for large DNA virus families
+  (CONCAT_DESIGN.md). Per-marker MAFFT + trimAl, gap-padded
+  concatenation, partitioned IQ-TREE on tree_100 (`-p partitions.nex
+  -m MFP` so each marker gets its own ModelFinder pick) with per-
+  partition models recorded in `tree100_marker_models`. Shipped marker
+  presets: Poxviridae (9), Herpesviridae and 3 other herpesvirus families
+  (7), Asfarviridae (6), Iridoviridae (7), Baculoviridae + Nudi/Asco (7),
+  6 NCLDV families (8-marker hallmark fallback). RefSeq genomes are
+  protected at every step.
+
+## [1.1.7] — 2026-04-30
+
+### Added
+- **RefSeq absorption**: non-RefSeq sequences ≥ 0.99 identical to a
+  RefSeq within the same species are absorbed into the RefSeq before
+  clustering, suppressing redundant near-zero-branch cherries. RefSeqs
+  themselves are never removed. Configurable per family via the
+  `refseq_absorption:` block; per-tree counts (`n_refseq_absorbed`)
+  recorded in `summary.tsv`.
+
+## [1.1.6] — 2026-04-24
+
+### Changed
+- RefSeqs are protected from both pre-MSA length-outlier removal and
+  post-tree branch-length outlier removal. Flagged RefSeqs stay in the
+  set and a warning is logged instead.
+
+## [1.1.5] — 2026-04-23
+
+### Added
+- Lightweight `status.tsv` (one row per family analyzed) with `family`,
+  `ncbi_taxid`, `molecule_region`, `status` (`OK` or skip reason),
+  `lineage`, `baltimore_class`.
+- Optional family-annotation TSV (`annotation_tsv` in `global.yaml`)
+  joins extra per-family columns into `summary.tsv` and `status.tsv`;
+  currently surfaces `baltimore_class` (Roman numeral I–VII).
+- Additional summary columns: clustering thresholds, MSA tool/options,
+  trim tool/options.
+
+## [1.1.4] — 2026-04-23
+
+### Added
+- PhyloXML metadata expansion: `vipr:Host`, `vipr:Collection_Date`,
+  `vipr:Year` (parsed from collection date), `vipr:Location`,
+  `vipr:Strain`, plus rank properties `vipr:Species`, `vipr:Genus`,
+  `vipr:Subgenus`, `vipr:Subfamily`. Absent values omitted.
+- Unrooted radial PDF/PNG tree images (`<Family>_tree_{500,100}_ur.*`)
+  alongside the rooted rectangular layouts.
+- Negative result caching: species with zero GenBank hits are cached
+  via a `_no_results` sentinel so they aren't re-queried every run.
+
+## [1.1.0] — 2026-04-20
+
+### Added
+- Curated DNA virus family markers expanded to ~26 families: Papillomaviridae
+  L1, Parvoviridae NS1, Polyomaviridae large T antigen, Circoviridae and
+  Smacoviridae Rep, Anelloviridae ORF1, Poxviridae rpo147, Baculoviridae
+  / Nudiviridae / Ascoviridae lef-8, plus 8 NCLDV families (Nimaviridae,
+  Hytrosaviridae, Phycodnaviridae, Mimiviridae, Marseilleviridae,
+  Pandoraviridae, Pithoviridae, Medusaviridae) using DNA polymerase as
+  the universal marker.
+
+## [1.0.15] — 2026-04-20
+
+### Added
+- **trimAl column trimming** between MAFFT and tree inference (on by
+  default, `-automated1`). Pre-trim length, trim tool, and trim options
+  recorded per tree in `summary.tsv`.
+- **UFBoot ultrafast bootstrap** (`-B 1000`) for protein tree_100 (more
+  robust on divergent protein families than `--fast` + SH-aLRT).
+- Generic `tree{500,100}_support_{type,min,q1,median,q3,max,iqr}`
+  columns; the PhyloXML `<confidence type="…">` mirrors the same label.
+
+### Changed
+- `download.max_per_species` default raised 200 → 300.
+
+## [1.0.14] — 2026-04-19
+
+### Added
+- Hash-based MSA / tree checkpointing: changing the sequence set, MSA
+  output, or relevant config (tool / model / options) automatically
+  invalidates the cache.
+- Segment query accepts any of `complete sequence`, `complete genome`, or
+  `complete cds` so per-segment CDS records are not missed.
+- RefSeq priority in the proportional cross-species merge.
+
+### Changed
+- Clustering / MSA / tree errors raise instead of silently falling back.
+- FastTree honors `model_nuc` / `model_aa` (with warning fallback).
+
+## [1.0.13] — 2026-04-18
+
+### Added
+- `vfam_trees status` reports the current processing stage for in-
+  progress families (downloading/QC, MSA, tree inference, annotating).
+- `vfam_trees run --dry-run` previews per-family parameters without
+  executing anything.
+
+## [1.0.11] — 2026-04-18
+
+### Added
+- Genus / subfamily HLS leaf coloring across PDF/PNG and PhyloXML.
+- Cross-family `overview_tree_100.png` thumbnail grid shaded by viral
+  realm.
+
+## [1.0.10] — 2026-04-18
+
+### Changed
+- Branch-length outlier detection switched from absolute thresholds to
+  **MAD-based** (`median + factor × MAD`, default `factor: 5.0`,
+  iterative).
+
+## [1.0.7] — 2026-04-17
+
+### Added
+- DNA virus protein-marker auto-config (initial set).
+- Output directory naming `<Family>_<taxid>` (e.g.
+  `Asfarviridae_137992`).
+- `vfam_trees cache` CLI subcommands: `clear`, `clear --all`, `stats`.
+
+## [1.0.5] — 2026-04-16
+
+### Added
+- Optional shared sequence download cache with per-entry TTL and lock
+  files for parallel-safe use across `-j N` jobs and shared filesystems.
+
+## [1.0.1] — 2026-04-15
+
+### Added
+- Initial public release of the vfam_trees pipeline: per-family species
+  discovery, GenBank fetch, quality filtering, MMseqs2 clustering,
+  proportional cross-species merge, MAFFT alignment, FastTree (tree_500)
+  + IQ-TREE (tree_100), LCA-based internal-node taxonomy, taxonomy-
+  guided rooting, Newick + PhyloXML output, per-family PDF report,
+  cross-family `summary.tsv`. SH-aLRT support, adaptive `min_length`,
+  per-target MSA options.
