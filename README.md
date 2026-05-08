@@ -1,78 +1,75 @@
 # vfam_trees
 
-**vfam_trees** is a bioinformatics pipeline for building maximum-likelihood phylogenetic trees for viral families. For each family it automatically discovers species via NCBI Taxonomy, downloads sequences from GenBank, applies quality filtering, clusters sequences per species, aligns them with MAFFT, infers trees with FastTree and IQ-TREE, annotates internal nodes with LCA-based taxonomy, and writes output in Newick and PhyloXML formats.
+**vfam_trees** is a bioinformatics pipeline for building maximum-likelihood phylogenetic trees for viral families. For each family it discovers species via NCBI Taxonomy, downloads sequences from GenBank, applies quality filtering, clusters per species, aligns with MAFFT, infers trees with FastTree and IQ-TREE, annotates internal nodes with LCA-based taxonomy, roots taxonomy-aware, and writes Newick and PhyloXML output along with PDF/PNG figures and per-run TSV summaries.
 
 Two trees are produced per family:
 
 - **tree_500** — broad diversity tree (up to 500 sequences, FastTree / GTR+G or LG+G, SH-like support)
-- **tree_100** — collapsed representative tree (up to 100 sequences, IQ-TREE / GTR+G or TEST; SH-aLRT support for nucleotide trees, UFBoot (`-B 1000`) support for protein trees)
+- **tree_100** — collapsed representative tree (up to 100 sequences, IQ-TREE / GTR+G or `TEST`-selected best-fit AA model; SH-aLRT support for nucleotide trees, UFBoot for protein trees)
 
-## Features
+## How it works
 
-- Automatic species discovery from NCBI Taxonomy
-- Per-species sequence download with RefSeq priority; RefSeq records are also preferred during cross-species proportional subsampling so reference sequences remain in the final tree set
-- **Smart sequence type selection**: large DNA virus families automatically use protein marker genes (DNA polymerase, major capsid protein, hexon, etc.) instead of whole-genome nucleotide sequences; small DNA virus families use whole-genome nucleotide sequences
-- **Multi-marker protein concatenation** (CONCAT_DESIGN.md) for large DNA virus families where single-protein analysis lacks sufficient phylogenetic signal: Poxviridae (9 markers), Herpesviridae and the 3 other herpesvirus families (7 markers), Asfarviridae (6 markers), Iridoviridae (7 markers), Baculoviridae + Nudi/Ascoviridae (7 markers), and 6 NCLDV families (8-marker hallmark fallback) ship with curated marker presets and default to `region: concatenated`. Per-marker MAFFT + trimAl, gap-padded concatenation, partitioned IQ-TREE on tree_100 (`-p partitions.nex -m MFP` so each marker gets its own ModelFinder pick) with per-partition models recorded in `tree100_marker_models`. RefSeq genomes are protected at every step (uncapped fetch, exempt from genome-level absorption, per-marker length-outlier, and branch-length outlier removal). Subfamily-aware aliases handle annotation drift (e.g. `aliases_Entomopoxvirinae` on the Poxviridae DNA polymerase marker). User can override any family back to single-protein mode by editing `sequence.region` in the per-family yaml
-- **Per-family icon PNG** (`<Family>_tree_icon.png`): square topology-only thumbnail of tree_100, no labels, uniform branch color; size, background color, and branch color configurable in `global.yaml` (defaults: 256×256 px, `#EAF3F2` background, black branches)
-- Adaptive quality filtering: `min_length = null` auto-sets the threshold to 50% of the per-species median (with fallback to 40% and 30% if too few sequences pass), plus a hard floor of 200 bp / 100 aa
-- RefSeq absorption (per-species, before adaptive clustering): non-RefSeq sequences that are near-identical (≥ threshold, default 0.99) to a RefSeq within the same species are absorbed into the RefSeq — i.e. the RefSeq is kept and the near-identical isolate(s) are dropped. Prevents the tree from showing redundant near-zero-branch cherries of isolates around their RefSeq. RefSeqs themselves are never removed; configurable per family via the `refseq_absorption:` block (`enabled`, `threshold`); per-tree counts (`n_refseq_absorbed`) are recorded in `summary.tsv`
-- Adaptive per-species clustering (MMseqs2) with binary search for optimal identity threshold
-- Proportional cross-species sampling to fill target tree sizes. When the number of species exceeds the target tree size, species with at least one RefSeq are kept first; remaining slots fill by rep count. Counts of species dropped at the cap (and how many of them had a RefSeq) are recorded as `tree{500,100}_n_species_dropped_at_cap` and `tree{500,100}_n_refseq_species_dropped_at_cap` in `summary.tsv`, and a WARNING log is emitted whenever any species are dropped
-- Minimum sequence checks at multiple stages (post-QC, post-merge, post-outlier-removal); families and individual tree targets are skipped gracefully when too few sequences remain
-- Length outlier removal before alignment: two-sided, robust to family-specific length variation. Keep window is the **union** of (a) a MAD-on-log-lengths window, `exp(median(log L) ± k · σ_log)` with `σ_log = 1.4826 · MAD(log L)` (default `k=5.0`), which adapts to each family's natural length spread, and (b) a hard floor `[min_lo_mult, max_hi_mult] × median` (defaults `[0.20×, 5.0×]`) that prevents tight-distribution families from cutting moderately truncated legitimate variants. Configurable per family via the `length_outlier:` block; counts (`n_length_outliers_long` / `n_length_outliers_short`) are recorded in `summary.tsv` per tree. RefSeqs are protected: a flagged RefSeq is kept and a warning is logged instead of being dropped.
+The per-family pipeline runs in seven stages. Each stage is configurable per family (see [Configuration](#configuration)); RefSeqs are protected at every step where sequences can be dropped.
 
-  **Behaviour across distribution shapes** (median = 1000):
+### 1. Species discovery
 
-  | Distribution | Effective keep window | Notes |
-  |---|---|---|
-  | Tight family + 0.40× truncation | `[0.20×, 5.0×]` | Floor kicks in; moderate truncations kept |
-  | Variable family (~2× spread) | `[0.19×, 5.23×]` | MAD widens beyond the floor |
-  | Bimodal (≥50% tied at median) | `[0.20×, 5.0×]` | MAD = 0; floor alone applies |
-  | Tight bulk + 30× extreme outlier | `[0.20×, 5.0×]` | Floor catches the outlier |
-  | Tight bulk + 0.03× extreme outlier | `[0.20×, 5.0×]` | Floor catches the outlier |
-- Iterative post-tree branch-length outlier removal: after each tree, leaves with branch length exceeding `median + factor × MAD` (Median Absolute Deviation — robust to skewed distributions) are removed and MSA+tree is re-run (up to max_iterations; removal only proceeds when at least min_seqs sequences remain; configurable per family, on by default); detailed per-outlier log messages include branch length, ratio to median, and threshold. RefSeqs are never removed — a flagged RefSeq produces a warning and the leaf stays in the tree
-- Separate MSA options for nucleotide vs. amino acid sequences (`options_nuc` / `options_aa`) in both msa_500 and msa_100 sections; IQ-TREE `TEST` model selects the best-fit substitution model automatically for amino acid tree_100 runs — the chosen model (e.g. `LG+I+G4`, `Q.yeast+F+I+G4`) is parsed from the IQ-TREE log and reported in `summary.tsv`, the per-family PDF, and the PhyloXML description in place of `TEST`
-- FastTree respects `model_nuc` / `model_aa` from the config: `GTR` / `JC` for nucleotides, `LG` / `WAG` / `JTT` for amino acids (unsupported models fall back with a warning); the `+G` / `+GAMMA` suffix enables discrete-gamma rate variation
-- MAFFT multiple sequence alignment (separate options for tree_500 and tree_100, and for nucleotide vs. protein)
-- Alignment column trimming with **trimAl** (`-automated1` by default, on by default) between MAFFT and tree inference — drops poorly-aligned / ambiguous columns to improve signal-to-noise, applied uniformly to both nucleotide and protein alignments; pre-trim length, trim tool, and trim options are recorded per tree in `summary.tsv`; disable or retune per family via the `msa_trim:` config block
-- FastTree (tree_500) and IQ-TREE (tree_100) tree inference; tree_100 has per-sequence-type options — `options_nuc: "--fast"` (SH-aLRT support, auto-added by the wrapper) and `options_aa: "-B 1000"` (UFBoot ultrafast bootstrap, more robust on divergent protein families)
-- Branch-support measure is picked automatically per tree and recorded as `tree{500,100}_support_type` in `summary.tsv` (`SH_like` / `SH_aLRT` / `UFBoot`); support-value stats are reported under generic `tree{500,100}_support_{min,q1,median,q3,max,iqr}` columns so a single schema covers all three measures; the PhyloXML `<confidence type="…">` attribute mirrors the same label
-- Taxonomy-guided tree rooting using LCA specificity scoring, with MAD and midpoint fallbacks
-- Configurable LCA depth filter (`taxonomy.lca_min_rank`): exclude leaves whose lineage does not reach a given rank (e.g. `genus`, `species`) from internal-node LCA voting, preventing shallow lineages from dragging ancestor labels back toward the root (default `species`)
-- LCA-based internal node annotation using NCBI ranked lineages
-- Optional **genus inference** (`coloring.genus_inference`) for leaves whose NCBI lineage lacks a formal `genus` rank — three modes: `none` (color only formal genera), `suffix` (treat any single-word taxon ending in "virus" as genus, per ICTV convention), `deepest` (default — suffix first, then deepest rank above species)
-- PhyloXML output with:
-  - `<phylogeny rooted="true" rerootable="false">` — prevents downstream viewers from re-rooting the carefully rooted output
-  - `<confidence type="SH_like|SH_aLRT|UFBoot">` (type chosen per tree, matches the actual support measure computed)
-  - `<taxonomy>` with NCBI taxon id + scientific name and `<sequence>` with accession + title
-  - `vipr:` metadata properties on external nodes: `vipr:Host`, `vipr:Collection_Date`, `vipr:Location`, `vipr:Strain` (values omitted when absent or `"unknown"`)
-  - `vipr:Year` — 4-digit year parsed from `collection_date` (handles `2024-01-01`, `2025`, `Sep-2023`, `01-Jan-2020`, etc.; absent when no year can be parsed)
-  - `vipr:Species`, `vipr:Genus`, `vipr:Subgenus`, `vipr:Subfamily` taxonomic rank properties for downstream visualization colorization; emitted only when the rank is present in the NCBI lineage
-  - `style:font_color` property with the genus-based leaf color
-- **Genus/subfamily leaf coloring**: leaves are colored in HLS color space — one hue band per subfamily, lightness varies across genera within a subfamily; when only a single subfamily is present, genera are spread across the full hue wheel for better visual distinction; colors are applied in PDF/PNG tree images, standalone tree images, and PhyloXML output; a structured legend (grouped by subfamily) is included in all tree figures
-- Segment keyword validation: for segmented RNA families, records not containing the expected segment keyword in their title are excluded. The segment query accepts any of "complete sequence", "complete genome", or "complete cds" in the record title, so per-segment CDS records are not missed
-- Checkpointing: MSA and tree steps are skipped only if their inputs still match — checkpoint sidecars store a content hash of the sequence set, MSA output, and relevant config (tool / model / options), so changing any of them automatically invalidates the cache and forces a rerun. Each iterative outlier-removal pass gets its own hash, so resuming a partially-completed run picks up in the right place
-- Validation of MAFFT and tree output files before continuing
-- Warning when NCBI returns a partial batch
-- Warning when a per-family YAML config contains unrecognized keys
-- Warning when a config file overrides a recommended DNA-family setting (e.g. stale auto-generated config with `region: whole_genome` for a large DNA virus family)
-- Per-family PDF report containing:
-  - Statistics table (NCBI taxid, lineage, molecule/region, species counts, QC breakdown, post-QC sequence length stats, and per-tree: sequence type, MSA tool/options, tree program/model/options, leaf count, sequence length stats, MSA length/gap%, clustering thresholds, SH support stats)
-  - Post-QC sequence length histogram
-  - Per-tree sequence length histograms for tree_500 and tree_100 (sequences actually used to build each tree)
-  - SH support value histograms for both trees
-  - tree_100 visualization with genus/subfamily color legend
-- Standalone PDF and PNG tree images for both tree_100 and tree_500, with genus/subfamily color legend and a two-line figure-legend caption embedded above each tree (method · alignment summary; support stats · genus / subfamily counts · species coverage · outliers removed · pipeline version). Each tree is exported in two layouts:
-  - **Rooted rectangular** (`<Family>_tree_{100,500}.pdf/png`): taxonomy-annotated internal labels (genus / subgenus / subfamily / family only); support values below 50% are suppressed to reduce visual noise
-  - **Unrooted radial** (`<Family>_tree_{100,500}_ur.pdf/png`): equal-angle layout with leaf labels drawn radially (rotated outward); no internal labels, no support values; same genus coloring as the rooted layout
-- **Overview PNG** (`overview_tree_100.png`): thumbnail grid of all tree_100 trees across all processed families, automatically generated at the end of `vfam_trees run`; thumbnails are shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) using NCBI lineage data; regenerate at any time with `vfam_trees overview`
-- Output directories named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
-- Pre-configured support for 35+ segmented RNA virus families and 27 DNA virus families
-- Per-run summary TSV with SH support statistics, MSA statistics, QC breakdown, clustering thresholds, outlier removal counts, and genus/subfamily diversity counts; skipped families are always included. A second lightweight `status.tsv` is written alongside it, with one row per family analyzed (success or skip) and the columns `family`, `ncbi_taxid`, `molecule_region`, `status` (`OK` on success, skip reason otherwise), `lineage`, `baltimore_class`
-- Optional external family-annotation TSV (`annotation_tsv` in `global.yaml`, default `virus_families_annotation.tsv` next to the config) joins extra per-family columns into `summary.tsv` and `status.tsv`; currently supplies `baltimore_class` (Roman numeral I–VII per Baltimore 1971). Missing file or missing family → column left empty, no error
-- Optional shared sequence download cache keyed by query parameters, with configurable TTL and per-entry lock files for safe parallel use; **negative results are also cached** via a per-entry `_no_results` sentinel so species with zero GenBank hits are not re-queried on every run (same TTL as positive entries)
-- **Pipeline stage tracking**: `vfam_trees status` reports the current processing stage for in-progress families (downloading/QC, MSA, tree inference, annotating) in addition to done/pending/skipped
-- **Dry-run mode**: `vfam_trees run --dry-run` previews per-family configuration parameters (sequence type, region, tree tools and models) without executing the pipeline
+The family TaxID is resolved from NCBI Taxonomy and every descendant species is enumerated. The species list defines the universe of organisms eligible for download.
+
+### 2. Sequence download
+
+GenBank is queried per species with RefSeq priority. The query targets the configured molecule (`whole_genome` or a marker name) and, for segmented viruses, the configured segment keyword (records lacking it in their title are dropped). RefSeqs are uncapped; non-RefSeq records are limited by `download.max_per_species`.
+
+An optional shared cache (configurable TTL, per-entry locking, negative-result caching) avoids re-downloading the same species across runs and across parallel family jobs.
+
+### 3. Quality filtering
+
+Each species' sequences are filtered in this order:
+
+1. **Organism exclusion** — case-insensitive substring match against `ORGANISM`, `SOURCE`, and `DEFINITION` (joined with newlines so terms cannot straddle field boundaries). Defaults: `synthetic construct`, `metagenome`, `MAG:`, `uncultured`, `unverified`, `vector`, `recombinant`, `patent`.
+2. **Ambiguity** — `max_ambiguous` cap on the fraction of `N` / `X` / IUPAC degenerate characters.
+3. **Minimum length** — `min_length: null` auto-sets the threshold to 50% of the per-species median, with relaxation fallback to 40% then 30% if too few sequences pass; in all cases a hard floor of 200 bp / 100 aa applies.
+4. **Length-outlier filter** (post-merge, pre-MSA) — two-sided keep window that is the **union** of (a) a MAD-on-log-lengths window and (b) a hard floor `[min_lo_mult, max_hi_mult] × median`. See [Length-outlier behaviour](#length-outlier-behaviour) for the exact form. RefSeqs flagged by the filter are kept with a warning.
+
+### 4. Selection and clustering
+
+- **RefSeq absorption** — non-RefSeq sequences ≥ `refseq_absorption.threshold` (default 0.99) identical to a RefSeq within the same species are absorbed into the RefSeq, suppressing redundant near-zero-branch cherries. RefSeqs themselves are never removed.
+- **Adaptive per-species clustering** — MMseqs2 with binary search for an identity threshold within `[clustering.threshold_min, threshold_max]` that yields ≤ `max_reps_500` (or `max_reps_100`) representatives.
+- **Proportional cross-species merge** — when the species count exceeds the target tree size, species with at least one RefSeq are kept first; remaining slots fill by rep count. Species dropped at the cap (and how many of them carried a RefSeq) are recorded in `summary.tsv` and a WARNING is logged.
+
+### 5. Alignment and tree inference
+
+- **MAFFT** with separate options for nucleotide vs. protein, and for tree_500 vs. tree_100 (the latter typically slower / more accurate).
+- **trimAl** column trimming (`-automated1` by default) between MAFFT and tree inference; pre-trim length, tool, and options are recorded per tree.
+- **FastTree** for tree_500 (configurable `model_nuc` / `model_aa`; `+G` / `+GAMMA` enables discrete-gamma rate variation).
+- **IQ-TREE** for tree_100, with per-sequence-type options: `--fast` for nucleotides (SH-aLRT support, auto-added by the wrapper) and `-B 1000` for protein (UFBoot ultrafast bootstrap, more robust on divergent protein families). Setting `model_aa: TEST` triggers ModelFinder; the chosen model (e.g. `LG+I+G4`) is parsed from the IQ-TREE log and surfaces in `summary.tsv`, the per-family PDF, and the PhyloXML provenance.
+- **Branch-support measure** is picked per tree (`SH_like` / `SH_aLRT` / `UFBoot`) and recorded uniformly: `tree{500,100}_support_type` plus generic `support_{min,q1,median,q3,max,iqr}` columns; the PhyloXML `<confidence type="…">` attribute mirrors the same label.
+- **Iterative branch-length outlier removal** — between iterations, leaves with terminal branch length exceeding `median + factor × MAD` are removed and MSA + tree are re-run (up to `max_iterations`; only when ≥ `min_seqs` remain). RefSeqs are protected: a flagged RefSeq stays with a warning. Detailed per-outlier log lines include length, ratio to median, and threshold.
+- **Multi-marker protein concatenation** — large DNA virus families with curated marker presets concatenate per-marker MAFFT + trimAl alignments into a single matrix; tree_100 uses partitioned IQ-TREE (`-p partitions.nex -m MFP`) so each marker gets its own ModelFinder pick. See [CONCAT_DESIGN.md](CONCAT_DESIGN.md) for design details.
+
+### 6. Annotation and rooting
+
+- **LCA-based internal-node annotation** using NCBI ranked lineages, with a configurable lineage-depth filter (`taxonomy.lca_min_rank`, default `species`) so leaves whose lineage is too shallow are excluded from the LCA vote.
+- **Genus inference** for taxa lacking a formal `genus` rank in NCBI lineage: `none`, `suffix` (single-word taxa ending in `virus` treated as genus, per ICTV convention), or `deepest` (default — suffix first, then deepest rank above species).
+- **Taxonomy-guided rooting** via LCA specificity scoring, with MAD and midpoint fallbacks. The PhyloXML `<phylogeny>` is emitted with `rooted="true" rerootable="false"` so downstream viewers cannot re-root the carefully rooted output.
+- **Genus / subfamily coloring** in HLS color space — one hue band per subfamily, lightness varies across genera within a subfamily; colors are applied to PDF/PNG figures and to PhyloXML (`style:font_color`).
+
+### 7. Output
+
+Per-family: Newick, PhyloXML (with `<taxonomy>`, `<sequence>`, `vipr:` metadata, and rank properties), rooted-rectangular and unrooted-radial PDF + PNG tree images, a topology-only icon PNG, sequence and metadata FASTAs/TSVs, a per-family PDF report, and a per-family log.
+
+Cross-family: a row-per-family `summary.tsv` with full statistics, a lightweight `status.tsv` (success/skip), and an `overview_tree_100.png` thumbnail grid shaded by viral realm. See [Output](#output) for the full file inventory.
+
+Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`). Failures and skips at any stage produce a row in `status.tsv` with the skip reason; the per-family work directory is preserved for inspection.
+
+## Other capabilities
+
+- **Pre-configured family presets** — 28 segmented RNA virus families (segment keywords) and 26 DNA virus families (sequence type, region/marker, and concat marker sets for the 16 families that use concatenation) ship with curated defaults.
+- **Checkpointing** — MSA and tree steps store a content-hashed sidecar of inputs + tool / model / options, so any change auto-invalidates the cache. Each iterative outlier-removal pass gets its own hash; partially-completed runs resume in the right place.
+- **Family-annotation TSV** (optional) — joins extra per-family columns (e.g. `baltimore_class`) into `summary.tsv` and `status.tsv`. Missing file or family is silent.
+- **Stage tracking** — `vfam_trees status` reports the current processing stage for in-progress families (downloading/QC, MSA, tree inference, annotating).
+- **Dry-run mode** — `vfam_trees run --dry-run` previews per-family parameters without executing.
+- **Parallelism** — `-j N` runs N families concurrently; `-t T` sets threads per family job. The download cache and external tools are concurrency-safe.
+- **Validation and warnings** — partial NCBI batches, unrecognized per-family YAML keys, configs that override a recommended DNA-family setting, and MAFFT / tree output sanity checks all surface as log warnings.
 
 ## Dependencies
 
@@ -82,8 +79,6 @@ Two trees are produced per family:
 biopython  >= 1.81
 click      >= 8.1
 pyyaml     >= 6.0
-snakemake  >= 7.0
-requests   >= 2.31
 matplotlib >= 3.9    # PDF report and tree images; requires NumPy 2.x compatible build
 ```
 
@@ -136,15 +131,9 @@ vfam_trees status -f families.txt
 
 ## Configuration
 
-### 1. Global config (`config/global.yaml`)
+### Global config (`config/global.yaml`)
 
-Generate a template with:
-
-```bash
-vfam_trees init
-```
-
-Then edit it to set your NCBI credentials:
+Generate a template with `vfam_trees init`. Then edit it to set your NCBI credentials:
 
 ```yaml
 ncbi:
@@ -152,13 +141,11 @@ ncbi:
   api_key: your_ncbi_api_key        # optional but recommended (10 req/s vs 3 req/s)
 ```
 
-An NCBI API key can be obtained for free at https://www.ncbi.nlm.nih.gov/account/
+An NCBI API key can be obtained for free at https://www.ncbi.nlm.nih.gov/account/.
 
-The `defaults:` section in `global.yaml` overrides the built-in defaults for all families. Per-family configs can further override individual parameters.
+The `defaults:` section of `global.yaml` overrides the built-in defaults for all families. Per-family configs further override individual parameters.
 
 #### Sequence download cache
-
-To avoid re-downloading the same species across runs or across families, enable the global cache in `global.yaml`:
 
 ```yaml
 cache:
@@ -166,9 +153,9 @@ cache:
   ttl_days: 90          # re-download after 90 days; null = never expire
 ```
 
-Cache entries are keyed by `(taxid, db, region, segment, max_per_species)` so changing any query parameter automatically triggers a fresh download. Parallel family jobs (`-j N`) coordinate via per-entry lock files so the same species is never downloaded twice concurrently.
+Cache entries are keyed by `(taxid, db, region, segment, max_per_species)` so changing any query parameter triggers a fresh download. Parallel family jobs (`-j N`) coordinate via per-entry lock files. Negative results (species with zero hits) are cached too, so they are not re-queried on every run.
 
-To clear the cache for a specific family (e.g. after a query fix):
+Management:
 
 ```bash
 vfam_trees cache clear Asfarviridae
@@ -178,13 +165,11 @@ vfam_trees cache stats                # show entry count and size
 
 #### Family-annotation TSV
 
-External per-family metadata can be joined into the summary / status TSVs by pointing `annotation_tsv` in `global.yaml` at a TSV:
-
 ```yaml
 annotation_tsv: virus_families_annotation.tsv
 ```
 
-Relative paths are resolved against the `global.yaml` directory. The file must have a `family` column (case-insensitive match) plus any extra columns to be picked up — currently `baltimore_class` is the only one read by the pipeline (Roman numeral I–VII). Example:
+Relative paths are resolved against the `global.yaml` directory. The file must have a `family` column (case-insensitive match) plus any extra columns to be picked up — currently `baltimore_class` (Roman numeral I–VII per Baltimore 1971) is the only one read by the pipeline. Missing file, missing key, or missing family → column simply left empty.
 
 ```tsv
 family	baltimore_class	host_range	segmented	genome_size
@@ -192,9 +177,7 @@ Flaviviridae	IV	Vertebrates	No	~11 kb
 Poxviridae	I	Vertebrates	No	~130–375 kb
 ```
 
-If the file is missing, the key is unset, or a given family is not in the table, the `baltimore_class` column is simply left empty — no error.
-
-### 2. Per-family configs (`configs/<Family>.yaml`)
+### Per-family configs (`configs/<Family>.yaml`)
 
 Per-family configs are auto-generated if missing. Generate them in advance to review and tune parameters before running:
 
@@ -298,7 +281,26 @@ taxonomy:
                                 #   drag ancestor labels back toward the root
 ```
 
-These two keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.
+The `coloring` and `taxonomy` keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.
+
+#### Length-outlier behaviour
+
+The pre-MSA length-outlier filter takes the **union** of two windows around the median sequence length:
+
+- **MAD-on-log-lengths**: `exp(median(log L) ± k · σ_log)` with `σ_log = 1.4826 · MAD(log L)`. Adapts to each family's natural spread; `k=0` disables.
+- **Hard floor**: `[min_lo_mult, max_hi_mult] × median`. Guarantees a minimum keep window even when MAD is degenerate or the family is very tight; either knob set to `0` disables that side.
+
+Behaviour across distribution shapes (median = 1000, defaults `k=5.0`, floor `[0.20×, 5.0×]`):
+
+| Distribution | Effective keep window | Notes |
+|---|---|---|
+| Tight family + 0.40× truncation | `[0.20×, 5.0×]` | Floor kicks in; moderate truncations kept |
+| Variable family (~2× spread) | `[0.19×, 5.23×]` | MAD widens beyond the floor |
+| Bimodal (≥50% tied at median) | `[0.20×, 5.0×]` | MAD = 0; floor alone applies |
+| Tight bulk + 30× extreme outlier | `[0.20×, 5.0×]` | Floor catches the outlier |
+| Tight bulk + 0.03× extreme outlier | `[0.20×, 5.0×]` | Floor catches the outlier |
+
+Filter outcome (kept / dropped, the median, and the resolved keep window) is logged at INFO once per tree and written to `summary.tsv` (`tree{500,100}_n_length_outliers_{long,short}`, `length_filter_median`, `length_filter_lo_cutoff`, `length_filter_hi_cutoff`).
 
 #### DNA virus families
 
@@ -320,7 +322,7 @@ Known DNA virus families are automatically configured with curated ICTV-aligned 
 | Poxviridae | rpo147 | protein |
 | Nimaviridae, Hytrosaviridae, Phycodnaviridae, Mimiviridae, Marseilleviridae, Pandoraviridae, Pithoviridae, Medusaviridae | DNA polymerase | protein |
 
-If a stale auto-generated config file exists with incorrect settings for these families, the program will log a warning and suggest deleting the file to regenerate it.
+Families using **multi-marker protein concatenation** (`region: concatenated`) are documented in [CONCAT_DESIGN.md](CONCAT_DESIGN.md). If a stale auto-generated config file exists with incorrect settings for any of these families, the program logs a warning and suggests deleting the file to regenerate it.
 
 ## Usage
 
@@ -376,43 +378,54 @@ Filoviridae
 
 ## Output
 
-For each family, results are written to `results/<Family>_<taxid>/` (e.g. `results/Asfarviridae_137992/`):
+### Per-family files (`results/<Family>_<taxid>/`)
+
+**Trees**
 
 | File | Description |
 |------|-------------|
-| `<Family>_tree_500.xml` | PhyloXML tree (broad, up to 500 sequences) |
-| `<Family>_tree_100.xml` | PhyloXML tree (collapsed, up to 100 sequences) |
-| `<Family>_tree_500.nwk` | Newick tree (broad) |
-| `<Family>_tree_100.nwk` | Newick tree (collapsed) |
-| `<Family>_tree_500.pdf` | Rooted rectangular PDF tree image (support < 50% suppressed; genus/subfamily color legend) |
-| `<Family>_tree_500.png` | Rooted rectangular PNG tree image (150 dpi; support < 50% suppressed) |
-| `<Family>_tree_500_ur.pdf` | Unrooted radial PDF tree image (leaf labels radial, no internal labels, no support values) |
-| `<Family>_tree_500_ur.png` | Unrooted radial PNG tree image (150 dpi) |
-| `<Family>_tree_100.pdf` | Rooted rectangular PDF tree image (support < 50% suppressed; genus/subfamily color legend) |
-| `<Family>_tree_100.png` | Rooted rectangular PNG tree image (150 dpi; support < 50% suppressed) |
-| `<Family>_tree_100_ur.pdf` | Unrooted radial PDF tree image |
-| `<Family>_tree_100_ur.png` | Unrooted radial PNG tree image (150 dpi) |
-| `<Family>_alignment_500.fasta` | Final alignment fed to tree_500 (MAFFT + trimAl when `msa_trim.enabled: true`; reflects sequences after iterative outlier removal) |
-| `<Family>_alignment_100.fasta` | Final alignment fed to tree_100 (MAFFT + trimAl when `msa_trim.enabled: true`; reflects sequences after iterative outlier removal) |
-| `<Family>_sequences_raw_500.fasta` | Sequences entering the MSA (after QC, clustering, and proportional merge; before post-tree outlier removal) |
-| `<Family>_sequences_raw_100.fasta` | Sequences entering the MSA (after QC, clustering, and proportional merge; before post-tree outlier removal) |
-| `<Family>_metadata_500.tsv` | Sequence metadata (broad) |
-| `<Family>_metadata_100.tsv` | Sequence metadata (collapsed) |
-| `<Family>_id_map.tsv` | Short ID → display name mapping (single-protein / whole-genome runs only — concat mode emits per-tree `_id_map_500.tsv` / `_id_map_100.tsv` instead) |
-| `<Family>_id_map_500.tsv`, `<Family>_id_map_100.tsv` | Concat mode only: per-tree id-map (concat keeps source-nuc accessions as leaf IDs, so `short_id == accession`; `display_name` is `species|accession`) |
-| `<Family>_partitions_500.nex`, `<Family>_partitions_100.nex` | Concat mode only: NEXUS charset coordinates of each marker block in the concatenated alignment, used by partitioned IQ-TREE for tree_100 and informative for tree_500 |
-| `<Family>_markers_500/`, `<Family>_markers_100/` | Concat mode only: per-marker FASTAs — `<safe_marker>_raw.fasta` (unaligned, display names) and `<safe_marker>_alignment.fasta` (final per-marker MSA, post-trim when enabled) |
-| `<Family>_tree_icon.png` | Square topology-only icon of tree_100 (no labels, uniform branch color, configurable size/colors) |
-| `<Family>_report.pdf` | Per-family PDF report: stats table, post-QC length histogram, per-tree length histograms (tree_500 and tree_100), SH support histograms, tree_100 visualization with genus/subfamily color legend |
+| `<Family>_tree_{500,100}.nwk` | Newick tree |
+| `<Family>_tree_{500,100}.xml` | PhyloXML tree (rooted, non-rerootable; `<taxonomy>`, `<sequence>`, `vipr:` metadata, rank properties, `style:font_color`) |
+
+**Tree images** — each tree is exported in two layouts at PDF and 150 dpi PNG:
+
+| File | Layout |
+|------|--------|
+| `<Family>_tree_{500,100}.{pdf,png}` | Rooted rectangular: taxonomy-annotated internal labels (genus / subgenus / subfamily / family); support values < 50% suppressed; genus/subfamily color legend; two-line figure caption (method · alignment · stats) |
+| `<Family>_tree_{500,100}_ur.{pdf,png}` | Unrooted radial: equal-angle layout with leaf labels rotated outward; no internal labels, no support values; same coloring as rooted |
+| `<Family>_tree_icon.png` | Square topology-only thumbnail of tree_100 (no labels, uniform branch color; size and colors configurable) |
+
+**Sequences and metadata**
+
+| File | Description |
+|------|-------------|
+| `<Family>_sequences_raw_{500,100}.fasta` | Sequences entering the MSA (post-QC, post-clustering, post-merge, post-length-outlier-filter; before post-tree branch-length outlier removal) |
+| `<Family>_alignment_{500,100}.fasta` | Final alignment fed to the tree (MAFFT + trimAl when `msa_trim.enabled: true`; reflects sequences after iterative branch-length outlier removal) |
+| `<Family>_metadata_{500,100}.tsv` | Per-leaf metadata |
+| `<Family>_id_map.tsv` | Short ID → display name mapping (single-protein / whole-genome runs) |
+
+**Concat-mode only** (large DNA virus families; see [CONCAT_DESIGN.md](CONCAT_DESIGN.md))
+
+| File | Description |
+|------|-------------|
+| `<Family>_id_map_{500,100}.tsv` | Per-tree id-map (concat keeps source-nuc accessions as leaf IDs) |
+| `<Family>_partitions_{500,100}.nex` | NEXUS charset coordinates of each marker block in the concatenated alignment |
+| `<Family>_markers_{500,100}/` | Per-marker FASTAs: `<safe_marker>_raw.fasta` (unaligned) and `<safe_marker>_alignment.fasta` (post-trim when enabled) |
+
+**Reports and logs**
+
+| File | Description |
+|------|-------------|
+| `<Family>_report.pdf` | Stats table (taxid, lineage, molecule/region, species/QC counts, sequence-length stats, per-tree MSA / tree / clustering / support stats), post-QC and per-tree length histograms, support histograms, tree_100 visualization with color legend |
 | `<Family>.log` | Per-family log |
 
-At the cross-family level, in `results/`:
+### Cross-family files (`results/`)
 
 | File | Description |
 |------|-------------|
-| `summary.tsv` | One row per family (success or skip): species counts, QC exclusion breakdown, post-QC sequence length stats, clustering thresholds, MSA tool/options, tree program/model/options, per-tree leaf counts, SH support stats, outlier removal counts, genus/subfamily diversity counts, and `baltimore_class` from the optional annotation TSV |
-| `status.tsv` | One row per family (success or skip): `family`, `ncbi_taxid`, `molecule_region`, `status` (`OK` on success, skip reason otherwise), `lineage`, `baltimore_class` |
-| `overview_tree_100.png` | Thumbnail grid of all tree_100 trees; thumbnails shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) |
+| `summary.tsv` | One row per family analyzed (success or skip): species counts, QC breakdown, sequence-length stats, clustering thresholds, MSA / trim / tree program-model-options, leaf counts, support stats, length- and branch-outlier counts and cutoffs, genus/subfamily counts, plus joined columns from `annotation_tsv` (e.g. `baltimore_class`) |
+| `status.tsv` | Lightweight one-row-per-family table: `family`, `ncbi_taxid`, `molecule_region`, `status` (`OK` or skip reason), `lineage`, `baltimore_class` |
+| `overview_tree_100.png` | Thumbnail grid of all tree_100 trees, shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) |
 
 ## License
 
