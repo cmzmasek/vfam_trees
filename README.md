@@ -19,7 +19,17 @@ Two trees are produced per family:
 - Adaptive per-species clustering (MMseqs2) with binary search for optimal identity threshold
 - Proportional cross-species sampling to fill target tree sizes. When the number of species exceeds the target tree size, species with at least one RefSeq are kept first; remaining slots fill by rep count. Counts of species dropped at the cap (and how many of them had a RefSeq) are recorded as `tree{500,100}_n_species_dropped_at_cap` and `tree{500,100}_n_refseq_species_dropped_at_cap` in `summary.tsv`, and a WARNING log is emitted whenever any species are dropped
 - Minimum sequence checks at multiple stages (post-QC, post-merge, post-outlier-removal); families and individual tree targets are skipped gracefully when too few sequences remain
-- Length outlier removal before alignment: two-sided, drops sequences that are both much longer (`> hi_mult × median`, default 3×) **and** much shorter (`< lo_mult × median`, default ~1/3) than the median of the selected set; configurable per family via the `length_outlier:` block; counts (`n_length_outliers_long` / `n_length_outliers_short`) are recorded in `summary.tsv` per tree. RefSeqs are protected: a flagged RefSeq is kept and a warning is logged instead of being dropped
+- Length outlier removal before alignment: two-sided, robust to family-specific length variation. Keep window is the **union** of (a) a MAD-on-log-lengths window, `exp(median(log L) ± k · σ_log)` with `σ_log = 1.4826 · MAD(log L)` (default `k=5.0`), which adapts to each family's natural length spread, and (b) a hard floor `[min_lo_mult, max_hi_mult] × median` (defaults `[0.20×, 5.0×]`) that prevents tight-distribution families from cutting moderately truncated legitimate variants. Configurable per family via the `length_outlier:` block; counts (`n_length_outliers_long` / `n_length_outliers_short`) are recorded in `summary.tsv` per tree. RefSeqs are protected: a flagged RefSeq is kept and a warning is logged instead of being dropped.
+
+  **Behaviour across distribution shapes** (median = 1000):
+
+  | Distribution | Effective keep window | Notes |
+  |---|---|---|
+  | Tight family + 0.40× truncation | `[0.20×, 5.0×]` | Floor kicks in; moderate truncations kept |
+  | Variable family (~2× spread) | `[0.19×, 5.23×]` | MAD widens beyond the floor |
+  | Bimodal (≥50% tied at median) | `[0.20×, 5.0×]` | MAD = 0; floor alone applies |
+  | Tight bulk + 30× extreme outlier | `[0.20×, 5.0×]` | Floor catches the outlier |
+  | Tight bulk + 0.03× extreme outlier | `[0.20×, 5.0×]` | Floor catches the outlier |
 - Iterative post-tree branch-length outlier removal: after each tree, leaves with branch length exceeding `median + factor × MAD` (Median Absolute Deviation — robust to skewed distributions) are removed and MSA+tree is re-run (up to max_iterations; removal only proceeds when at least min_seqs sequences remain; configurable per family, on by default); detailed per-outlier log messages include branch length, ratio to median, and threshold. RefSeqs are never removed — a flagged RefSeq produces a warning and the leaf stays in the tree
 - Separate MSA options for nucleotide vs. amino acid sequences (`options_nuc` / `options_aa`) in both msa_500 and msa_100 sections; IQ-TREE `TEST` model selects the best-fit substitution model automatically for amino acid tree_100 runs — the chosen model (e.g. `LG+I+G4`, `Q.yeast+F+I+G4`) is parsed from the IQ-TREE log and reported in `summary.tsv`, the per-family PDF, and the PhyloXML description in place of `TEST`
 - FastTree respects `model_nuc` / `model_aa` from the config: `GTR` / `JC` for nucleotides, `LG` / `WAG` / `JTT` for amino acids (unsupported models fall back with a warning); the `+G` / `+GAMMA` suffix enables discrete-gamma rate variation
@@ -263,8 +273,10 @@ tree_100:
 
 length_outlier:
   enabled: true                 # pre-MSA length-based outlier removal
-  hi_mult: 3.0                  # drop seqs longer than hi_mult × median (0 disables)
-  lo_mult: 0.333                # drop seqs shorter than lo_mult × median (0 disables)
+  k: 5.0                        # MAD-on-log keep window: exp(median(log L) ± k · σ_log)
+                                # with σ_log = 1.4826 × MAD(log L); 0 disables MAD
+  min_lo_mult: 0.20             # never drop seqs ≥ this × median (0 disables lower floor)
+  max_hi_mult: 5.0              # never drop seqs ≤ this × median (0 disables upper floor)
 
 outlier_removal:
   enabled: true                 # iterative post-tree branch-length outlier removal
