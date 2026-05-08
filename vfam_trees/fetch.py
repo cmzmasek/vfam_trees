@@ -414,6 +414,24 @@ _LOCUS_RE = re.compile(r"^LOCUS\s", re.MULTILINE)
 # Entrez esummary.  See _ACCESSION_RE for the rationale on the digit minimum.
 _NUCCORE_ACCESSION_RE = re.compile(r"^[A-Z]{1,4}_?\d{3,}(?:\.\d+)?$")
 
+# Known RefSeq *protein* prefixes — any accession with one of these prefixes
+# is the protein record's own accession, not a source nucleotide.  Sending
+# one to nuccore esummary makes NCBI return an "Otherdb db=protein" error
+# that aborts the whole batch.  These leak into _source_nuc_accession via
+# the db_source fallback (typical RefSeq protein db_source is
+# "REFSEQ: accession YP_009047263.1").
+_PROTEIN_REFSEQ_PREFIXES = ("NP_", "XP_", "YP_", "AP_", "WP_", "ZP_", "ELP_")
+
+
+def _is_nuccore_accession(acc: str) -> bool:
+    """Return True if ``acc`` has a valid nuccore-accession shape and is not
+    a known RefSeq protein prefix."""
+    if not _NUCCORE_ACCESSION_RE.match(acc):
+        return False
+    if acc.startswith(_PROTEIN_REFSEQ_PREFIXES):
+        return False
+    return True
+
 
 def fetch_nuc_lengths(accessions: Iterable[str]) -> dict[str, int]:
     """Return ``{accession: length_bp}`` for nucleotide accessions via esummary.
@@ -441,7 +459,7 @@ def fetch_nuc_lengths(accessions: Iterable[str]) -> dict[str, int]:
         if not a or a in seen:
             continue
         seen.add(a)
-        if _NUCCORE_ACCESSION_RE.match(a):
+        if _is_nuccore_accession(a):
             accs.append(a)
         else:
             skipped.append(a)
@@ -549,19 +567,29 @@ def _source_nuc_accession(record: SeqRecord) -> str:
 
     Tries the CDS/Protein feature ``coded_by`` qualifier first (the most
     reliable source under modern GenBank conventions), then falls back to
-    parsing the ``db_source`` annotation.
+    parsing the ``db_source`` annotation.  Known RefSeq protein prefixes
+    (``YP_``, ``NP_``, ``XP_``, ``AP_``, ``WP_``, ``ZP_``, ``ELP_``) are
+    rejected — db_source for a protein record typically describes the
+    protein's *own* accession, not its source nucleotide, so without this
+    check we'd hand a protein accession to nuccore esummary downstream.
     """
     for feat in getattr(record, "features", None) or []:
         qualifiers = getattr(feat, "qualifiers", None) or {}
         for cb in qualifiers.get("coded_by", []):
-            m = _ACCESSION_RE.search(cb)
-            if m:
-                return m.group(1)
+            for m in _ACCESSION_RE.finditer(cb):
+                cand = m.group(1)
+                if not cand.startswith(_PROTEIN_REFSEQ_PREFIXES):
+                    return cand
     annotations = getattr(record, "annotations", None) or {}
     db_source = annotations.get("db_source", "") or ""
-    m = re.search(r"accession\s+([A-Z]{1,4}_?\d{3,}(?:\.\d+)?)", db_source, re.IGNORECASE)
-    if m:
-        return m.group(1)
+    for m in re.finditer(
+        r"accession\s+([A-Z]{1,4}_?\d{3,}(?:\.\d+)?)",
+        db_source,
+        re.IGNORECASE,
+    ):
+        cand = m.group(1)
+        if not cand.upper().startswith(_PROTEIN_REFSEQ_PREFIXES):
+            return cand
     return ""
 
 

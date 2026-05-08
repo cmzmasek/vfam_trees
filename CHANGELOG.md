@@ -10,6 +10,23 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.26] — 2026-05-08
+
+### Fixed
+- **Spurious "Otherdb db=protein" warnings from the v1.2.24 source-nuc length
+  filter.** The `_source_nuc_accession` `db_source` fallback was extracting
+  the protein record's *own* RefSeq accession (`YP_…`, `NP_…`, etc.) — RefSeq
+  protein records have a `db_source` like `"REFSEQ: accession YP_009047263.1"`
+  describing the protein itself, not its source nucleotide. Sending a protein
+  accession to nuccore esummary makes NCBI return an `Otherdb uid=… db=protein`
+  error that aborts the entire batch (echoing the resolved numeric UID back
+  in `term=`, which is how the warning ended up looking like a bare GI). Both
+  `_source_nuc_accession` and `fetch_nuc_lengths` now reject the seven known
+  RefSeq protein prefixes (`NP_`, `XP_`, `YP_`, `AP_`, `WP_`, `ZP_`, `ELP_`).
+  The extractor also keeps scanning past a rejected candidate so a real
+  nucleotide accession appearing later in the same `coded_by` qualifier
+  still gets picked up.
+
 ## [1.2.25] — 2026-05-08
 
 ### Fixed

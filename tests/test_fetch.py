@@ -217,6 +217,26 @@ class TestSourceNucAccession:
         rec.annotations = {}
         assert _source_nuc_accession(rec) == "NC_001234.1"
 
+    def test_protein_refseq_prefix_in_db_source_rejected(self):
+        # RefSeq protein records have db_source describing the protein's
+        # *own* accession (YP_, NP_, XP_, etc.) — not the source nucleotide.
+        # Picking it up and feeding it to nuccore esummary makes NCBI return
+        # an "Otherdb db=protein" error that aborts the whole batch.
+        rec = SeqRecord(Seq("M" * 100), id="YP_009047263.1")
+        rec.annotations = {"db_source": "REFSEQ: accession YP_009047263.1"}
+        rec.features = []
+        assert _source_nuc_accession(rec) == ""
+
+    def test_protein_refseq_prefix_in_coded_by_rejected(self):
+        # Defensive: if a protein accession somehow appears inside a coded_by
+        # qualifier, fall through to the next candidate rather than returning it.
+        rec = SeqRecord(Seq("M" * 100), id="YP_1")
+        cds = SeqFeature(FeatureLocation(0, 100), type="CDS")
+        cds.qualifiers = {"coded_by": ["YP_009047263.1, NC_001234.1:1..300"]}
+        rec.features = [cds]
+        rec.annotations = {}
+        assert _source_nuc_accession(rec) == "NC_001234.1"
+
 
 # ---- fetch_nuc_lengths input validation ----
 
@@ -246,6 +266,32 @@ class TestFetchNucLengthsInputValidation:
         # Mix of well-formed and malformed accessions
         fetch_mod.fetch_nuc_lengths(
             ["NC_001234.1", "Q8", "AB123456", "", "X1", "NC_001234.1"]
+        )
+        assert captured_batches == [["NC_001234.1", "AB123456"]]
+
+    def test_protein_refseq_prefixes_filtered(self, monkeypatch):
+        from vfam_trees import fetch as fetch_mod
+
+        captured_batches: list[list[str]] = []
+
+        class _FakeHandle:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_esummary(db, id):
+            captured_batches.append(id.split(","))
+            return _FakeHandle()
+
+        monkeypatch.setattr(fetch_mod.Entrez, "esummary", fake_esummary)
+        monkeypatch.setattr(fetch_mod.Entrez, "read", lambda h: [])
+        monkeypatch.setattr(fetch_mod.time, "sleep", lambda *_: None)
+
+        fetch_mod.fetch_nuc_lengths(
+            ["YP_009047263.1", "NP_009123456", "XP_555.1",
+             "AP_001.1", "WP_002.1", "ZP_003.1", "ELP_004.1",
+             "NC_001234.1", "AB123456"]
         )
         assert captured_batches == [["NC_001234.1", "AB123456"]]
 
