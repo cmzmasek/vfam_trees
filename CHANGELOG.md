@@ -10,6 +10,26 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.28] — 2026-05-08
+
+### Fixed
+- **Final source-nuc length filter cleanup.** Two complementary changes:
+  - `_source_nuc_accession`'s `db_source` fallback now only accepts known
+    RefSeq nucleotide prefixes (`NC_`, `NG_`, `NM_`, `NR_`, `NS_`, `NT_`,
+    `NW_`, `NZ_`, `AC_`, `XM_`, `XR_`).  In real data, `db_source` for a
+    protein record describes the protein record's own home — RefSeq protein
+    (`YP_`/`NP_`), GenBank protein (`ABO61246`), or UniProt (`P12345`) —
+    never the source nucleotide.  An unrestricted shape match was leaking
+    these as if they were source-nucs.  UniProt 1-letter+5-digit accessions
+    in particular pass the shape filter but resolve to the protein db at
+    NCBI, which is the residual source of the `Otherdb db=protein` errors
+    in v1.2.27.
+  - `fetch_nuc_lengths` now recognises deterministic NCBI errors (`Otherdb`,
+    `Invalid uid`) and recovers via binary split instead of hammering the
+    same poison batch five times.  A single bad UID in a 200-accession batch
+    now costs ~16 esummary calls (≈2·log₂N) and still returns lengths for
+    the 199 good UIDs, instead of erasing the whole batch's length map.
+
 ## [1.2.27] — 2026-05-08
 
 ### Fixed

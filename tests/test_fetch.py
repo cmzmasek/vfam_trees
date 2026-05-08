@@ -343,6 +343,81 @@ class TestFetchNucLengthsInputValidation:
         )
         assert captured_batches == [["NC_001234.1", "AB123456"]]
 
+    def test_otherdb_error_triggers_binary_split_recovery(self, monkeypatch):
+        # When NCBI returns a deterministic "Otherdb" error for a batch with
+        # one bad UID, retrying changes nothing; the recovery is to split
+        # the batch and isolate the bad UID, preserving lengths for the rest.
+        from vfam_trees import fetch as fetch_mod
+
+        # Shape: 1 letter + 5 digits.  Passes the nuccore-shape filter (it's
+        # the same shape as a 1+5 GenBank nuc) but in real data this form is
+        # often a UniProt accession that resolves to the protein db.
+        bad_uid = "P12345"
+
+        # Track every esummary call's input batch.
+        calls: list[list[str]] = []
+
+        class _FakeHandle:
+            def __init__(self, summaries):
+                self._summaries = summaries
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_esummary(db, id):
+            ids = id.split(",")
+            calls.append(ids)
+            if bad_uid in ids:
+                raise RuntimeError(
+                    f'Otherdb uid="42" db="protein" term="{bad_uid}"'
+                )
+            # Build summaries for each good ID (length proportional to index).
+            summaries = [
+                {"AccessionVersion": acc, "Caption": acc.split(".")[0],
+                 "Length": str(1000 * (i + 1))}
+                for i, acc in enumerate(ids)
+            ]
+            return _FakeHandle(summaries)
+
+        def fake_read(handle):
+            return handle._summaries
+
+        monkeypatch.setattr(fetch_mod.Entrez, "esummary", fake_esummary)
+        monkeypatch.setattr(fetch_mod.Entrez, "read", fake_read)
+        monkeypatch.setattr(fetch_mod.time, "sleep", lambda *_: None)
+
+        good = ["NC_000001.1", "NC_000002.1", "NC_000003.1"]
+        result = fetch_mod.fetch_nuc_lengths(good + [bad_uid])
+
+        # All three good accessions should have lengths recovered after splitting.
+        assert set(result.keys()) == set(good)
+        assert all(result[a] > 0 for a in good)
+        # The first call hits Otherdb (bad in the batch); subsequent splits
+        # isolate the bad UID without retrying the original 5 times.
+        assert calls[0] == good + [bad_uid]
+        # Bad UID ends up alone in some later batch and fails — that's expected;
+        # the important thing is we don't retry the full batch 5x first.
+        assert sum(1 for c in calls if c == (good + [bad_uid])) == 1
+
+    def test_db_source_fallback_only_accepts_refseq_nuc_prefixes(self):
+        from vfam_trees.fetch import _source_nuc_accession
+
+        # GenBank protein accession in db_source — REJECTED.
+        rec = SeqRecord(Seq("M" * 100), id="ABO61246.1")
+        rec.annotations = {"db_source": "accession ABO61246.1"}
+        rec.features = []
+        assert _source_nuc_accession(rec) == ""
+
+        # UniProt-style accession (1 letter + 5 digits) — REJECTED, even
+        # though it matches the nuccore-shape regex.
+        rec.annotations = {"db_source": "UniProtKB: accession P12345"}
+        assert _source_nuc_accession(rec) == ""
+
+        # RefSeq nuc accession in db_source — accepted.
+        rec.annotations = {"db_source": "REFSEQ: accession NC_999999.1"}
+        assert _source_nuc_accession(rec) == "NC_999999.1"
+
 
 # ---- _extract_isolate ----
 

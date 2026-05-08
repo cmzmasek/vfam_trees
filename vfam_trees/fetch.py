@@ -481,40 +481,83 @@ def fetch_nuc_lengths(accessions: Iterable[str]) -> dict[str, int]:
         )
     result: dict[str, int] = {}
     for batch in _batched(accs, 200):
-        last_exc: Exception | None = None
-        summaries = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                with Entrez.esummary(db="nuccore", id=",".join(batch)) as handle:
-                    summaries = Entrez.read(handle)
-                break
-            except Exception as e:
-                last_exc = e
-                log.warning("nuc-length esummary attempt %d failed: %s", attempt + 1, e)
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY)
-        if summaries is None:
-            log.error(
-                "Entrez esummary for %d nucleotide accession(s) failed after %d "
-                "attempts — partial length map. Last error: %s",
-                len(batch), MAX_RETRIES, last_exc,
-            )
-            continue
-        # Map back to whatever form the caller passed in (with or without version)
-        batch_set = set(batch)
-        for s in summaries:
-            try:
-                length = int(s.get("Length", 0))
-            except (TypeError, ValueError):
-                continue
-            if length <= 0:
-                continue
-            for key in (s.get("AccessionVersion"), s.get("Caption")):
-                if key and key in batch_set:
-                    result[key] = length
-                    break
+        result.update(_esummary_lengths_with_recovery(batch))
         time.sleep(0.34)  # courtesy throttle, matching efetch path
     return result
+
+
+def _parse_summaries(summaries, batch_set: set[str]) -> dict[str, int]:
+    """Pull (accession → length) entries out of an esummary response."""
+    out: dict[str, int] = {}
+    for s in summaries:
+        try:
+            length = int(s.get("Length", 0))
+        except (TypeError, ValueError):
+            continue
+        if length <= 0:
+            continue
+        for key in (s.get("AccessionVersion"), s.get("Caption")):
+            if key and key in batch_set:
+                out[key] = length
+                break
+    return out
+
+
+# Substrings that mark *deterministic* NCBI esummary errors — retrying won't
+# help, the only recovery is to remove the offending UID from the batch.
+_DETERMINISTIC_ESUMMARY_ERRORS = ("Otherdb", "Invalid uid")
+
+
+def _esummary_lengths_with_recovery(batch: list[str]) -> dict[str, int]:
+    """Run esummary on one batch with retry+split error recovery.
+
+    A single bad UID (e.g. one that resolves into the protein db, or a
+    malformed fragment that slipped past the shape filter) makes NCBI
+    reject the entire batch.  Retrying changes nothing for these
+    deterministic errors, so on detection we fall through to a binary
+    split: each half retries independently, recursively isolating the
+    bad UID.  Singletons that still fail are logged at debug and
+    omitted from the length map (the caller treats missing entries
+    as "unknown length, do not filter").
+    """
+    if not batch:
+        return {}
+    last_exc: Exception | None = None
+    summaries = None
+    deterministic = False
+    for attempt in range(MAX_RETRIES):
+        try:
+            with Entrez.esummary(db="nuccore", id=",".join(batch)) as handle:
+                summaries = Entrez.read(handle)
+            break
+        except Exception as e:
+            last_exc = e
+            err_str = str(e)
+            if any(tok in err_str for tok in _DETERMINISTIC_ESUMMARY_ERRORS):
+                deterministic = True
+                break
+            log.warning("nuc-length esummary attempt %d failed: %s",
+                        attempt + 1, e)
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY)
+    if summaries is not None:
+        return _parse_summaries(summaries, set(batch))
+    if len(batch) == 1:
+        log.debug(
+            "nuc-length: dropping unresolvable accession %r (%s)",
+            batch[0], last_exc,
+        )
+        return {}
+    if not deterministic:
+        log.error(
+            "nuc-length esummary for %d accession(s) failed after %d "
+            "attempts — splitting batch and retrying. Last error: %s",
+            len(batch), MAX_RETRIES, last_exc,
+        )
+    mid = len(batch) // 2
+    out = _esummary_lengths_with_recovery(batch[:mid])
+    out.update(_esummary_lengths_with_recovery(batch[mid:]))
+    return out
 
 
 def _fetch_batch(db: str, ids: list[str]) -> str:
@@ -575,17 +618,28 @@ _ACCESSION_RE = re.compile(
     r"\b((?:[A-Z]{1,4}_\d{3,}|[A-Z]{1,2}\d{3,}|[A-Z]{4}\d{3,})(?:\.\d+)?)\b"
 )
 
+# Stricter matcher for the db_source fallback path: only known RefSeq
+# *nucleotide* prefixes are accepted.  An unrestricted match here would also
+# pull in the protein record's own home (RefSeq protein YP_/NP_, UniProt
+# P12345, GenBank protein ABO61246).
+_DB_SOURCE_NUC_RE = re.compile(
+    r"accession\s+((?:NC|NG|NM|NR|NS|NT|NW|NZ|AC|XM|XR)_\d{3,}(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
 
 def _source_nuc_accession(record: SeqRecord) -> str:
     """Return the source nucleotide accession for a protein record, or ''.
 
     Tries the CDS/Protein feature ``coded_by`` qualifier first (the most
     reliable source under modern GenBank conventions), then falls back to
-    parsing the ``db_source`` annotation.  Known RefSeq protein prefixes
-    (``YP_``, ``NP_``, ``XP_``, ``AP_``, ``WP_``, ``ZP_``, ``ELP_``) are
-    rejected — db_source for a protein record typically describes the
-    protein's *own* accession, not its source nucleotide, so without this
-    check we'd hand a protein accession to nuccore esummary downstream.
+    parsing the ``db_source`` annotation — but the fallback is restricted
+    to known RefSeq *nucleotide* prefixes only.  ``db_source`` typically
+    describes the *protein record's own* home (``YP_…``, ``NP_…``,
+    UniProt ``P12345``, GenBank ``ABO61246``), and an unrestricted shape
+    match there silently hands those protein accessions to nuccore
+    esummary downstream — making NCBI return "Otherdb db=protein" errors
+    that abort the entire batch.
     """
     for feat in getattr(record, "features", None) or []:
         qualifiers = getattr(feat, "qualifiers", None) or {}
@@ -596,14 +650,9 @@ def _source_nuc_accession(record: SeqRecord) -> str:
                     return cand
     annotations = getattr(record, "annotations", None) or {}
     db_source = annotations.get("db_source", "") or ""
-    for m in re.finditer(
-        r"accession\s+((?:[A-Z]{1,4}_\d{3,}|[A-Z]{1,2}\d{3,}|[A-Z]{4}\d{3,})(?:\.\d+)?)",
-        db_source,
-        re.IGNORECASE,
-    ):
-        cand = m.group(1)
-        if not cand.upper().startswith(_PROTEIN_REFSEQ_PREFIXES):
-            return cand
+    m = _DB_SOURCE_NUC_RE.search(db_source)
+    if m:
+        return m.group(1)
     return ""
 
 
