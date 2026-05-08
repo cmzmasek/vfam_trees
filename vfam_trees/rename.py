@@ -52,7 +52,8 @@ def assign_short_ids(
             new_rec.description = ""
             renamed.append(new_rec)
 
-    log.info("Assigned %d short IDs, map written to %s", len(renamed), id_map_path)
+    log.info("Assigned %d short IDs", len(renamed))
+    log.debug("id_map written to %s", id_map_path)
     return renamed, short_to_display
 
 
@@ -89,16 +90,43 @@ def _family_prefix(family: str) -> str:
     return "".join(consonants[:4]) if len(consonants) >= 4 else family[:4].upper()
 
 
-def _build_display_name(meta: dict) -> str:
-    def _clean(s: str) -> str:
+def canonical_leaf_label(
+    species: str | None,
+    accession: str | None,
+    host: str | None,
+) -> str:
+    """Build the canonical leaf label / sequence name used everywhere.
+
+    Single source of truth for the leaf-naming convention.  Both single-
+    protein and concat modes call this so that FASTA outputs, PhyloXML
+    ``<name>`` elements, Newick leaves, and rendered tree-image labels
+    all agree byte-for-byte for the same ``(species, accession, host)``.
+
+    Format:
+        ``<species>|<accession>`` when host is unknown/empty/None, or
+        ``<species>|<accession>|<host>`` when host is known.
+
+    A host value is treated as absent when it is None, the empty string,
+    only whitespace, or the literal "unknown" (case-insensitive).  Spaces
+    in any component are replaced with underscores so Newick stays
+    parseable.  Missing species or accession become the literal token
+    "unknown".
+    """
+    def _clean(s: str | None) -> str:
         return str(s).replace(" ", "_") if s else "unknown"
 
-    parts = [
-        _clean(meta.get("species")),
-        _clean(meta.get("strain")),
-        _clean(meta.get("accession")),
-    ]
-    host = _clean(meta.get("host"))
-    if host != "unknown":
-        parts.append(host)
+    parts = [_clean(species), _clean(accession)]
+    if host and str(host).strip() and str(host).strip().lower() != "unknown":
+        parts.append(_clean(host))
     return "|".join(parts)
+
+
+def _build_display_name(meta: dict) -> str:
+    """Single-protein adaptor: extract (species, accession, host) and call
+    :func:`canonical_leaf_label`.  Strain is intentionally not part of the
+    canonical label."""
+    return canonical_leaf_label(
+        meta.get("species"),
+        meta.get("accession"),
+        meta.get("host"),
+    )

@@ -49,7 +49,7 @@ from .fetch import (
 )
 from .logger import get_logger
 from .phyloxml_writer import write_phyloxml
-from .rename import restore_fasta_names
+from .rename import canonical_leaf_label, restore_fasta_names
 from .report import generate_family_report, save_tree_icon, save_tree_images
 from .summary import (
     build_status_row,
@@ -704,13 +704,7 @@ def _run_target_concat(
             break
 
     # 6. Build display names (one per genome) — used for visualization / PhyloXML.
-    #    Format: <species_safe>|<accession>.  Spaces in species names are
-    #    replaced with underscores so Newick display labels stay parseable.
-    short_to_display: dict[str, str] = {}
-    for gid in selected_genomes:
-        sp_name = genome_to_species.get(gid, "")
-        sp_safe = sp_name.replace(" ", "_") if sp_name else "unknown"
-        short_to_display[gid] = f"{sp_safe}|{gid}"
+    short_to_display = _build_concat_display_names(selected_genomes, genome_to_species)
 
     # 6.5. Publish per-target outputs to family_dir for parity with the
     #      single-protein pipeline (and additional concat-specific files).
@@ -833,6 +827,12 @@ def _run_target_concat(
 
     # 11. PhyloXML — display names on leaves, source-nuc accession in <accession>.
     #     Reuses leaf_metadata built earlier for the metadata TSV (step 6.5).
+    #     Markers reported in <name> / <description> are those actually used
+    #     in the alignment (present in ≥1 retained genome), not the target set.
+    markers_used = [
+        m for m in marker_order
+        if any(m in selected_genomes[gid] for gid in selected_genomes)
+    ]
     xml_path = family_dir / f"{family}_tree_{label}.xml"
     write_phyloxml(
         newick_path=annotated_nwk,
@@ -841,13 +841,13 @@ def _run_target_concat(
         leaf_metadata=leaf_metadata,
         family=family,
         tree=bio_tree,
-        phylogeny_name=f"{family} [concatenated|{len(marker_order)} markers]",
+        phylogeny_name=f"{family} [concatenated|{len(markers_used)} markers]",
         phylogeny_detail=(
-            f"concatenated {len(marker_order)}-marker phylogeny "
-            f"[{', '.join(marker_order)}] (target_{label}, partitioned)"
+            f"concatenated {len(markers_used)}-marker phylogeny "
+            f"[{', '.join(markers_used)}] (target_{label}, partitioned)"
             if label == "100"
-            else f"concatenated {len(marker_order)}-marker phylogeny "
-                 f"[{', '.join(marker_order)}] (target_{label})"
+            else f"concatenated {len(markers_used)}-marker phylogeny "
+                 f"[{', '.join(markers_used)}] (target_{label})"
         ),
         confidence_type=support_type,
         leaf_colors=short_to_color,
@@ -857,10 +857,7 @@ def _run_target_concat(
 
     # 8. Concat-specific stats: marker coverage, concat length, partition models
     n_markers_target = len(marker_set)
-    n_markers_used   = sum(
-        1 for m in marker_order
-        if any(m in selected_genomes[gid] for gid in selected_genomes)
-    )
+    n_markers_used   = len(markers_used)
     concat_length = len(next(iter(concat.values())).seq) if concat else 0
     marker_coverage = ",".join(
         f"{m}:{sum(1 for gid in selected_genomes if m in selected_genomes[gid])}"
@@ -1130,6 +1127,29 @@ _STATS_KEYS = (
 
 def _zero_stats() -> dict:
     return dict.fromkeys(_STATS_KEYS, 0)
+
+
+def _build_concat_display_names(
+    selected_genomes: dict[str, dict[str, SeqRecord]],
+    genome_to_species: dict[str, str],
+) -> dict[str, str]:
+    """Build the per-genome ``short_id → display_name`` map for concat mode.
+
+    Delegates to :func:`vfam_trees.rename.canonical_leaf_label` so concat
+    and single-protein modes emit identical labels for the same
+    ``(species, accession, host)`` triple.  Host is pulled from any one
+    marker record per genome (all share the same source feature).
+    """
+    short_to_display: dict[str, str] = {}
+    for gid in selected_genomes:
+        sp_name = genome_to_species.get(gid, "")
+        host_val = ""
+        marker_records = selected_genomes[gid]
+        if marker_records:
+            sample = next(iter(marker_records.values()))
+            host_val = extract_metadata(sample).get("host", "")
+        short_to_display[gid] = canonical_leaf_label(sp_name, gid, host_val)
+    return short_to_display
 
 
 def _build_concat_leaf_metadata(
