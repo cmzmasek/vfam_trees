@@ -325,7 +325,7 @@ class SequenceCache:
         entry_dir = self._entry_dir(taxid, db, region, segment, max_per_species)
         if entry_dir.exists():
             shutil.rmtree(entry_dir)
-            log.info("Invalidated cache entry: %s", entry_dir)
+            log.debug("Invalidated cache entry: %s", entry_dir)
             return True
         return False
 
@@ -353,7 +353,7 @@ class SequenceCache:
                     to_remove.append(entry_dir)
         for entry_dir in to_remove:
             shutil.rmtree(entry_dir)
-            log.info("Cleared cache entry for %s: %s", family, entry_dir)
+            log.debug("Cleared cache entry for %s: %s", family, entry_dir)
         return len(to_remove)
 
     def clear_all(self) -> int:

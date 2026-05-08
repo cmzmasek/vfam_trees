@@ -328,7 +328,7 @@ def save_tree_images(
             ]:
                 try:
                     fig.savefig(str(path), bbox_inches="tight", **kwargs)
-                    log.info("Tree image written to %s", path)
+                    log.debug("Tree image written to %s", path)
                 except Exception as e:
                     log.warning("Could not write %s: %s", path, e)
             plt.close(fig)
@@ -350,7 +350,7 @@ def save_tree_images(
             ]:
                 try:
                     fig_ur.savefig(str(path), bbox_inches="tight", **kwargs)
-                    log.info("Tree image written to %s", path)
+                    log.debug("Tree image written to %s", path)
                 except Exception as e:
                     log.warning("Could not write %s: %s", path, e)
             plt.close(fig_ur)
@@ -1058,7 +1058,7 @@ def save_sequence_length_plot(
     plt.tight_layout()
     try:
         fig.savefig(str(out_path), bbox_inches="tight")
-        log.info("Sequence length plot written to %s", out_path)
+        log.debug("Sequence length plot written to %s", out_path)
     except Exception as e:
         log.warning("Could not write sequence length plot for %s: %s", family, e)
     plt.close(fig)
@@ -1192,7 +1192,7 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
-        log.info("Overview PNG written to %s", output_path)
+        log.debug("Overview PNG written to %s", output_path)
     except Exception as e:
         log.warning("Could not write overview PNG: %s", e)
     plt.close(fig)

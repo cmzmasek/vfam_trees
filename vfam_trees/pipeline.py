@@ -1035,7 +1035,7 @@ def _run_target(
             else:
                 clade.name = None
         Phylo.write(nwk_tree, str(output_nwk), "newick")
-        log.info("Newick written to %s", output_nwk)
+        log.debug("Newick written to %s", output_nwk)
     else:
         log.error(
             "Tree annotation failed for tree_%s — final Newick not written.",
