@@ -222,15 +222,19 @@ class TestConcatenationFamiliesPresets:
     """Curation table looks structurally correct."""
 
     def test_target_families_present(self):
+        # Malacoherpesviridae was dropped from CONCATENATION_FAMILIES in the
+        # 2026-05 audit (5 species, only MCP and DNA pol annotated — concat
+        # is meaningless at that scale; falls back to single-marker MCP).
         for fam in (
             "Poxviridae", "Orthoherpesviridae", "Herpesviridae",
-            "Alloherpesviridae", "Malacoherpesviridae",
+            "Alloherpesviridae",
             "Asfarviridae", "Iridoviridae",
             "Baculoviridae", "Nudiviridae", "Ascoviridae",
             "Mimiviridae", "Phycodnaviridae", "Marseilleviridae",
             "Pithoviridae", "Pandoraviridae", "Medusaviridae",
         ):
             assert fam in CONCATENATION_FAMILIES, f"missing preset: {fam}"
+        assert "Malacoherpesviridae" not in CONCATENATION_FAMILIES
 
     def test_each_preset_has_proteins_and_correct_region(self):
         for fam, preset in CONCATENATION_FAMILIES.items():
@@ -250,26 +254,56 @@ class TestConcatenationFamiliesPresets:
         assert "aliases_Entomopoxvirinae" in polb
         assert isinstance(polb["aliases_Entomopoxvirinae"], list)
 
-    def test_herpesvirus_families_share_same_set(self):
-        # The 4 herpesvirus family names all share one curated 7-marker set.
+    def test_herpesviridae_alias_matches_ortho(self):
+        # Herpesviridae (legacy ICTV family name) keeps the full 7-marker
+        # Orthoherpesviridae core verbatim.  Alloherpesviridae uses a
+        # 6-marker subset (drops ssDNA-binding) per the 2026-05 audit.
         ortho = CONCATENATION_FAMILIES["Orthoherpesviridae"]["concatenation"]["proteins"]
-        for fam in ("Herpesviridae", "Alloherpesviridae", "Malacoherpesviridae"):
-            other = CONCATENATION_FAMILIES[fam]["concatenation"]["proteins"]
-            assert [p["name"] for p in other] == [p["name"] for p in ortho]
+        legacy = CONCATENATION_FAMILIES["Herpesviridae"]["concatenation"]["proteins"]
+        assert [p["name"] for p in legacy] == [p["name"] for p in ortho]
+        assert len(ortho) == 7
 
-    def test_baculovirus_relatives_share_same_set(self):
+    def test_alloherpesviridae_drops_ssdna_binding(self):
+        ortho_names = {
+            p["name"] for p in
+            CONCATENATION_FAMILIES["Orthoherpesviridae"]["concatenation"]["proteins"]
+        }
+        allo_names = {
+            p["name"] for p in
+            CONCATENATION_FAMILIES["Alloherpesviridae"]["concatenation"]["proteins"]
+        }
+        # 6 markers: the Ortho 7 minus ssDNA-binding.
+        assert len(allo_names) == 6
+        assert ortho_names - allo_names == {"single-stranded DNA-binding protein"}
+
+    def test_baculo_and_nudi_share_set_ascoviridae_does_not(self):
         baculo = CONCATENATION_FAMILIES["Baculoviridae"]["concatenation"]["proteins"]
-        for fam in ("Nudiviridae", "Ascoviridae"):
-            other = CONCATENATION_FAMILIES[fam]["concatenation"]["proteins"]
-            assert [p["name"] for p in other] == [p["name"] for p in baculo]
+        nudi = CONCATENATION_FAMILIES["Nudiviridae"]["concatenation"]["proteins"]
+        assert [p["name"] for p in nudi] == [p["name"] for p in baculo]
+        # Ascoviridae has its own reduced 3-marker preset (post 2026-05 audit).
+        asco = CONCATENATION_FAMILIES["Ascoviridae"]["concatenation"]["proteins"]
+        assert len(asco) == 3
+        assert {p["name"] for p in asco} == {
+            "DNA polymerase", "DNA helicase P143", "major capsid protein",
+        }
 
-    def test_ncldv_fallback_families_share_hallmark_set(self):
-        mimi = CONCATENATION_FAMILIES["Mimiviridae"]["concatenation"]["proteins"]
-        assert len(mimi) == 8  # 8 NCLDV hallmarks
-        for fam in ("Phycodnaviridae", "Marseilleviridae", "Pithoviridae",
-                    "Pandoraviridae", "Medusaviridae"):
-            other = CONCATENATION_FAMILIES[fam]["concatenation"]["proteins"]
-            assert [p["name"] for p in other] == [p["name"] for p in mimi]
+    def test_ncldv_fallback_only_pandora_and_medusa(self):
+        # After the 2026-05 audit only Pandoraviridae and Medusaviridae
+        # remain on the 8-marker NCLDV-hallmark fallback; Mimi, Phyco,
+        # Marseille, and Pitho got pruned per-family presets.
+        pandora = CONCATENATION_FAMILIES["Pandoraviridae"]["concatenation"]["proteins"]
+        medusa = CONCATENATION_FAMILIES["Medusaviridae"]["concatenation"]["proteins"]
+        assert len(pandora) == 8
+        assert [p["name"] for p in medusa] == [p["name"] for p in pandora]
+        # Pruned-preset families have fewer markers.
+        for fam, expected_n in (
+            ("Phycodnaviridae", 3),
+            ("Mimiviridae", 6),
+            ("Marseilleviridae", 6),
+            ("Pithoviridae", 6),
+        ):
+            n = len(CONCATENATION_FAMILIES[fam]["concatenation"]["proteins"])
+            assert n == expected_n, f"{fam}: expected {expected_n} markers, got {n}"
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +319,7 @@ class TestConcatTakesPrecedenceOverDnaFamilies:
         cfg, auto = load_family_config("Poxviridae", cfg_dir, MINIMAL_GLOBAL)
         assert auto is True
         assert cfg["sequence"]["region"] == "concatenated"
-        assert len(cfg["concatenation"]["proteins"]) == 9  # Pox 9-marker set
+        assert len(cfg["concatenation"]["proteins"]) == 8  # Pox 8-marker set (post 2026-05 audit, ssDNA-binding dropped)
 
     def test_herpesviridae_auto_gen_is_concat(self, tmp_path):
         cfg_dir = tmp_path / "configs"

@@ -324,14 +324,26 @@ Known DNA virus families are automatically configured with curated ICTV-aligned 
 | Papillomaviridae | L1 | protein |
 | Hepadnaviridae | whole genome | nucleotide |
 | Adenoviridae | hexon | protein |
-| Orthoherpesviridae, Alloherpesviridae, Malacoherpesviridae, Herpesviridae | DNA polymerase | protein |
+| Orthoherpesviridae, Alloherpesviridae, Herpesviridae | DNA polymerase | protein |
+| Malacoherpesviridae | major capsid protein | protein |
 | Iridoviridae | major capsid protein | protein |
 | Asfarviridae | B646L (p72) | protein |
-| Baculoviridae, Nudiviridae, Ascoviridae | lef-8 | protein |
+| Baculoviridae, Nudiviridae | lef-8 | protein |
+| Ascoviridae | DNA polymerase | protein |
 | Poxviridae | rpo147 | protein |
 | Nimaviridae, Hytrosaviridae, Phycodnaviridae, Mimiviridae, Marseilleviridae, Pandoraviridae, Pithoviridae, Medusaviridae | DNA polymerase | protein |
 
-Families using **multi-marker protein concatenation** (`region: concatenated`) are documented in [CONCAT_DESIGN.md](CONCAT_DESIGN.md). If a stale auto-generated config file exists with incorrect settings for any of these families, the program logs a warning and suggests deleting the file to regenerate it.
+Families using **multi-marker protein concatenation** (`region: concatenated`) are documented in [CONCAT_DESIGN.md](CONCAT_DESIGN.md); when a family appears there, the concat preset takes precedence over the single-marker fallback in the table above. The presets were re-tuned against actual NCBI annotation coverage in the 2026-05 cache audit:
+
+- **Ascoviridae** — split off from the 7-gene baculovirus core (LEF / PIF genes 0 % coverage in Ascoviridae) to its own 3-marker preset (DNA polymerase, major capsid protein, DNA helicase P143).
+- **Iridoviridae** — trimmed from 7 to 4 markers (packaging ATPase, D5 helicase, VLTF-3 each at 0–0.6 %).
+- **Poxviridae** — trimmed from 9 to 8 markers (single-stranded DNA-binding protein / I3L at 1 %).
+- **Alloherpesviridae** — split off from the Orthoherpesviridae 7-gene set to a 6-marker subset (ssDNA-binding / ICP8 at 0 % in fish herpesviruses).
+- **Malacoherpesviridae** — removed from concatenation entirely (5 species, only MCP and DNA pol annotated); falls back to single-marker MCP.
+- **Phycodnaviridae** — split off from the 8-marker NCLDV hallmark fallback to a custom 3-marker preset (DNA polymerase, major capsid protein, mRNA capping enzyme); the other five hallmarks were each at ≤ 1 % coverage.
+- **Mimiviridae, Marseilleviridae, Pithoviridae** — split off from the NCLDV fallback to 6-marker presets (per-family drop list).
+
+The 8-marker NCLDV-hallmark fallback now applies only to Pandoraviridae and Medusaviridae (no cache audit data yet). If a stale auto-generated config file exists with incorrect settings for any of these families, the program logs a warning and suggests deleting the file to regenerate it.
 
 ## Usage
 

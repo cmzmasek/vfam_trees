@@ -74,9 +74,11 @@ The curated content is reproduced here for review. Locus tags use the canonical 
 
 > **Status**: first-pass curation from training-data familiarity with the literature. Validate before merging. ASFV gene IDs are flagged TODO for explicit verification.
 
-### 4.1 Poxviridae (9 markers)
+### 4.1 Poxviridae (8 markers)
 
 References: Upton et al. 2003; Hughes & Friedman 2005; ICTV Poxviridae chapter.
+
+Originally a 9-marker set; the single-stranded DNA-binding protein (I3L) was dropped in the 2026-05 audit because cache coverage was 1 / 128 species (the I3L name is essentially VACV-Cop-specific and not used outside Chordopoxvirinae reference annotations).
 
 | Marker | VACV gene | Aliases | Locus tag hint |
 |---|---|---|---|
@@ -88,11 +90,12 @@ References: Upton et al. 2003; Hughes & Friedman 2005; ICTV Poxviridae chapter.
 | Poly(A) polymerase catalytic subunit | E1L | "poly(A) polymerase catalytic subunit", "poly(A) polymerase large subunit" | `E1L\|VP55` |
 | Late transcription factor VLTF-3 | A1L | "late transcription factor VLTF-3", "VLTF3", "late transcription factor 3" | `A1L\|VLTF` |
 | Uracil-DNA glycosylase | D4R | "uracil-DNA glycosylase", "UNG" | `D4R\|UNG` |
-| Single-stranded DNA-binding protein | I3L | "single-stranded DNA-binding protein", "ssDNA binding protein" | `I3L\|ssb` |
 
-### 4.2 Herpesviridae (7 markers)
+### 4.2 Herpesviridae (7 markers — Orthoherpesviridae and legacy `Herpesviridae`)
 
 References: McGeoch et al. 1995, 2006; Davison 2010.
+
+Applied verbatim to `Orthoherpesviridae` and the legacy ICTV name `Herpesviridae`. Alloherpesviridae uses a 6-marker subset (§4.2.1); Malacoherpesviridae falls back to single-marker mode (§4.2.2).
 
 | Marker | HSV-1 ORF | Aliases | Locus tag hint |
 |---|---|---|---|
@@ -105,6 +108,14 @@ References: McGeoch et al. 1995, 2006; Davison 2010.
 | Single-stranded DNA-binding protein | UL29 | "single-stranded DNA-binding protein", "major DNA-binding protein", "ICP8" | `UL29\|ICP8` |
 
 Glycoprotein B (UL27) deliberately excluded — too divergent across alpha/beta/gamma subfamilies for reliable family-wide alignment.
+
+### 4.2.1 Alloherpesviridae (6 markers)
+
+Uses the §4.2 set minus the single-stranded DNA-binding protein (UL29 / ICP8). The 2026-05 cache audit (24 species) showed 0 % coverage for ICP8 in fish-herpesvirus annotations — UL29 simply isn't used as a name outside the alpha/beta/gamma mammalian herpesviruses. The remaining six markers all reach 17–83 % coverage in Allo annotations.
+
+### 4.2.2 Malacoherpesviridae — single-marker MCP
+
+Removed from `CONCATENATION_FAMILIES` in the 2026-05 audit. The family contains only 5 species, and the cache showed only MCP (80 %) and DNA polymerase (40 %) annotated — every other herpesvirus core marker was at 0 %. Concat is meaningless at that scale; auto-config now generates a single-marker (`region: major capsid protein`) family yaml via `DNA_FAMILIES`.
 
 ### 4.3 Asfarviridae (6 markers — ASFV gene IDs TBV)
 
@@ -121,19 +132,20 @@ References: Yutin & Koonin 2012; Iyer et al. 2006; ICTV Asfarviridae chapter.
 
 Gene IDs marked `(TBV)` to be verified against NC_001659 (ASFV BA71V RefSeq).
 
-### 4.4 Iridoviridae (7 markers)
+### 4.4 Iridoviridae (4 markers)
 
 References: Tidona & Darai 1997; Eaton et al. 2007; ICTV Iridoviridae chapter.
+
+Originally a 7-marker set. The 2026-05 cache audit (177 species) showed packaging ATPase, D5-like helicase, and VLTF-3 each at 0–0.6 % coverage in NCBI Iridoviridae annotations — they are simply not used as names in this family — so they were dropped. The four remaining markers are the actual conserved annotated set.
 
 | Marker | Aliases | Locus tag hint |
 |---|---|---|
 | Major capsid protein | "major capsid protein", "MCP" | `MCP` |
 | DNA polymerase | "DNA polymerase", "DNA-directed DNA polymerase" | `polB` |
-| Packaging ATPase | "packaging ATPase", "A32-like ATPase" | `A32` |
 | RNase III-like | "ribonuclease III", "RNase III" | `rnc` |
-| DNA helicase | "DNA helicase", "D5-like helicase" | `D5\|helicase` |
-| Late transcription factor VLTF-3 | "late transcription factor 3", "VLTF-3" | `VLTF` |
 | Immediate-early protein ICP-46 | "immediate-early protein ICP-46", "ICP46" | `ICP46` |
+
+Cache coverage on 177 species: MCP 98 %, DNA pol 24 %, RNase III 22 %, ICP-46 16 %.
 
 ### 4.5 Baculoviridae (7 markers)
 
@@ -149,11 +161,23 @@ References: Herniman et al. 2003; Jehle et al. 2006; Miele et al. 2011.
 | Per os infectivity factor 2 | ac22 | "per os infectivity factor 2", "PIF-2" | `pif-?2` |
 | VP39 / major capsid protein | ac89 | "major capsid protein", "VP39", "capsid protein VP39" | `vp39\|MCP` |
 
+### 4.5.1 Ascoviridae (3 markers)
+
+Ascoviridae and Nudiviridae are sister insect dsDNA families to Baculoviridae and were originally aliased to the Baculoviridae 7-gene set. A 2026-05 cache audit showed that **0 / 27 NCBI-annotated ascovirus species** carry recognizable `lef-8`, `lef-9`, `pif-1`, or `pif-2` protein names — these baculovirus markers are simply not present in Ascoviridae annotations. Ascoviridae therefore gets its own reduced preset built from the only three markers actually annotated across the family:
+
+| Marker | Aliases | Locus tag hint |
+|---|---|---|
+| DNA polymerase | "DNA polymerase", "DNA-directed DNA polymerase" | `polB` |
+| DNA helicase P143 | "DNA helicase P143", "p143", "helicase" | `p143\|helicase` |
+| Major capsid protein | "major capsid protein", "MCP", "capsid protein" | `MCP` |
+
+Cache coverage on the 27 species fetched: DNA polymerase 81 %, MCP 76 %, P143 29 %. With `min_fraction = 0.5` (≥ 2 / 3 markers) ~12 species qualify, with all 3 in 6 species. Nudiviridae continues to use the Baculoviridae 7-gene set (cache coverage there is 86–93 % on LEF / PIF, so it is not affected).
+
 ### 4.6 NCLDV hallmark fallback (8 markers)
 
 References: Yutin & Koonin 2009, 2012; Koonin & Yutin 2019.
 
-Used as the auto-generated default for any large-DNA-virus family not in §4.1–4.5: Mimiviridae, Phycodnaviridae, Marseilleviridae, Pithoviridae, Pandoraviridae, Ascoviridae, etc.
+Used as the auto-generated default for large-DNA-virus families that lack an audit-derived per-family preset. After the 2026-05 audit, only **Pandoraviridae** and **Medusaviridae** still ride the full 8-marker fallback (no cache data yet). Mimiviridae, Marseilleviridae, Pithoviridae, and Phycodnaviridae have pruned per-family presets in §4.6.1–§4.6.4.
 
 | Marker | Aliases |
 |---|---|
@@ -165,6 +189,22 @@ Used as the auto-generated default for any large-DNA-virus family not in §4.1�
 | mRNA capping enzyme | "mRNA capping enzyme", "capping enzyme large subunit" |
 | RNA polymerase largest subunit (RPB1-like) | "DNA-directed RNA polymerase subunit alpha", "RNA polymerase RPB1", "largest subunit RNA polymerase" |
 | RNA polymerase second-largest subunit (RPB2-like) | "DNA-directed RNA polymerase subunit beta", "RNA polymerase RPB2", "second-largest subunit RNA polymerase" |
+
+### 4.6.1 Phycodnaviridae (3 markers)
+
+Cache audit of 204 species: only DNA polymerase (82 %), MCP (31 %), and mRNA capping enzyme (14 %) reach meaningful coverage. The other five NCLDV hallmarks — packaging ATPase, primase-helicase, VLTF-3, RPB1, RPB2 — are each at 0–1 %. Preset reduced to those three markers.
+
+### 4.6.2 Mimiviridae (6 markers)
+
+Cache audit of 89 species: drop primase-helicase (2 %) and VLTF-3 (0 %) from the §4.6 set. Remaining markers: DNA polymerase (45 %), MCP (43 %), packaging ATPase (19 %), mRNA capping enzyme (36 %), RPB1 (14 %), RPB2 (18 %).
+
+### 4.6.3 Marseilleviridae (6 markers)
+
+Cache audit of 28 species: drop primase-helicase (4 %) and VLTF-3 (4 %). Remaining: MCP (96 %), RPB1 (75 %), RPB2 (39 %), mRNA capping enzyme (36 %), packaging ATPase (14 %), DNA polymerase (**0 %** — flagged for follow-up alias investigation; the marker is kept in the preset on the assumption this is fixable, not a real annotation gap).
+
+### 4.6.4 Pithoviridae (6 markers)
+
+Cache audit of 24 species: drop packaging ATPase (0 %) and VLTF-3 (0 %). Remaining: DNA polymerase (17 % — also flagged for alias follow-up), MCP (58 %), primase-helicase (4 % — kept; near the drop threshold but distinct from the universally-zero markers above), mRNA capping enzyme (50 %), RPB1 (58 %), RPB2 (63 %).
 
 ### 4.7 Families that stay single-protein
 

@@ -91,7 +91,9 @@ DNA_FAMILIES: dict[str, dict] = {
     "Orthoherpesviridae": {"sequence": {"region": "DNA polymerase", "type": "protein"}},
     "Herpesviridae":      {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # legacy ICTV name
     "Alloherpesviridae":  {"sequence": {"region": "DNA polymerase", "type": "protein"}},
-    "Malacoherpesviridae":{"sequence": {"region": "DNA polymerase", "type": "protein"}},
+    # Malacoherpesviridae — 5 species, only MCP and DNA pol annotated;
+    # MCP is the better-covered single marker per 2026-05 cache audit.
+    "Malacoherpesviridae":{"sequence": {"region": "major capsid protein", "type": "protein"}},
     # Poxviridae (~130–375 kb) — largest DNA-directed RNA polymerase subunit
     # (rpo147 / A24R homolog).  Single-marker cross-subfamily resolution is
     # inherently limited; concatenated core genes (~20–30) are the real
@@ -191,11 +193,10 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
                     "aliases": ["UNG"],
                     "locus_tag_hint": r"D4R|UNG",
                 },
-                {
-                    "name": "single-stranded DNA-binding protein",
-                    "aliases": ["ssDNA binding protein"],
-                    "locus_tag_hint": r"I3L|ssb",
-                },
+                # ssDNA-binding protein (I3L) was previously included but a
+                # 2026-05 cache audit (128 species) showed 1 % coverage —
+                # the I3L name is essentially VACV-Cop-specific and not used
+                # outside Chordopoxvirinae reference annotations.
             ],
         },
     },
@@ -287,18 +288,19 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
         },
     },
 
-    # ---- Iridoviridae (7 markers) ---------------------------------------
+    # ---- Iridoviridae (4 markers) ---------------------------------------
     # Refs: Tidona & Darai 1997; Eaton et al. 2007; ICTV Iridoviridae.
+    # Originally a 7-marker set including packaging ATPase, D5-like helicase,
+    # and VLTF-3, but a 2026-05 cache audit (177 species) showed those three
+    # at 0–0.6 % coverage in NCBI Iridoviridae annotations.  Trimmed to the
+    # four markers that are actually annotated across the family.
     "Iridoviridae": {
         "sequence": {"region": "concatenated", "type": "protein"},
         "concatenation": {
             "proteins": [
                 {"name": "major capsid protein", "aliases": ["MCP"], "locus_tag_hint": r"MCP"},
                 {"name": "DNA polymerase", "aliases": ["DNA-directed DNA polymerase"], "locus_tag_hint": r"polB"},
-                {"name": "packaging ATPase", "aliases": ["A32-like ATPase"], "locus_tag_hint": r"A32"},
                 {"name": "ribonuclease III", "aliases": ["RNase III"], "locus_tag_hint": r"rnc"},
-                {"name": "DNA helicase", "aliases": ["D5-like helicase"], "locus_tag_hint": r"D5|helicase"},
-                {"name": "late transcription factor 3", "aliases": ["VLTF-3"], "locus_tag_hint": r"VLTF"},
                 {"name": "immediate-early protein ICP-46", "aliases": ["ICP46"], "locus_tag_hint": r"ICP46"},
             ],
         },
@@ -329,16 +331,77 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
     # Pitho/Pandora/Medusaviridae and any future NCLDV-like family).
 }
 
-# Nudiviridae and Ascoviridae use the Baculoviridae 7-gene set verbatim
-# (same insect-dsDNA core, see Miele et al. 2011 §4.5 in CONCAT_DESIGN.md).
+# Nudiviridae uses the Baculoviridae 7-gene set verbatim (same insect-dsDNA
+# core, see Miele et al. 2011 §4.5 in CONCAT_DESIGN.md).  Ascoviridae was
+# previously aliased to the same 7-gene set, but a cache audit (2026-05)
+# showed that 0/27 NCBI-annotated ascovirus species carry recognizable
+# lef-8/lef-9/pif-1/pif-2 protein names — so the concat fetch produced 0
+# qualifying genomes at any usable min_fraction.  The 3-gene core below
+# (DNA pol, MCP, P143 helicase) is the actual conserved annotated set in
+# Ascoviridae and gives ~12 qualifying species at min_fraction 0.5.
 CONCATENATION_FAMILIES["Nudiviridae"] = copy.deepcopy(CONCATENATION_FAMILIES["Baculoviridae"])
-CONCATENATION_FAMILIES["Ascoviridae"] = copy.deepcopy(CONCATENATION_FAMILIES["Baculoviridae"])
 
-# Herpesviridae (legacy ICTV family name) and Alloherpesviridae +
-# Malacoherpesviridae use the same 7-gene herpesvirus core.
-CONCATENATION_FAMILIES["Herpesviridae"]       = copy.deepcopy(CONCATENATION_FAMILIES["Orthoherpesviridae"])
-CONCATENATION_FAMILIES["Alloherpesviridae"]   = copy.deepcopy(CONCATENATION_FAMILIES["Orthoherpesviridae"])
-CONCATENATION_FAMILIES["Malacoherpesviridae"] = copy.deepcopy(CONCATENATION_FAMILIES["Orthoherpesviridae"])
+CONCATENATION_FAMILIES["Ascoviridae"] = {
+    "sequence": {"region": "concatenated", "type": "protein"},
+    "concatenation": {
+        "proteins": [
+            {"name": "DNA polymerase", "aliases": ["DNA-directed DNA polymerase"], "locus_tag_hint": r"polB"},
+            {"name": "DNA helicase P143", "aliases": ["p143", "helicase"], "locus_tag_hint": r"p143|helicase"},
+            {"name": "major capsid protein", "aliases": ["MCP", "capsid protein"], "locus_tag_hint": r"MCP"},
+        ],
+    },
+}
+
+# Herpesviridae (legacy ICTV family name) reuses the Orthoherpesviridae
+# 7-gene core verbatim.
+CONCATENATION_FAMILIES["Herpesviridae"] = copy.deepcopy(CONCATENATION_FAMILIES["Orthoherpesviridae"])
+
+# Alloherpesviridae uses a 6-gene subset of the Orthoherpesviridae core:
+# the single-stranded DNA-binding protein (UL29/ICP8) is dropped because a
+# 2026-05 cache audit (24 species) showed 0 % coverage in fish-herpesvirus
+# annotations.
+CONCATENATION_FAMILIES["Alloherpesviridae"] = {
+    "sequence": {"region": "concatenated", "type": "protein"},
+    "concatenation": {
+        "proteins": [
+            {
+                "name": "DNA polymerase catalytic subunit",
+                "aliases": ["DNA-directed DNA polymerase catalytic subunit", "DNA polymerase"],
+                "locus_tag_hint": r"UL30",
+            },
+            {
+                "name": "helicase-primase helicase subunit",
+                "aliases": ["DNA helicase"],
+                "locus_tag_hint": r"UL5\b",
+            },
+            {
+                "name": "helicase-primase primase subunit",
+                "aliases": ["primase"],
+                "locus_tag_hint": r"UL52",
+            },
+            {
+                "name": "major capsid protein",
+                "aliases": ["MCP", "capsid protein VP5"],
+                "locus_tag_hint": r"UL19|VP5\b",
+            },
+            {
+                "name": "capsid triplex subunit 2",
+                "aliases": ["VP23", "minor capsid protein"],
+                "locus_tag_hint": r"UL18|VP23",
+            },
+            {
+                "name": "DNA packaging terminase subunit 1",
+                "aliases": ["terminase ATPase subunit", "DNA packaging terminase ATPase"],
+                "locus_tag_hint": r"UL15",
+            },
+        ],
+    },
+}
+
+# Malacoherpesviridae has only 5 species and only MCP / DNA pol annotated
+# (others all 0 %).  Concat is meaningless at that scale; the family
+# instead falls back to single-marker mode via DNA_FAMILIES below
+# (region: "major capsid protein").
 
 # NCLDV-hallmark 8-marker fallback set.  Applied to large-DNA-virus
 # families that lack a curated per-family set in CONCATENATION_FAMILIES
@@ -384,14 +447,73 @@ _NCLDV_HALLMARK_PROTEINS = [
         "locus_tag_hint": r"RPB2",
     },
 ]
-for _ncldv_family in (
-    "Mimiviridae", "Phycodnaviridae", "Marseilleviridae",
-    "Pithoviridae", "Pandoraviridae", "Medusaviridae",
-):
+for _ncldv_family in ("Pandoraviridae", "Medusaviridae"):
     CONCATENATION_FAMILIES[_ncldv_family] = {
         "sequence": {"region": "concatenated", "type": "protein"},
         "concatenation": {"proteins": copy.deepcopy(_NCLDV_HALLMARK_PROTEINS)},
     }
+
+# NCLDV families with cache audits (2026-05) get pruned per-family presets
+# instead of the 8-marker hallmark fallback.  In every case the markers
+# removed had ≤ 4 % family-wide coverage in NCBI annotations and were just
+# inflating the min_fraction denominator.
+
+# Phycodnaviridae — only DNA pol, MCP, and capping enzyme have meaningful
+# coverage (82 %, 31 %, 14 % respectively across 204 species).  The other
+# five hallmarks were each ≤ 1 %.
+CONCATENATION_FAMILIES["Phycodnaviridae"] = {
+    "sequence": {"region": "concatenated", "type": "protein"},
+    "concatenation": {
+        "proteins": [
+            {
+                "name": "DNA polymerase",
+                "aliases": ["DNA-directed DNA polymerase", "polymerase B", "DNA polymerase B"],
+                "locus_tag_hint": r"polB",
+            },
+            {
+                "name": "major capsid protein",
+                "aliases": ["MCP", "capsid protein"],
+                "locus_tag_hint": r"MCP",
+            },
+            {
+                "name": "mRNA capping enzyme",
+                "aliases": ["capping enzyme large subunit"],
+            },
+        ],
+    },
+}
+
+# Mimiviridae and Marseilleviridae share the same trim: drop primase-helicase
+# (2–4 %) and VLTF-3 (0–4 %) from the NCLDV-8 set; the remaining six markers
+# all have meaningful coverage in both families.  Note: Marseilleviridae DNA
+# polymerase is at 0 % under the current aliases — flagged for follow-up
+# alias investigation; the marker is kept in the preset on the assumption
+# that the alias issue is fixable.
+_NCLDV_TRIMMED_NO_HELICASE_NO_VLTF = [
+    p for p in copy.deepcopy(_NCLDV_HALLMARK_PROTEINS)
+    if p["name"] not in ("primase-helicase", "late transcription factor 3")
+]
+for _f in ("Mimiviridae", "Marseilleviridae"):
+    CONCATENATION_FAMILIES[_f] = {
+        "sequence": {"region": "concatenated", "type": "protein"},
+        "concatenation": {
+            "proteins": copy.deepcopy(_NCLDV_TRIMMED_NO_HELICASE_NO_VLTF),
+        },
+    }
+
+# Pithoviridae — different trim profile: packaging ATPase (0 %) and
+# VLTF-3 (0 %) drop out, but primase-helicase is kept (it's at 4 % vs 0 %
+# for the other dropouts and may improve with future alias work).  DNA
+# polymerase is at 17 % — also flagged for follow-up alias investigation.
+CONCATENATION_FAMILIES["Pithoviridae"] = {
+    "sequence": {"region": "concatenated", "type": "protein"},
+    "concatenation": {
+        "proteins": [
+            p for p in copy.deepcopy(_NCLDV_HALLMARK_PROTEINS)
+            if p["name"] not in ("packaging ATPase", "late transcription factor 3")
+        ],
+    },
+}
 
 
 DEFAULT_FAMILY_CONFIG: dict = {
