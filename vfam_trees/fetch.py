@@ -316,13 +316,19 @@ def _build_species_query(
     else:
         # Marker gene / marker protein for large DNA viruses.
         # nuccore: search [Gene] — gene-name annotation on nucleotide records.
-        # protein: search [Protein Name] — descriptive names like "DNA polymerase"
-        #          are stored there, not in [Gene] (which holds short symbols like UL30).
-        #          Also include [Gene] as a fallback for gene-symbol-named markers
-        #          like B646L that may appear in either field.
+        # protein: search [Protein Name] OR [Title] OR [Gene].
+        #   [Protein Name] should hold descriptive names like "DNA polymerase",
+        #   but a 2026-05 audit found this field is sparsely populated for
+        #   many viral families (Marseilleviridae, Pithoviridae, Mimiviridae,
+        #   Pandoraviridae, Iridoviridae, Phycodnaviridae) — the actual
+        #   protein name is reliably in [Title] (the FASTA defline) instead.
+        #   [Gene] catches gene-symbol-named markers like UL30 / B646L that
+        #   may appear in either field.
         if seq_type == "protein":
             base += (
-                f' AND ("{region}"[Protein Name] OR "{region}"[Gene])'
+                f' AND ("{region}"[Protein Name]'
+                f' OR "{region}"[Title]'
+                f' OR "{region}"[Gene])'
             )
         else:
             base += (
@@ -989,14 +995,20 @@ def _build_marker_query(
     if subfamily:
         names.extend(marker.get(f"aliases_{subfamily}", []))
 
-    # Search [Protein Name] for descriptive names (e.g. "DNA polymerase") and
-    # [Gene] as a fallback for gene-symbol-named markers (e.g. "B646L", "UL30")
-    # that may live in either field on NCBI protein records.
+    # Search [Protein Name] OR [Title] OR [Gene]:
+    #   [Protein Name] should hold descriptive names like "DNA polymerase",
+    #     but a 2026-05 audit found this field is sparsely populated for
+    #     several viral families (Marseilleviridae, Pithoviridae, Mimiviridae,
+    #     Pandoraviridae, Iridoviridae, Phycodnaviridae) — the actual name
+    #     is reliably in [Title] (the FASTA defline) instead.
+    #   [Gene] catches gene-symbol-named markers (B646L, UL30, ...) that may
+    #     live in either field.
     or_terms = []
     for n in names:
         if not n:
             continue
         or_terms.append(f'"{n}"[Protein Name]')
+        or_terms.append(f'"{n}"[Title]')
         or_terms.append(f'"{n}"[Gene]')
     or_clause = " OR ".join(or_terms)
     base = f"txid{taxid}[Organism:exp] AND ({or_clause})"

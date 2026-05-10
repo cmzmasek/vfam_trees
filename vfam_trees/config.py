@@ -288,19 +288,23 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
         },
     },
 
-    # ---- Iridoviridae (4 markers) ---------------------------------------
+    # ---- Iridoviridae (6 markers) ---------------------------------------
     # Refs: Tidona & Darai 1997; Eaton et al. 2007; ICTV Iridoviridae.
-    # Originally a 7-marker set including packaging ATPase, D5-like helicase,
-    # and VLTF-3, but a 2026-05 cache audit (177 species) showed those three
-    # at 0–0.6 % coverage in NCBI Iridoviridae annotations.  Trimmed to the
-    # four markers that are actually annotated across the family.
+    # Originally a 7-marker set; a first 2026-05 audit cut it to 4 because
+    # packaging ATPase, D5-like helicase, and VLTF-3 each looked like 0 %
+    # coverage.  After landing the [Title] field-fix in fetch.py
+    # (NCBI's [Protein Name] index is sparsely populated for this family),
+    # the re-audit showed packaging ATPase at 21 family-wide hits and D5
+    # helicase at 12 — both worth keeping.  VLTF-3 stays dropped (still 0 %).
     "Iridoviridae": {
         "sequence": {"region": "concatenated", "type": "protein"},
         "concatenation": {
             "proteins": [
                 {"name": "major capsid protein", "aliases": ["MCP"], "locus_tag_hint": r"MCP"},
                 {"name": "DNA polymerase", "aliases": ["DNA-directed DNA polymerase"], "locus_tag_hint": r"polB"},
+                {"name": "packaging ATPase", "aliases": ["A32-like ATPase"], "locus_tag_hint": r"A32"},
                 {"name": "ribonuclease III", "aliases": ["RNase III"], "locus_tag_hint": r"rnc"},
+                {"name": "DNA helicase", "aliases": ["D5-like helicase"], "locus_tag_hint": r"D5|helicase"},
                 {"name": "immediate-early protein ICP-46", "aliases": ["ICP46"], "locus_tag_hint": r"ICP46"},
             ],
         },
@@ -458,9 +462,11 @@ for _ncldv_family in ("Pandoraviridae", "Medusaviridae"):
 # removed had ≤ 4 % family-wide coverage in NCBI annotations and were just
 # inflating the min_fraction denominator.
 
-# Phycodnaviridae — only DNA pol, MCP, and capping enzyme have meaningful
-# coverage (82 %, 31 %, 14 % respectively across 204 species).  The other
-# five hallmarks were each ≤ 1 %.
+# Phycodnaviridae — first 2026-05 audit cut the NCLDV-8 set to 3 (DNA pol,
+# MCP, capping enzyme).  After the [Title] fetch fix, packaging ATPase
+# came back to 42 family-wide hits and is restored.  The other four
+# hallmarks (primase-helicase, VLTF-3, RPB1, RPB2) stay dropped (still
+# ≤ 1 % even with [Title]).
 CONCATENATION_FAMILIES["Phycodnaviridae"] = {
     "sequence": {"region": "concatenated", "type": "protein"},
     "concatenation": {
@@ -474,6 +480,11 @@ CONCATENATION_FAMILIES["Phycodnaviridae"] = {
                 "name": "major capsid protein",
                 "aliases": ["MCP", "capsid protein"],
                 "locus_tag_hint": r"MCP",
+            },
+            {
+                "name": "packaging ATPase",
+                "aliases": ["A32-like ATPase", "FtsK-like ATPase"],
+                "locus_tag_hint": r"A32",
             },
             {
                 "name": "mRNA capping enzyme",

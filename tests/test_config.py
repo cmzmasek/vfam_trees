@@ -297,7 +297,7 @@ class TestConcatenationFamiliesPresets:
         assert [p["name"] for p in medusa] == [p["name"] for p in pandora]
         # Pruned-preset families have fewer markers.
         for fam, expected_n in (
-            ("Phycodnaviridae", 3),
+            ("Phycodnaviridae", 4),
             ("Mimiviridae", 6),
             ("Marseilleviridae", 6),
             ("Pithoviridae", 6),

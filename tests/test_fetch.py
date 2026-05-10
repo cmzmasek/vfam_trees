@@ -82,9 +82,19 @@ def test_protein_marker_uses_protein_name_field():
     assert '"DNA polymerase"[Protein Name]' in q
 
 
+def test_protein_marker_includes_title_field():
+    """Regression for v1.2.30: NCBI's [Protein Name] index is sparsely
+    populated for several viral families (Marseilleviridae, Pithoviridae,
+    Mimiviridae, ...).  The query must also search [Title] so the FASTA
+    defline catches records that aren't indexed under [Protein Name]."""
+    q = _build_species_query(12345, "protein", "DNA polymerase")
+    assert '"DNA polymerase"[Title]' in q
+
+
 def test_protein_marker_also_includes_gene_fallback():
     q = _build_species_query(12345, "protein", "B646L")
     assert '"B646L"[Protein Name]' in q
+    assert '"B646L"[Title]' in q
     assert '"B646L"[Gene]' in q
 
 
@@ -106,6 +116,16 @@ def test_concat_marker_query_includes_gene_fallback():
     for n in ("B646L", "p72", "major capsid protein p72"):
         assert f'"{n}"[Protein Name]' in q
         assert f'"{n}"[Gene]' in q
+
+
+def test_concat_marker_query_includes_title_field():
+    """Regression for v1.2.30: every alias must also be searched in [Title]
+    to catch records where NCBI didn't index [Protein Name]."""
+    marker = {"name": "DNA polymerase", "aliases": ["polymerase B"]}
+    q = _build_marker_query(taxid=944644, marker=marker, species_lineage=None,
+                            exclude_organisms=None)
+    for n in ("DNA polymerase", "polymerase B"):
+        assert f'"{n}"[Title]' in q
 
 
 def test_concat_marker_query_subfamily_aliases_get_gene_fallback():

@@ -132,20 +132,20 @@ References: Yutin & Koonin 2012; Iyer et al. 2006; ICTV Asfarviridae chapter.
 
 Gene IDs marked `(TBV)` to be verified against NC_001659 (ASFV BA71V RefSeq).
 
-### 4.4 Iridoviridae (4 markers)
+### 4.4 Iridoviridae (6 markers)
 
 References: Tidona & Darai 1997; Eaton et al. 2007; ICTV Iridoviridae chapter.
 
-Originally a 7-marker set. The 2026-05 cache audit (177 species) showed packaging ATPase, D5-like helicase, and VLTF-3 each at 0–0.6 % coverage in NCBI Iridoviridae annotations — they are simply not used as names in this family — so they were dropped. The four remaining markers are the actual conserved annotated set.
+Originally a 7-marker set. The first 2026-05 audit cut it to 4 (packaging ATPase, D5 helicase, and VLTF-3 looked like 0 % coverage), but after landing the `[Title]` field-fix in `fetch.py` (NCBI's `[Protein Name]` index is sparsely populated for Iridoviridae) the re-audit returned 21 family-wide records for packaging ATPase and 12 for D5 helicase, so both were restored. VLTF-3 stays dropped (still 0 family-wide records even with `[Title]`).
 
 | Marker | Aliases | Locus tag hint |
 |---|---|---|
 | Major capsid protein | "major capsid protein", "MCP" | `MCP` |
 | DNA polymerase | "DNA polymerase", "DNA-directed DNA polymerase" | `polB` |
+| Packaging ATPase | "packaging ATPase", "A32-like ATPase" | `A32` |
 | RNase III-like | "ribonuclease III", "RNase III" | `rnc` |
+| DNA helicase | "DNA helicase", "D5-like helicase" | `D5\|helicase` |
 | Immediate-early protein ICP-46 | "immediate-early protein ICP-46", "ICP46" | `ICP46` |
-
-Cache coverage on 177 species: MCP 98 %, DNA pol 24 %, RNase III 22 %, ICP-46 16 %.
 
 ### 4.5 Baculoviridae (7 markers)
 
@@ -190,9 +190,9 @@ Used as the auto-generated default for large-DNA-virus families that lack an aud
 | RNA polymerase largest subunit (RPB1-like) | "DNA-directed RNA polymerase subunit alpha", "RNA polymerase RPB1", "largest subunit RNA polymerase" |
 | RNA polymerase second-largest subunit (RPB2-like) | "DNA-directed RNA polymerase subunit beta", "RNA polymerase RPB2", "second-largest subunit RNA polymerase" |
 
-### 4.6.1 Phycodnaviridae (3 markers)
+### 4.6.1 Phycodnaviridae (4 markers)
 
-Cache audit of 204 species: only DNA polymerase (82 %), MCP (31 %), and mRNA capping enzyme (14 %) reach meaningful coverage. The other five NCLDV hallmarks — packaging ATPase, primase-helicase, VLTF-3, RPB1, RPB2 — are each at 0–1 %. Preset reduced to those three markers.
+The first 2026-05 audit cut the NCLDV-8 set to 3 (DNA pol, MCP, capping enzyme) — packaging ATPase looked like 1 %. After landing the `[Title]` field-fix in `fetch.py` the re-audit returned 42 family-wide records for packaging ATPase, so it's restored. The other four hallmarks (primase-helicase, VLTF-3, RPB1, RPB2) stay dropped — still 0–1 % even with `[Title]`. Final preset: DNA polymerase, major capsid protein, packaging ATPase, mRNA capping enzyme.
 
 ### 4.6.2 Mimiviridae (6 markers)
 
