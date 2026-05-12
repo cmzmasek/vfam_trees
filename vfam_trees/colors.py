@@ -132,11 +132,16 @@ def assign_leaf_colors(
     # Step 4: map short IDs and display names to colors
     # ------------------------------------------------------------------
     default_color = "#888888"
+    unclassified_color = "#999999"  # medium grey — forced for any "unclassified *" taxon
     display_to_color: dict[str, str] = {}
     short_to_color: dict[str, str] = {}
 
     for short_id, taxa in leaf_taxa.items():
-        color = genus_to_color.get(taxa["genus"], default_color)
+        species = short_id_to_meta.get(short_id, {}).get("species", "")
+        if species.lower().startswith("unclassified "):
+            color = unclassified_color
+        else:
+            color = genus_to_color.get(taxa["genus"], default_color)
         display_to_color[short_to_display.get(short_id, short_id)] = color
         short_to_color[short_id] = color
 

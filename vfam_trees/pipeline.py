@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 from Bio import Phylo, SeqIO
+from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from .config import load_family_config, load_global_config
@@ -48,6 +49,43 @@ from .cache import SequenceCache
 from .logger import setup_logger, get_logger
 
 log = get_logger(__name__)
+
+
+def _filter_species_by_include_list(
+    species_list: list[dict],
+    include_species: list[str],
+    family: str,
+    log,
+) -> list[dict]:
+    """Return only the species whose name or taxid appears in *include_species*.
+
+    Each entry in *include_species* is matched as a taxid when it is a string
+    of digits, or as a case-insensitive species name otherwise.  Unmatched
+    entries produce a WARNING; duplicate hits (same taxid matched twice) are
+    deduplicated.
+    """
+    matched: list[dict] = []
+    seen_taxids: set[int] = set()
+    for entry in include_species:
+        if entry.isdigit():
+            taxid = int(entry)
+            hits = [sp for sp in species_list if sp["taxid"] == taxid]
+        else:
+            hits = [sp for sp in species_list if sp["name"].lower() == entry.lower()]
+        if not hits:
+            log.warning(
+                "manual.include_species: %r did not match any species discovered for %s",
+                entry, family,
+            )
+        for sp in hits:
+            if sp["taxid"] not in seen_taxids:
+                seen_taxids.add(sp["taxid"])
+                matched.append(sp)
+    log.info(
+        "manual.include_species: restricting to %d / %d species for %s",
+        len(matched), len(species_list), family,
+    )
+    return matched
 
 
 def _compute_key(obj) -> str:
@@ -88,6 +126,64 @@ def _check_checkpoint(path: Path, key_obj: dict) -> bool:
     except Exception:
         return False
     return stored.get("key") == _compute_key(key_obj)
+
+
+def _inject_pasted_sequences(
+    species_data: dict[str, dict],
+    manual_include_ids: set[str],
+    fasta_entries: list[dict],
+    family: str,
+) -> int:
+    """Inject manual.include_fasta entries into species_data after fetch.
+
+    Each entry is materialised as a SeqRecord + metadata dict and bucketed
+    by organism name (joining the existing species bucket if the organism
+    matches a fetched species, otherwise creating a new bucket).  The id is
+    added to *manual_include_ids* so the downstream protected-set logic picks
+    it up automatically.  Raises ValueError if an entry id collides with any
+    accession already in species_data.
+
+    Returns the number of entries injected.
+    """
+    if not fasta_entries:
+        return 0
+
+    fetched_accessions = {
+        m["accession"]
+        for d in species_data.values()
+        for m in d["metadata"]
+    }
+    for entry in fasta_entries:
+        entry_id = entry["id"]
+        if entry_id in fetched_accessions:
+            raise ValueError(
+                f"{family}: manual.include_fasta id {entry_id!r} collides "
+                "with an accession returned by NCBI for this family.  "
+                "Rename the pasted entry or remove it."
+            )
+        organism = entry["organism"]
+        seq_str = entry["sequence"]
+        rec = SeqRecord(Seq(seq_str), id=entry_id, description=organism)
+        meta = {
+            "accession": entry_id,
+            "seq_name": organism,
+            "species": organism,
+            "strain": "unknown",
+            "host": "unknown",
+            "collection_date": "unknown",
+            "location": "unknown",
+            "taxon_id": "",
+            "length": len(seq_str),
+            "lineage": [],
+        }
+        bucket = species_data.setdefault(
+            organism, {"records": [], "metadata": []}
+        )
+        bucket["records"].append(rec)
+        bucket["metadata"].append(meta)
+        manual_include_ids.add(entry_id)
+
+    return len(fasta_entries)
 
 
 def run_family(
@@ -179,6 +275,7 @@ def run_family(
     manual_cfg = family_cfg.get("manual") or {}
     manual_include_ids: set[str] = set(manual_cfg.get("include") or [])
     manual_exclude_ids: set[str] = set(manual_cfg.get("exclude") or [])
+    manual_include_species: list[str] = manual_cfg.get("include_species") or []
     if manual_include_ids:
         log.info("manual.include: %d accession(s) will bypass QC", len(manual_include_ids))
     if manual_exclude_ids:
@@ -229,6 +326,24 @@ def run_family(
         with open(species_cache, "w") as f:
             json.dump(species_list, f, indent=2)
         log.info("Discovered %d species in %s", len(species_list), family)
+
+    if manual_include_species:
+        log.info(
+            "manual.include_species: %d species requested — filtering discovered list",
+            len(manual_include_species),
+        )
+        species_list = _filter_species_by_include_list(
+            species_list, manual_include_species, family, log,
+        )
+        if not species_list:
+            log.warning(
+                "manual.include_species: no matching species found for %s — skipping.", family,
+            )
+            _mark_skipped(
+                family_dir, family, output_dir,
+                "manual.include_species matched no discovered species",
+            )
+            return
 
     # -------------------------------------------------------------------------
     # Concatenated multi-marker mode dispatch (CONCAT_DESIGN.md).
@@ -457,6 +572,23 @@ def run_family(
         log.info(
             "manual.exclude accessions did not match any fetched record for %s: %s",
             family, sorted(unseen_exclude),
+        )
+
+    # Inject user-pasted sequences (manual.include_fasta).  These join the
+    # fetched records after QC, so they fully bypass length/ambiguity/organism
+    # filters.  Their ids are added to manual_include_ids so the downstream
+    # protected-set logic (clustering, proportional merge, length-outlier
+    # filter) picks them up automatically.
+    n_injected = _inject_pasted_sequences(
+        species_data, manual_include_ids,
+        manual_cfg.get("include_fasta") or [],
+        family,
+    )
+    if n_injected:
+        log.info(
+            "manual.include_fasta: injected %d pasted sequence(s) — "
+            "bypassed QC and added to protected set",
+            n_injected,
         )
 
     seq_lengths_all = [len(r.seq) for d in species_data.values() for r in d["records"]]
@@ -770,6 +902,7 @@ def _run_target(
             work_dir=sp_work,
             clustering_tool=clustering_tool,
             threads=threads,
+            protected_ids=refseq_short_ids,
         )
         species_reps[sp_name] = reps
         thresholds_used.append(threshold_used)

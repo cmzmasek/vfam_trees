@@ -10,6 +10,68 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.32] — 2026-05-12
+
+### Added
+- **`manual.include_species`** — new optional key in the per-family `manual:`
+  config block. Accepts a list of species names (matched case-insensitively
+  against NCBI species names) and/or numeric NCBI taxids (integer or digit
+  string). When set, only the listed species proceed to download; all others
+  are skipped before any network calls are made. Unmatched entries produce a
+  WARNING; if the list matches nothing the family is skipped with an
+  explanatory status entry. Duplicates (e.g. the same taxid supplied as both
+  an integer and a digit string) are silently deduped. Empty or absent key
+  preserves the existing behaviour (full discovered species list used).
+
+### Fixed
+- **`manual.include` sequences missing from `tree_100`** — sequences listed in
+  `manual.include` were correctly included in `tree_500` but could be silently
+  dropped from `tree_100` when clustering at a tighter threshold elected a
+  different cluster representative. `_cluster_at` now force-appends any
+  protected sequence absent from the clustering tool's output, so manual
+  includes (and RefSeqs) are guaranteed present in both trees.
+- **Spurious "Auto-configured" log messages** — `_apply_smart_defaults`
+  previously logged "Auto-configured segment / concatenation / DNA marker for
+  …" even when the family config file already specified those values. The
+  messages are now suppressed whenever the file config contains the
+  overriding key.
+
+### Changed
+- **Unclassified taxa coloring** — taxa whose NCBI `species` field starts with
+  `"unclassified "` (case-insensitive, requires trailing space) are now always
+  rendered as medium grey (`#999999`) in PDF/PNG tree images regardless of any
+  inferred genus. This prevents spurious hue-colored leaves for sequences
+  whose taxonomic classification is not yet resolved.
+
+## [1.2.31] — 2026-05-11
+
+### Added
+- **Per-family `manual.include_fasta`** — new optional block in per-family
+  YAML configs that lets curators inject sequences not yet in GenBank
+  directly into the pipeline. Each entry is a mapping with required keys
+  `id`, `organism`, and `sequence` (whitespace is stripped and the
+  sequence is uppercased).
+  - Pasted entries are injected after the per-species fetch loop, fully
+    bypass QC (length, ambiguity, organism exclusion), and their ids are
+    added to the same protected set as `manual.include` accessions —
+    they survive clustering, proportional merge, and length-outlier
+    filtering.
+  - Bucketed by organism: an entry whose `organism` matches a fetched
+    species joins that species' bucket; otherwise a new species bucket
+    is created.
+  - Validation rejects non-mapping entries, missing / empty
+    `id` / `organism` / `sequence`, duplicate ids within `include_fasta`,
+    and id collisions with `manual.include` / `manual.exclude`. At
+    pipeline time, id collisions with any accession returned by NCBI
+    for the family raise a hard error so the run aborts before MSA.
+  - Pasted leaves render gray (no genus) and do not participate in LCA
+    voting (no taxid / no species-rank lineage) — by design, since only
+    `id` and `organism` are required.
+  - Not supported when `sequence.region == "concatenated"` — a non-empty
+    `include_fasta` in concat mode is rejected at config-load time.
+  - Existing per-family YAMLs without `include_fasta` continue to load
+    unchanged (defaults to an empty list).
+
 ## [1.2.28] — 2026-05-08
 
 ### Fixed

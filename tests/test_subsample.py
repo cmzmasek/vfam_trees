@@ -411,3 +411,166 @@ class TestClusteringThreadsPlumbing:
         )
         assert run.cmds, "mmseqs was never invoked"
         assert _arg_after(run.cmds[0], "--threads") == "4"
+
+
+# ---------------------------------------------------------------------------
+# _cluster_at: protected_ids force-inclusion (regression for v1.2.31)
+#
+# Bug: adaptive_cluster_species delegates representative selection to the
+# external clustering tool (mmseqs2/cd-hit).  That tool has no concept of
+# "protected" sequences, so a manual.include record could be assigned to a
+# cluster whose representative was a different sequence — silently dropping
+# it before proportional_merge ever sees it.  This happened only for the
+# 100-tree (smaller max_reps → more aggressive threshold → more collisions)
+# while the 500-tree was unaffected.
+# ---------------------------------------------------------------------------
+
+class TestClusterAtProtectedIds:
+    def test_protected_id_force_added_when_tool_omits_it(self, tmp_path, monkeypatch):
+        """Core regression: protected record absent from tool output is added back."""
+        records = [_rec("A"), _rec("MANUAL_INCLUDE"), _rec("C")]
+        monkeypatch.setattr(subsample, "_mmseqs2_cluster",
+                            lambda *a, **k: ["A", "C"])
+        result = subsample._cluster_at(
+            records, 0.8, "nucleotide", tmp_path, "mmseqs2",
+            protected_ids={"MANUAL_INCLUDE"},
+        )
+        assert {r.id for r in result} == {"A", "C", "MANUAL_INCLUDE"}
+
+    def test_protected_id_not_duplicated_when_already_chosen(self, tmp_path, monkeypatch):
+        records = [_rec("A"), _rec("MANUAL_INCLUDE")]
+        monkeypatch.setattr(subsample, "_mmseqs2_cluster",
+                            lambda *a, **k: ["A", "MANUAL_INCLUDE"])
+        result = subsample._cluster_at(
+            records, 0.8, "nucleotide", tmp_path, "mmseqs2",
+            protected_ids={"MANUAL_INCLUDE"},
+        )
+        assert [r.id for r in result].count("MANUAL_INCLUDE") == 1
+
+    def test_no_protected_ids_result_unchanged(self, tmp_path, monkeypatch):
+        """Backwards compat: omitting protected_ids behaves exactly as before."""
+        records = [_rec("A"), _rec("B"), _rec("C")]
+        monkeypatch.setattr(subsample, "_mmseqs2_cluster",
+                            lambda *a, **k: ["A"])
+        result = subsample._cluster_at(
+            records, 0.8, "nucleotide", tmp_path, "mmseqs2",
+        )
+        assert [r.id for r in result] == ["A"]
+
+    def test_multiple_protected_ids_all_forced_in(self, tmp_path, monkeypatch):
+        records = [_rec("A"), _rec("P1"), _rec("P2"), _rec("B")]
+        monkeypatch.setattr(subsample, "_mmseqs2_cluster",
+                            lambda *a, **k: ["A"])
+        result = subsample._cluster_at(
+            records, 0.8, "nucleotide", tmp_path, "mmseqs2",
+            protected_ids={"P1", "P2"},
+        )
+        assert {r.id for r in result} >= {"A", "P1", "P2"}
+
+    def test_protected_id_not_in_input_is_silently_ignored(self, tmp_path, monkeypatch):
+        """A protected ID that isn't even in records cannot be injected."""
+        records = [_rec("A"), _rec("B")]
+        monkeypatch.setattr(subsample, "_mmseqs2_cluster",
+                            lambda *a, **k: ["A"])
+        result = subsample._cluster_at(
+            records, 0.8, "nucleotide", tmp_path, "mmseqs2",
+            protected_ids={"GHOST"},
+        )
+        assert {r.id for r in result} == {"A"}
+
+
+# ---------------------------------------------------------------------------
+# adaptive_cluster_species: protected_ids survive aggressive clustering
+# ---------------------------------------------------------------------------
+
+class TestAdaptiveClusterSpeciesProtectedIds:
+    def _records(self, n: int, protected_id: str = "MANUAL_INCLUDE") -> list[SeqRecord]:
+        recs = [SeqRecord(Seq("ATGCATGC"), id=f"r{i}") for i in range(n)]
+        recs.append(SeqRecord(Seq("ATGCATGC"), id=protected_id))
+        return recs
+
+    def test_protected_id_survives_when_tool_omits_it(self, tmp_path, monkeypatch):
+        """Regression: manual.include seq present in 500-tree but missing from
+        100-tree because smaller max_reps triggers tighter clustering where the
+        tool picks a different cluster representative."""
+        records = self._records(8)
+
+        # Simulate clustering tool that never picks MANUAL_INCLUDE as a rep.
+        monkeypatch.setattr(
+            subsample, "_mmseqs2_cluster",
+            lambda recs, *a, **k: [r.id for r in recs if r.id != "MANUAL_INCLUDE"][:3],
+        )
+
+        result, _ = subsample.adaptive_cluster_species(
+            records=records,
+            max_reps=3,
+            threshold_min=0.70,
+            threshold_max=0.99,
+            seq_type="nucleotide",
+            work_dir=tmp_path,
+            protected_ids={"MANUAL_INCLUDE"},
+        )
+        assert "MANUAL_INCLUDE" in {r.id for r in result}, (
+            "manual.include sequence was dropped by adaptive_cluster_species — "
+            "regression of v1.2.31 bug"
+        )
+
+    def test_without_protected_ids_manual_include_can_be_dropped(
+        self, tmp_path, monkeypatch
+    ):
+        """Control: without protected_ids, the same clustering tool omitting
+        MANUAL_INCLUDE causes it to be absent — confirming the pre-fix behaviour
+        that motivated the fix."""
+        records = self._records(8)
+
+        monkeypatch.setattr(
+            subsample, "_mmseqs2_cluster",
+            lambda recs, *a, **k: [r.id for r in recs if r.id != "MANUAL_INCLUDE"][:3],
+        )
+
+        result, _ = subsample.adaptive_cluster_species(
+            records=records,
+            max_reps=3,
+            threshold_min=0.70,
+            threshold_max=0.99,
+            seq_type="nucleotide",
+            work_dir=tmp_path,
+            # no protected_ids → pre-fix behaviour
+        )
+        assert "MANUAL_INCLUDE" not in {r.id for r in result}
+
+    def test_protected_ids_forwarded_to_every_cluster_at_call(
+        self, tmp_path, monkeypatch
+    ):
+        """Plumbing: every _cluster_at call inside binary search receives protected_ids."""
+        received: list[set | None] = []
+
+        real_cluster_at = subsample._cluster_at
+
+        def _spy(recs, threshold, seq_type, work_dir, tool, threads=1, protected_ids=None):
+            received.append(protected_ids)
+            return real_cluster_at(
+                recs, threshold, seq_type, work_dir, tool, threads,
+                protected_ids=protected_ids,
+            )
+
+        monkeypatch.setattr(subsample, "_cluster_at", _spy)
+        monkeypatch.setattr(
+            subsample, "_mmseqs2_cluster",
+            lambda recs, *a, **k: [r.id for r in recs][:3],
+        )
+
+        records = [SeqRecord(Seq("ATGCATGC"), id=f"r{i}") for i in range(8)]
+        subsample.adaptive_cluster_species(
+            records=records,
+            max_reps=3,
+            threshold_min=0.70,
+            threshold_max=0.99,
+            seq_type="nucleotide",
+            work_dir=tmp_path,
+            protected_ids={"MANUAL_INCLUDE"},
+        )
+        assert received, "_cluster_at was never called"
+        assert all(p == {"MANUAL_INCLUDE"} for p in received), (
+            f"Some _cluster_at calls did not receive protected_ids: {received}"
+        )

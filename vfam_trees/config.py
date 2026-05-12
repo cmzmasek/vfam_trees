@@ -665,15 +665,30 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "lca_min_rank": "species",
     },
     "manual": {
-        # Curator overrides on per-family record selection.  Both lists hold
-        # exact accessions with version (e.g. "NC_002617.1").
+        # Curator overrides on per-family record selection.  include/exclude
+        # hold exact accessions with version (e.g. "NC_002617.1").
         # include: force-keep — bypasses all QC (length, ambiguity, organism
         #          exclusion) and is protected through clustering, proportional
         #          merge, and length-outlier filtering (stronger than RefSeq at
         #          QC, equal to RefSeq downstream).
+        # include_fasta: paste sequences directly (e.g. records not yet in
+        #          GenBank).  Each entry is a mapping with required keys
+        #          'id', 'organism', and 'sequence'.  Injected after fetch,
+        #          fully bypass QC, and receive the same downstream protection
+        #          as manual.include records.  The 'id' must not collide with
+        #          any accession returned by NCBI for this family or any id in
+        #          manual.include / manual.exclude.  Not supported when
+        #          sequence.region is 'concatenated'.
         # exclude: dropped immediately after fetch, before QC.
+        # include_species: restrict the pipeline to a subset of species.  Each
+        #          entry is either a species name (matched case-insensitively)
+        #          or a numeric NCBI taxid (integer or digit string).  Species
+        #          not in this list are skipped entirely — no download, no QC.
+        #          When empty or absent the full discovered species list is used.
         "include": [],
+        "include_fasta": [],
         "exclude": [],
+        "include_species": [],
     },
 }
 
@@ -775,17 +790,20 @@ def _validate_concatenation_block(cfg: dict, family: str) -> None:
 
 
 def _validate_manual_block(cfg: dict, family: str) -> None:
-    """Validate the optional manual.include / manual.exclude lists.
+    """Validate the optional manual.{include,include_fasta,exclude} entries.
 
-    Both must be lists of non-empty accession strings; the two lists must be
-    disjoint.  Whitespace is stripped and duplicates within a list are deduped
-    in-place with a warning — typos are easier to spot at the line level than
-    after a full pipeline run.
+    include / exclude are lists of non-empty accession strings and must be
+    disjoint.  include_fasta is a list of {id, organism, sequence} mappings;
+    its ids must not collide with each other or with include/exclude entries.
+    Whitespace is stripped and accession-list duplicates are deduped in-place
+    with a warning — typos are easier to spot at the line level than after a
+    full pipeline run.
     """
     block = cfg.get("manual") or {}
     if not isinstance(block, dict):
         raise ValueError(
-            f"{family}: 'manual' must be a mapping with 'include' and 'exclude' lists."
+            f"{family}: 'manual' must be a mapping with 'include', "
+            "'include_fasta', and 'exclude' entries."
         )
 
     for key in ("include", "exclude"):
@@ -820,6 +838,106 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
             f"{family}: manual.include and manual.exclude overlap on "
             f"{sorted(overlap)} — an accession cannot be both forced-in and dropped."
         )
+
+    fasta_raw = block.get("include_fasta") or []
+    if not isinstance(fasta_raw, list):
+        raise ValueError(
+            f"{family}: manual.include_fasta must be a list of mappings with "
+            f"keys id/organism/sequence (got {type(fasta_raw).__name__})."
+        )
+    cleaned_fasta: list[dict] = []
+    fasta_ids: set[str] = set()
+    for i, entry in enumerate(fasta_raw):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{family}: manual.include_fasta[{i}] must be a mapping with "
+                f"keys id/organism/sequence (got {type(entry).__name__})."
+            )
+        cleaned_entry: dict = {}
+        for fkey in ("id", "organism", "sequence"):
+            val = entry.get(fkey)
+            if not isinstance(val, str):
+                raise ValueError(
+                    f"{family}: manual.include_fasta[{i}].{fkey} must be a "
+                    f"non-empty string (got {type(val).__name__})."
+                )
+            stripped = val.strip()
+            if not stripped:
+                raise ValueError(
+                    f"{family}: manual.include_fasta[{i}].{fkey} is empty — "
+                    "remove the entry or fill it in."
+                )
+            cleaned_entry[fkey] = stripped
+        seq_compact = "".join(cleaned_entry["sequence"].split()).upper()
+        if not seq_compact:
+            raise ValueError(
+                f"{family}: manual.include_fasta[{i}].sequence is empty after "
+                "stripping whitespace."
+            )
+        cleaned_entry["sequence"] = seq_compact
+
+        if cleaned_entry["id"] in fasta_ids:
+            raise ValueError(
+                f"{family}: manual.include_fasta[{i}].id duplicates an earlier "
+                f"entry ({cleaned_entry['id']!r})."
+            )
+        fasta_ids.add(cleaned_entry["id"])
+        cleaned_fasta.append(cleaned_entry)
+
+    clash_include = fasta_ids & set(block.get("include", []))
+    if clash_include:
+        raise ValueError(
+            f"{family}: manual.include_fasta ids overlap with manual.include "
+            f"accessions: {sorted(clash_include)}."
+        )
+    clash_exclude = fasta_ids & set(block.get("exclude", []))
+    if clash_exclude:
+        raise ValueError(
+            f"{family}: manual.include_fasta ids overlap with manual.exclude "
+            f"accessions: {sorted(clash_exclude)}."
+        )
+
+    if cleaned_fasta:
+        region = (cfg.get("sequence") or {}).get("region", "")
+        if region == "concatenated":
+            raise ValueError(
+                f"{family}: manual.include_fasta is not supported when "
+                "sequence.region is 'concatenated' — pasted sequences cannot "
+                "be split into the configured marker proteins.  Remove the "
+                "include_fasta entries or switch the region."
+            )
+
+    block["include_fasta"] = cleaned_fasta
+
+    species_raw = block.get("include_species") or []
+    if not isinstance(species_raw, list):
+        raise ValueError(
+            f"{family}: manual.include_species must be a list of species names "
+            f"or taxids (got {type(species_raw).__name__})."
+        )
+    cleaned_species: list[str] = []
+    seen_species: set[str] = set()
+    for i, entry in enumerate(species_raw):
+        if isinstance(entry, int):
+            val = str(entry)
+        elif isinstance(entry, str):
+            val = entry.strip()
+            if not val:
+                raise ValueError(
+                    f"{family}: manual.include_species[{i}] is empty — "
+                    "remove the entry or fill it in."
+                )
+        else:
+            raise ValueError(
+                f"{family}: manual.include_species[{i}] must be a species name "
+                f"(string) or a taxid (integer), got {type(entry).__name__}."
+            )
+        if val in seen_species:
+            log.warning("%s: duplicate entry %r in manual.include_species — deduped.", family, val)
+            continue
+        seen_species.add(val)
+        cleaned_species.append(val)
+    block["include_species"] = cleaned_species
 
     cfg["manual"] = block
 
@@ -918,20 +1036,28 @@ def _merge_with_defaults(cfg: dict, global_cfg: dict, family: str = "") -> dict:
     global_defaults = global_cfg.get("defaults", {})
     merged = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
     _deep_update(merged, global_defaults)
-    _apply_smart_defaults(family, merged)
+    _apply_smart_defaults(family, merged, file_cfg=cfg)
     _deep_update(merged, cfg)
     return merged
 
 
-def _apply_smart_defaults(family: str, cfg: dict) -> None:
+def _apply_smart_defaults(family: str, cfg: dict, file_cfg: dict | None = None) -> None:
     """Apply CONCATENATION_FAMILIES, DNA_FAMILIES, and SEGMENTED_FAMILIES as
     smart defaults in-place.  Precedence: concat > single-protein DNA
     overrides; segmentation is orthogonal and always applied when relevant.
+
+    *file_cfg* is the user's family config dict (before it is merged).  When
+    provided, "Auto-configured" log messages are suppressed for any value the
+    file already overrides — those messages only make sense when the smart
+    default is actually taking effect.
     """
+    _file_seq = (file_cfg or {}).get("sequence") or {}
+
     segment = SEGMENTED_FAMILIES.get(family)
     if segment and not cfg["sequence"].get("segment"):
         cfg["sequence"]["segment"] = segment
-        log.info("Auto-configured segment '%s' for segmented family %s", segment, family)
+        if not _file_seq.get("segment"):
+            log.info("Auto-configured segment '%s' for segmented family %s", segment, family)
 
     concat_overrides = CONCATENATION_FAMILIES.get(family)
     if concat_overrides:
@@ -945,20 +1071,24 @@ def _apply_smart_defaults(family: str, cfg: dict) -> None:
         if cfg["download"].get("max_per_species") in (None, 300):
             cfg["download"]["max_per_species"] = 3000
         n_markers = len(cfg.get("concatenation", {}).get("proteins", []))
-        log.info(
-            "Auto-configured concatenation mode for %s: %d markers",
-            family, n_markers,
-        )
+        file_region = _file_seq.get("region")
+        if not file_region or file_region == "concatenated":
+            log.info(
+                "Auto-configured concatenation mode for %s: %d markers",
+                family, n_markers,
+            )
         return  # concat presets supersede DNA_FAMILIES single-protein defaults
 
     dna_overrides = DNA_FAMILIES.get(family)
     if dna_overrides:
         _deep_update(cfg, dna_overrides)
         region = cfg["sequence"].get("region", "whole_genome")
-        if region == "whole_genome":
-            log.info("Auto-configured DNA family %s: whole-genome search", family)
-        else:
-            log.info("Auto-configured DNA family %s: marker gene '%s'", family, region)
+        file_region = _file_seq.get("region")
+        if not file_region or file_region == region:
+            if region == "whole_genome":
+                log.info("Auto-configured DNA family %s: whole-genome search", family)
+            else:
+                log.info("Auto-configured DNA family %s: marker gene '%s'", family, region)
 
 
 def _generate_default_family_config(family: str, global_cfg: dict) -> dict:

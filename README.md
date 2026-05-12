@@ -13,7 +13,7 @@ The per-family pipeline runs in seven stages. Each stage is configurable per fam
 
 ### 1. Species discovery
 
-The family TaxID is resolved from NCBI Taxonomy and every descendant species is enumerated. The species list defines the universe of organisms eligible for download.
+The family TaxID is resolved from NCBI Taxonomy and every descendant species is enumerated. The species list defines the universe of organisms eligible for download. An optional `manual.include_species` list in the per-family config restricts this universe to a named subset — only species whose name or NCBI taxid appears in the list proceed to download; others are skipped entirely.
 
 ### 2. Sequence download
 
@@ -25,7 +25,7 @@ An optional shared cache (configurable TTL, per-entry locking, negative-result c
 
 Each species' sequences are filtered in this order:
 
-0. **Manual overrides** (per-family `manual.include` / `manual.exclude` lists) — accessions in `manual.exclude` are dropped immediately; accessions in `manual.include` bypass every QC step below and are protected from removal during clustering, proportional merge, and length-outlier filtering. Match is exact, version included (e.g. `NC_002617.1`).
+0. **Manual overrides** (per-family `manual.include` / `manual.include_fasta` / `manual.exclude` / `manual.include_species`) — accessions in `manual.exclude` are dropped immediately; accessions in `manual.include` bypass every QC step below and are protected from removal during clustering, proportional merge, and length-outlier filtering. Match is exact, version included (e.g. `NC_002617.1`). `manual.include_fasta` accepts pasted sequences (records not yet in GenBank) as a list of `{id, organism, sequence}` mappings; entries are injected after fetch, receive the same bypass + downstream protection as `manual.include`, and their ids must not collide with any fetched accession (not supported in concat mode). `manual.include_species` restricts the set of species that proceed to download (see [Species discovery](#1-species-discovery)).
 1. **Organism exclusion** — case-insensitive substring match against `ORGANISM`, `SOURCE`, and `DEFINITION` (joined with newlines so terms cannot straddle field boundaries). Defaults: `synthetic construct`, `metagenome`, `MAG:`, `uncultured`, `unverified`, `vector`, `recombinant`, `patent`.
 2. **Ambiguity** — `max_ambiguous` cap on the fraction of `N` / `X` / IUPAC degenerate characters.
 3. **Minimum length** — `min_length: null` auto-sets the threshold to 50% of the per-species median, with relaxation fallback to 40% then 30% if too few sequences pass; in all cases a hard floor of 200 bp / 100 aa applies.
@@ -287,10 +287,58 @@ manual:                         # curator overrides on per-family record selecti
                                 # are protected through clustering, proportional merge, and
                                 # length-outlier filtering — stronger than RefSeq at QC,
                                 # equal to RefSeq downstream
+  include_fasta: []             # pasted sequences not yet in GenBank — each entry is a
+                                # {id, organism, sequence} mapping; injected after fetch,
+                                # bypass QC, and receive the same downstream protection as
+                                # manual.include records (not supported in concat mode)
   exclude: []                   # exact accessions to drop immediately after fetch, before QC
+  include_species: []           # restrict the pipeline to a subset of species — entries are
+                                # species names (case-insensitive) or NCBI taxids (integer or
+                                # digit string); species not listed are skipped before download;
+                                # empty or absent means use the full discovered species list
 ```
 
 The `coloring` and `taxonomy` keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.
+
+Example — adding a pasted reference and forcing a curator-picked accession in:
+
+```yaml
+manual:
+  include:
+    - NC_002617.1               # force-keep this RefSeq even if QC would drop it
+  include_fasta:
+    - id: MyLab_Isolate_2026
+      organism: Foo virus
+      sequence: |
+        ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT
+        ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT
+    - id: PreprintSeq_42
+      organism: Bar virus
+      sequence: ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT
+  exclude:
+    - KF234567.1                # drop a known-bad isolate before QC
+```
+
+Notes on `include_fasta`:
+
+- `id` is used throughout the pipeline (FASTA headers, tree leaves, PhyloXML) and must not collide with any accession returned by NCBI for the family or with anything in `include` / `exclude` — collisions raise a hard error.
+- `organism` controls the species bucket the entry joins (matching a fetched species name appends to that bucket; a novel name creates a new one) and shows up in leaf labels.
+- The sequence may be wrapped across lines — whitespace is stripped and the sequence is uppercased.
+- Pasted leaves render gray (no genus) and do not participate in LCA voting, since only `id` and `organism` are required.
+- Not supported when `sequence.region == "concatenated"` — pasted sequences cannot be split into per-marker proteins.
+
+Example — restricting a family run to a specific subset of species (mixing names and taxids):
+
+```yaml
+manual:
+  include_species:
+    - Hantaan orthohantavirus       # matched case-insensitively against NCBI species name
+    - Seoul orthohantavirus
+    - 11595                          # NCBI taxid (integer) — equivalent to the species name above
+    - "1980519"                      # taxid as a quoted digit string — also accepted
+```
+
+Unmatched entries produce a WARNING in the log (no hard error — it may indicate a typo). If `include_species` matches nothing in the discovered species list the family is skipped with an explanatory status entry.
 
 #### Length-outlier behaviour
 

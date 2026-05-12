@@ -165,6 +165,7 @@ def adaptive_cluster_species(
     work_dir: Path,
     clustering_tool: str = "mmseqs2",
     threads: int = 1,
+    protected_ids: set[str] | None = None,
 ) -> tuple[list[SeqRecord], float]:
     """Find the tightest identity threshold that yields ≤ max_reps for one species.
 
@@ -172,6 +173,10 @@ def adaptive_cluster_species(
     - If threshold_max already gives ≤ max_reps: use it (no clustering needed).
     - If threshold_min still gives > max_reps: use threshold_min anyway (best effort).
     - Otherwise: binary search to find highest threshold with ≤ max_reps.
+
+    *protected_ids* are always kept in the result regardless of what the
+    clustering tool selects as representatives.  The returned count may exceed
+    *max_reps* by the number of forced-in protected sequences.
 
     Args:
         records: quality-filtered SeqRecords for one species (short IDs)
@@ -181,6 +186,8 @@ def adaptive_cluster_species(
         seq_type: 'nucleotide' or 'protein'
         work_dir: temp directory for clustering runs
         clustering_tool: 'mmseqs2' (default) or 'cdhit'
+        protected_ids: record IDs (e.g. RefSeq + manual.include) that must
+                       survive clustering even if not chosen as cluster reps.
 
     Returns:
         (representative_records, threshold_used)
@@ -193,7 +200,7 @@ def adaptive_cluster_species(
     # Check if even the most aggressive threshold is sufficient
     reps_at_min = _cluster_at(records, threshold_min, seq_type,
                                work_dir / f"t{threshold_min:.2f}", clustering_tool,
-                               threads)
+                               threads, protected_ids=protected_ids)
     if len(reps_at_min) > max_reps:
         log.debug("threshold_min=%.2f still gives %d reps > max_reps %d — using threshold_min.",
                   threshold_min, len(reps_at_min), max_reps)
@@ -202,7 +209,7 @@ def adaptive_cluster_species(
     # Check if no clustering is needed at threshold_max
     reps_at_max = _cluster_at(records, threshold_max, seq_type,
                                work_dir / f"t{threshold_max:.2f}", clustering_tool,
-                               threads)
+                               threads, protected_ids=protected_ids)
     if len(reps_at_max) <= max_reps:
         log.info("threshold_max=%.2f gives %d reps ≤ max_reps %d — using threshold_max.",
                  threshold_max, len(reps_at_max), max_reps)
@@ -218,7 +225,7 @@ def adaptive_cluster_species(
         mid = round((lo + hi) / 2, 4)
         reps = _cluster_at(records, mid, seq_type,
                             work_dir / f"t{mid:.4f}", clustering_tool,
-                            threads)
+                            threads, protected_ids=protected_ids)
         if len(reps) <= max_reps:
             best_reps = reps
             best_threshold = mid
@@ -432,8 +439,13 @@ def _cluster_at(
     work_dir: Path,
     clustering_tool: str,
     threads: int = 1,
+    protected_ids: set[str] | None = None,
 ) -> list[SeqRecord]:
-    """Cluster records at a given threshold and return representative SeqRecords."""
+    """Cluster records at a given threshold and return representative SeqRecords.
+
+    Any record whose ID is in *protected_ids* is always included in the result
+    even if the clustering tool did not select it as a cluster representative.
+    """
     tool = clustering_tool.lower().replace("-", "").replace("_", "")
     if tool == "mmseqs2":
         rep_ids = _mmseqs2_cluster(records, threshold, seq_type, work_dir, threads)
@@ -446,7 +458,13 @@ def _cluster_at(
         )
 
     id_to_rec = {rec.id: rec for rec in records}
-    return [id_to_rec[rid] for rid in rep_ids if rid in id_to_rec]
+    result = [id_to_rec[rid] for rid in rep_ids if rid in id_to_rec]
+    if protected_ids:
+        included = {r.id for r in result}
+        for rec in records:
+            if rec.id in protected_ids and rec.id not in included:
+                result.append(rec)
+    return result
 
 
 def _mmseqs2_cluster(

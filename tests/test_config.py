@@ -42,6 +42,61 @@ def test_deep_update_overwrites_non_dict():
 
 
 # ---------------------------------------------------------------------------
+# _apply_smart_defaults — log suppression when file_cfg overrides a smart default
+# ---------------------------------------------------------------------------
+
+def test_auto_configured_segment_logged_when_file_is_silent(caplog):
+    import logging
+    cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    with caplog.at_level(logging.INFO, logger="vfam_trees.config"):
+        _apply_smart_defaults("Hantaviridae", cfg, file_cfg={})
+    assert any("Auto-configured segment" in r.getMessage() for r in caplog.records)
+
+
+def test_auto_configured_segment_suppressed_when_file_overrides_it(caplog):
+    import logging
+    cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    file_cfg = {"sequence": {"segment": "segment S"}}
+    with caplog.at_level(logging.INFO, logger="vfam_trees.config"):
+        _apply_smart_defaults("Hantaviridae", cfg, file_cfg=file_cfg)
+    assert not any("Auto-configured segment" in r.getMessage() for r in caplog.records)
+
+
+def test_auto_configured_dna_marker_logged_when_file_is_silent(caplog):
+    import logging
+    cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    with caplog.at_level(logging.INFO, logger="vfam_trees.config"):
+        _apply_smart_defaults("Adenoviridae", cfg, file_cfg={})
+    assert any("Auto-configured DNA family" in r.getMessage() for r in caplog.records)
+
+
+def test_auto_configured_dna_marker_suppressed_when_file_overrides_region(caplog):
+    import logging
+    cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    file_cfg = {"sequence": {"region": "penton"}}
+    with caplog.at_level(logging.INFO, logger="vfam_trees.config"):
+        _apply_smart_defaults("Adenoviridae", cfg, file_cfg=file_cfg)
+    assert not any("Auto-configured DNA family" in r.getMessage() for r in caplog.records)
+
+
+def test_auto_configured_concat_logged_when_file_is_silent(caplog):
+    import logging
+    cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    with caplog.at_level(logging.INFO, logger="vfam_trees.config"):
+        _apply_smart_defaults("Poxviridae", cfg, file_cfg={})
+    assert any("Auto-configured concatenation mode" in r.getMessage() for r in caplog.records)
+
+
+def test_auto_configured_concat_suppressed_when_file_reverts_to_single_protein(caplog):
+    import logging
+    cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    file_cfg = {"sequence": {"region": "rpo147"}}
+    with caplog.at_level(logging.INFO, logger="vfam_trees.config"):
+        _apply_smart_defaults("Poxviridae", cfg, file_cfg=file_cfg)
+    assert not any("Auto-configured concatenation mode" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
 # _apply_smart_defaults
 # ---------------------------------------------------------------------------
 
@@ -496,7 +551,7 @@ class TestManualBlock:
     def test_missing_block_treated_as_empty(self):
         cfg = {}
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"] == {"include": [], "exclude": []}
+        assert cfg["manual"] == {"include": [], "exclude": [], "include_fasta": [], "include_species": []}
 
     def test_include_and_exclude_overlap_rejected(self):
         cfg = {"manual": {"include": ["NC_001.1"], "exclude": ["NC_001.1"]}}
@@ -548,3 +603,512 @@ class TestManualBlock:
         }))
         with pytest.raises(ValueError, match="overlap"):
             load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
+
+
+# ---------------------------------------------------------------------------
+# manual.include_fasta — pasted-sequence entries
+# ---------------------------------------------------------------------------
+
+def _wrap_fasta(entries):
+    """Helper: wrap include_fasta entries in a minimal cfg."""
+    return {
+        "sequence": {"type": "nucleotide", "region": "whole_genome"},
+        "manual": {"include": [], "exclude": [], "include_fasta": entries},
+    }
+
+
+class TestManualIncludeFasta:
+    def test_default_has_empty_include_fasta(self):
+        assert DEFAULT_FAMILY_CONFIG["manual"]["include_fasta"] == []
+
+    def test_empty_list_passes(self):
+        cfg = _wrap_fasta([])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_fasta"] == []
+
+    def test_valid_entry_passes(self):
+        cfg = _wrap_fasta([
+            {"id": "MySeq1", "organism": "Foo virus", "sequence": "ACGTACGT"},
+        ])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_fasta"] == [
+            {"id": "MySeq1", "organism": "Foo virus", "sequence": "ACGTACGT"},
+        ]
+
+    def test_sequence_whitespace_stripped_and_uppercased(self):
+        cfg = _wrap_fasta([
+            {"id": "MySeq1", "organism": "Foo virus", "sequence": "acgt\n acgt\n"},
+        ])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_fasta"][0]["sequence"] == "ACGTACGT"
+
+    def test_id_and_organism_stripped(self):
+        cfg = _wrap_fasta([
+            {"id": "  MySeq1  ", "organism": "  Foo virus  ", "sequence": "ACGT"},
+        ])
+        _validate_manual_block(cfg, "Test")
+        entry = cfg["manual"]["include_fasta"][0]
+        assert entry["id"] == "MySeq1"
+        assert entry["organism"] == "Foo virus"
+
+    def test_non_list_rejected(self):
+        cfg = _wrap_fasta("not a list")
+        with pytest.raises(ValueError, match="must be a list"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_non_mapping_entry_rejected(self):
+        cfg = _wrap_fasta(["not a mapping"])
+        with pytest.raises(ValueError, match="must be a mapping"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_missing_id_rejected(self):
+        cfg = _wrap_fasta([{"organism": "Foo virus", "sequence": "ACGT"}])
+        with pytest.raises(ValueError, match=r"include_fasta\[0\]\.id"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_missing_organism_rejected(self):
+        cfg = _wrap_fasta([{"id": "X", "sequence": "ACGT"}])
+        with pytest.raises(ValueError, match=r"include_fasta\[0\]\.organism"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_missing_sequence_rejected(self):
+        cfg = _wrap_fasta([{"id": "X", "organism": "Foo"}])
+        with pytest.raises(ValueError, match=r"include_fasta\[0\]\.sequence"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_empty_sequence_rejected(self):
+        cfg = _wrap_fasta([{"id": "X", "organism": "Foo", "sequence": "   \n  "}])
+        with pytest.raises(ValueError, match="empty"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_duplicate_id_within_fasta_rejected(self):
+        cfg = _wrap_fasta([
+            {"id": "X", "organism": "Foo", "sequence": "ACGT"},
+            {"id": "X", "organism": "Bar", "sequence": "TGCA"},
+        ])
+        with pytest.raises(ValueError, match="duplicates an earlier entry"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_id_collision_with_include_rejected(self):
+        cfg = {
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "manual": {
+                "include": ["NC_X.1"],
+                "exclude": [],
+                "include_fasta": [
+                    {"id": "NC_X.1", "organism": "Foo", "sequence": "ACGT"},
+                ],
+            },
+        }
+        with pytest.raises(ValueError, match="overlap with manual.include"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_id_collision_with_exclude_rejected(self):
+        cfg = {
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "manual": {
+                "include": [],
+                "exclude": ["NC_X.1"],
+                "include_fasta": [
+                    {"id": "NC_X.1", "organism": "Foo", "sequence": "ACGT"},
+                ],
+            },
+        }
+        with pytest.raises(ValueError, match="overlap with manual.exclude"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_concatenated_region_rejects_include_fasta(self):
+        cfg = {
+            "sequence": {"type": "protein", "region": "concatenated"},
+            "manual": {
+                "include": [],
+                "exclude": [],
+                "include_fasta": [
+                    {"id": "MySeq1", "organism": "Foo", "sequence": "MKL"},
+                ],
+            },
+        }
+        with pytest.raises(ValueError, match="not supported when sequence.region is 'concatenated'"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_concatenated_region_with_empty_fasta_ok(self):
+        cfg = {
+            "sequence": {"type": "protein", "region": "concatenated"},
+            "manual": {"include": [], "exclude": [], "include_fasta": []},
+        }
+        _validate_manual_block(cfg, "Test")
+
+    def test_loaded_stale_config_gets_empty_include_fasta(self, tmp_path):
+        cfg_dir = tmp_path / "configs"
+        cfg_dir.mkdir()
+        (cfg_dir / "Flaviviridae.yaml").write_text(yaml.dump({
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "manual": {"include": [], "exclude": []},
+        }))
+        cfg, _ = load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
+        assert cfg["manual"]["include_fasta"] == []
+
+
+# ---------------------------------------------------------------------------
+# manual.include_species validation
+# ---------------------------------------------------------------------------
+
+class TestManualIncludeSpecies:
+    def _base_cfg(self, species=None):
+        cfg = {
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "manual": {"include": [], "exclude": [], "include_fasta": []},
+        }
+        if species is not None:
+            cfg["manual"]["include_species"] = species
+        return cfg
+
+    def test_default_has_empty_include_species(self):
+        cfg = self._base_cfg()
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_species"] == []
+
+    def test_empty_list_passes(self):
+        cfg = self._base_cfg(species=[])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_species"] == []
+
+    def test_valid_name_string_accepted(self):
+        cfg = self._base_cfg(species=["Dengue virus"])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_species"] == ["Dengue virus"]
+
+    def test_valid_taxid_integer_converted_to_string(self):
+        cfg = self._base_cfg(species=[11103])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_species"] == ["11103"]
+
+    def test_valid_taxid_digit_string_accepted(self):
+        cfg = self._base_cfg(species=["11103"])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_species"] == ["11103"]
+
+    def test_non_list_rejected(self):
+        cfg = self._base_cfg(species="Dengue virus")
+        with pytest.raises(ValueError, match="must be a list"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_empty_string_entry_rejected(self):
+        cfg = self._base_cfg(species=[""])
+        with pytest.raises(ValueError, match="is empty"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_whitespace_only_string_rejected(self):
+        cfg = self._base_cfg(species=["   "])
+        with pytest.raises(ValueError, match="is empty"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_wrong_type_float_rejected(self):
+        cfg = self._base_cfg(species=[3.14])
+        with pytest.raises(ValueError, match="must be a species name"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_duplicate_entries_deduped_with_warning(self, caplog):
+        import logging
+        cfg = self._base_cfg(species=["Dengue virus", "Dengue virus"])
+        with caplog.at_level(logging.WARNING):
+            _validate_manual_block(cfg, "Flaviviridae")
+        assert cfg["manual"]["include_species"] == ["Dengue virus"]
+        assert "duplicate" in caplog.text.lower()
+
+    def test_mixed_names_and_taxids_all_accepted(self):
+        cfg = self._base_cfg(species=["Dengue virus", 11103, "1234567"])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_species"] == ["Dengue virus", "11103", "1234567"]
+
+    def test_loaded_stale_config_gets_empty_include_species(self, tmp_path):
+        cfg_dir = tmp_path / "configs"
+        cfg_dir.mkdir()
+        (cfg_dir / "Flaviviridae.yaml").write_text(yaml.dump({
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "manual": {"include": [], "exclude": []},
+        }))
+        cfg, _ = load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
+        assert cfg["manual"]["include_species"] == []
+
+
+# ---------------------------------------------------------------------------
+# File config overrides all internal defaults
+#
+# Priority chain (lowest → highest):
+#   DEFAULT_FAMILY_CONFIG
+#   → global_cfg["defaults"]
+#   → smart defaults (DNA_FAMILIES / CONCATENATION_FAMILIES / SEGMENTED_FAMILIES)
+#   → family-specific config file
+#
+# A file present in configs/ must win at every layer for every key it sets.
+# Keys absent from the file are filled from the defaults (deep merge, not replace).
+# ---------------------------------------------------------------------------
+
+class TestFileConfigOverridesAllDefaults:
+
+    # --- DEFAULT_FAMILY_CONFIG layer ---
+
+    def test_overrides_default_max_per_species(self):
+        merged = _merge_with_defaults(
+            {"download": {"max_per_species": 99}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        assert merged["download"]["max_per_species"] == 99
+
+    def test_overrides_default_clustering_tool(self):
+        merged = _merge_with_defaults(
+            {"clustering": {"tool": "cdhit"}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        assert merged["clustering"]["tool"] == "cdhit"
+
+    def test_overrides_default_clustering_thresholds(self):
+        merged = _merge_with_defaults(
+            {"clustering": {"threshold_min": 0.80, "threshold_max": 0.95}},
+            MINIMAL_GLOBAL, "Flaviviridae",
+        )
+        assert merged["clustering"]["threshold_min"] == 0.80
+        assert merged["clustering"]["threshold_max"] == 0.95
+
+    def test_overrides_default_max_reps(self):
+        merged = _merge_with_defaults(
+            {"clustering": {"max_reps_500": 7, "max_reps_100": 2}},
+            MINIMAL_GLOBAL, "Flaviviridae",
+        )
+        assert merged["clustering"]["max_reps_500"] == 7
+        assert merged["clustering"]["max_reps_100"] == 2
+
+    def test_overrides_default_quality_max_ambiguous(self):
+        merged = _merge_with_defaults(
+            {"quality": {"max_ambiguous": 0.05}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        assert merged["quality"]["max_ambiguous"] == 0.05
+
+    def test_overrides_default_quality_min_length(self):
+        merged = _merge_with_defaults(
+            {"quality": {"min_length": 500}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        assert merged["quality"]["min_length"] == 500
+
+    def test_overrides_default_targets(self):
+        merged = _merge_with_defaults(
+            {"targets": {"max_500": 300, "max_100": 50}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        assert merged["targets"]["max_500"] == 300
+        assert merged["targets"]["max_100"] == 50
+
+    def test_overrides_default_msa_500_tool_and_options(self):
+        merged = _merge_with_defaults(
+            {"msa_500": {"tool": "muscle", "options_nuc": "--custom"}},
+            MINIMAL_GLOBAL, "Flaviviridae",
+        )
+        assert merged["msa_500"]["tool"] == "muscle"
+        assert merged["msa_500"]["options_nuc"] == "--custom"
+
+    def test_overrides_default_msa_100_options(self):
+        merged = _merge_with_defaults(
+            {"msa_100": {"options_nuc": "--retree 1"}},
+            MINIMAL_GLOBAL, "Flaviviridae",
+        )
+        assert merged["msa_100"]["options_nuc"] == "--retree 1"
+
+    def test_overrides_default_tree_500_tool_and_model(self):
+        merged = _merge_with_defaults(
+            {"tree_500": {"tool": "iqtree", "model_nuc": "HKY+G"}},
+            MINIMAL_GLOBAL, "Flaviviridae",
+        )
+        assert merged["tree_500"]["tool"] == "iqtree"
+        assert merged["tree_500"]["model_nuc"] == "HKY+G"
+
+    def test_overrides_default_tree_100_model(self):
+        merged = _merge_with_defaults(
+            {"tree_100": {"model_nuc": "K80+G"}},
+            MINIMAL_GLOBAL, "Flaviviridae",
+        )
+        assert merged["tree_100"]["model_nuc"] == "K80+G"
+
+    def test_overrides_default_msa_trim_disabled(self):
+        merged = _merge_with_defaults(
+            {"msa_trim": {"enabled": False}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        assert merged["msa_trim"]["enabled"] is False
+
+    def test_overrides_default_outlier_removal_factor(self):
+        merged = _merge_with_defaults(
+            {"outlier_removal": {"factor": 10.0, "max_iterations": 1}},
+            MINIMAL_GLOBAL, "Flaviviridae",
+        )
+        assert merged["outlier_removal"]["factor"] == 10.0
+        assert merged["outlier_removal"]["max_iterations"] == 1
+
+    def test_overrides_default_length_outlier_k(self):
+        merged = _merge_with_defaults(
+            {"length_outlier": {"k": 3.0, "enabled": False}},
+            MINIMAL_GLOBAL, "Flaviviridae",
+        )
+        assert merged["length_outlier"]["k"] == 3.0
+        assert merged["length_outlier"]["enabled"] is False
+
+    def test_overrides_default_coloring_genus_inference(self):
+        merged = _merge_with_defaults(
+            {"coloring": {"genus_inference": "none"}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        assert merged["coloring"]["genus_inference"] == "none"
+
+    def test_overrides_default_taxonomy_lca_min_rank(self):
+        merged = _merge_with_defaults(
+            {"taxonomy": {"lca_min_rank": "genus"}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        assert merged["taxonomy"]["lca_min_rank"] == "genus"
+
+    def test_overrides_default_refseq_absorption_disabled(self):
+        merged = _merge_with_defaults(
+            {"refseq_absorption": {"enabled": False}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        assert merged["refseq_absorption"]["enabled"] is False
+
+    # --- global_cfg["defaults"] layer ---
+
+    def test_overrides_global_defaults(self):
+        global_with_defaults = {
+            "ncbi": {"email": "test@test.com"},
+            "defaults": {
+                "clustering": {"tool": "cdhit"},
+                "download": {"max_per_species": 500},
+            },
+        }
+        merged = _merge_with_defaults(
+            {"clustering": {"tool": "mmseqs2"}, "download": {"max_per_species": 77}},
+            global_with_defaults, "Flaviviridae",
+        )
+        assert merged["clustering"]["tool"] == "mmseqs2"
+        assert merged["download"]["max_per_species"] == 77
+
+    def test_global_defaults_take_effect_when_file_is_silent(self):
+        global_with_defaults = {
+            "ncbi": {"email": "test@test.com"},
+            "defaults": {"clustering": {"tool": "cdhit"}},
+        }
+        merged = _merge_with_defaults({}, global_with_defaults, "Flaviviridae")
+        assert merged["clustering"]["tool"] == "cdhit"
+
+    # --- smart defaults (DNA_FAMILIES) layer ---
+
+    def test_overrides_dna_families_region(self):
+        # Adenoviridae smart default is "hexon"; file says "penton"
+        merged = _merge_with_defaults(
+            {"sequence": {"region": "penton"}}, MINIMAL_GLOBAL, "Adenoviridae"
+        )
+        assert merged["sequence"]["region"] == "penton"
+
+    def test_overrides_dna_families_type(self):
+        # Adenoviridae smart default is protein; file switches to nucleotide
+        merged = _merge_with_defaults(
+            {"sequence": {"type": "nucleotide", "region": "hexon"}},
+            MINIMAL_GLOBAL, "Adenoviridae",
+        )
+        assert merged["sequence"]["type"] == "nucleotide"
+
+    # --- smart defaults (SEGMENTED_FAMILIES) layer ---
+
+    def test_overrides_segmented_families_segment(self):
+        # Hantaviridae smart default is "segment L"; file overrides it
+        merged = _merge_with_defaults(
+            {"sequence": {"segment": "segment S"}}, MINIMAL_GLOBAL, "Hantaviridae"
+        )
+        assert merged["sequence"]["segment"] == "segment S"
+
+    # --- smart defaults (CONCATENATION_FAMILIES) layer ---
+
+    def test_overrides_concat_families_region(self):
+        # Poxviridae smart default is "concatenated"; file reverts to single gene
+        merged = _merge_with_defaults(
+            {"sequence": {"region": "rpo147", "type": "protein"}},
+            MINIMAL_GLOBAL, "Poxviridae",
+        )
+        assert merged["sequence"]["region"] == "rpo147"
+
+    def test_overrides_concat_families_min_fraction(self):
+        merged = _merge_with_defaults(
+            {"concatenation": {"min_fraction": 0.5}},
+            MINIMAL_GLOBAL, "Poxviridae",
+        )
+        assert merged["concatenation"]["min_fraction"] == 0.5
+
+    # --- deep-merge: absent keys are NOT wiped ---
+
+    def test_absent_sibling_keys_retain_defaults(self):
+        # File only sets clustering.tool; every other clustering key should
+        # still come from DEFAULT_FAMILY_CONFIG, not disappear.
+        merged = _merge_with_defaults(
+            {"clustering": {"tool": "cdhit"}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        dc = DEFAULT_FAMILY_CONFIG["clustering"]
+        assert merged["clustering"]["threshold_min"] == dc["threshold_min"]
+        assert merged["clustering"]["threshold_max"] == dc["threshold_max"]
+        assert merged["clustering"]["max_reps_500"] == dc["max_reps_500"]
+        assert merged["clustering"]["max_reps_100"] == dc["max_reps_100"]
+
+    def test_absent_top_level_keys_retain_defaults(self):
+        # File only touches download; all other top-level sections should still
+        # be present and match DEFAULT_FAMILY_CONFIG.
+        merged = _merge_with_defaults(
+            {"download": {"max_per_species": 1}}, MINIMAL_GLOBAL, "Flaviviridae"
+        )
+        for key in DEFAULT_FAMILY_CONFIG:
+            assert key in merged, f"top-level key {key!r} missing from merged config"
+
+    # --- end-to-end: load_family_config with file on disk ---
+
+    def test_load_family_config_file_values_all_survive(self, tmp_path):
+        """Full disk-to-merged-dict path: every non-default value in the file
+        must appear unchanged in the final config dict."""
+        cfg_dir = tmp_path / "configs"
+        cfg_dir.mkdir()
+        file_values = {
+            "download":        {"max_per_species": 42},
+            "clustering":      {"tool": "cdhit", "max_reps_500": 7, "max_reps_100": 2,
+                                "threshold_min": 0.80, "threshold_max": 0.97},
+            "quality":         {"max_ambiguous": 0.03, "min_length": 800},
+            "targets":         {"max_500": 250, "max_100": 60},
+            "msa_500":         {"tool": "muscle", "options_nuc": "--custom-nuc"},
+            "msa_100":         {"options_nuc": "--retree 1"},
+            "msa_trim":        {"enabled": False},
+            "tree_500":        {"tool": "iqtree2", "model_nuc": "HKY+G"},
+            "tree_100":        {"model_nuc": "K80+G", "options_nuc": "--fast"},
+            "outlier_removal": {"factor": 15.0, "max_iterations": 1, "min_seqs": 20},
+            "length_outlier":  {"enabled": False, "k": 3.0},
+            "coloring":        {"genus_inference": "suffix"},
+            "taxonomy":        {"lca_min_rank": "genus"},
+            "refseq_absorption": {"enabled": False, "threshold": 0.95},
+            "sequence":        {"type": "nucleotide", "region": "whole_genome"},
+        }
+        (cfg_dir / "Flaviviridae.yaml").write_text(yaml.dump(file_values))
+        cfg, auto = load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
+        assert auto is False
+        assert cfg["download"]["max_per_species"] == 42
+        assert cfg["clustering"]["tool"] == "cdhit"
+        assert cfg["clustering"]["max_reps_500"] == 7
+        assert cfg["clustering"]["max_reps_100"] == 2
+        assert cfg["clustering"]["threshold_min"] == 0.80
+        assert cfg["clustering"]["threshold_max"] == 0.97
+        assert cfg["quality"]["max_ambiguous"] == 0.03
+        assert cfg["quality"]["min_length"] == 800
+        assert cfg["targets"]["max_500"] == 250
+        assert cfg["targets"]["max_100"] == 60
+        assert cfg["msa_500"]["tool"] == "muscle"
+        assert cfg["msa_500"]["options_nuc"] == "--custom-nuc"
+        assert cfg["msa_100"]["options_nuc"] == "--retree 1"
+        assert cfg["msa_trim"]["enabled"] is False
+        assert cfg["tree_500"]["tool"] == "iqtree2"
+        assert cfg["tree_500"]["model_nuc"] == "HKY+G"
+        assert cfg["tree_100"]["model_nuc"] == "K80+G"
+        assert cfg["tree_100"]["options_nuc"] == "--fast"
+        assert cfg["outlier_removal"]["factor"] == 15.0
+        assert cfg["outlier_removal"]["max_iterations"] == 1
+        assert cfg["outlier_removal"]["min_seqs"] == 20
+        assert cfg["length_outlier"]["enabled"] is False
+        assert cfg["length_outlier"]["k"] == 3.0
+        assert cfg["coloring"]["genus_inference"] == "suffix"
+        assert cfg["taxonomy"]["lca_min_rank"] == "genus"
+        assert cfg["refseq_absorption"]["enabled"] is False
+        assert cfg["refseq_absorption"]["threshold"] == 0.95
