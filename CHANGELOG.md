@@ -10,6 +10,29 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.34] — 2026-05-12
+
+### Changed
+- **Format-string leaf labels** — the `labeling:` config block now accepts a
+  `format:` string with named placeholders `{species}`, `{id}`, `{host}`,
+  `{strain}`, `{location}`, `{year}`, `{genus}`.  The user controls which
+  fields appear, in what order, and with what separators.  Default:
+  `{species}|{id}|{host}` (preserves previous behaviour).
+  Two accompanying boolean options:
+  - `replace_whitespace` (default `true`) — spaces in field values become
+    underscores so Newick labels remain parseable.
+  - `keep_separator_on_empty` (default `false`) — when a field value is
+    absent, `null`, `"unknown"`, or `"n/a"` (case-insensitive), its adjacent
+    separator literal is also dropped so no leading or consecutive separators
+    appear.  Set `true` to preserve separators regardless.
+  Applies to PhyloXML `<name>` elements and all graphical output labels (PDF,
+  PNG) in both single-protein and concat pipeline modes.
+
+### Removed
+- **`labeling.show_strain`** (added in v1.2.32) — superseded by the new
+  format-string approach.  Use `format: "{species}|{strain}|{id}|{host}"`
+  (or any ordering) instead.
+
 ## [1.2.33] — 2026-05-12
 
 ### Changed

@@ -32,7 +32,7 @@ from .quality import (
     deduplicate,
     write_fasta,
 )
-from .rename import assign_short_ids, restore_fasta_names
+from .rename import assign_short_ids, restore_fasta_names, DEFAULT_LABEL_FORMAT
 from .subsample import absorb_into_refseqs, adaptive_cluster_species, proportional_merge
 from .msa import run_msa, get_mafft_version, validate_msa
 from .trim import run_trim, get_trimal_version
@@ -646,9 +646,16 @@ def run_family(
         all_records.extend(data["records"])
         all_metadata.extend(data["metadata"])
 
+    labeling_cfg = family_cfg.get("labeling") or {}
+    label_format            = labeling_cfg.get("format", DEFAULT_LABEL_FORMAT)
+    replace_whitespace      = labeling_cfg.get("replace_whitespace", True)
+    keep_separator_on_empty = labeling_cfg.get("keep_separator_on_empty", False)
     id_map_path = family_dir / f"{family}_id_map.tsv"
     renamed_records, short_to_display = assign_short_ids(
-        all_records, all_metadata, family, id_map_path
+        all_records, all_metadata, family, id_map_path,
+        label_format=label_format,
+        replace_whitespace=replace_whitespace,
+        keep_separator_on_empty=keep_separator_on_empty,
     )
 
     # Attach short_id back into metadata and rebuild species_data with short IDs

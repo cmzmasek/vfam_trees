@@ -269,6 +269,17 @@ outlier_removal:
   max_iterations: 3             # maximum MSA+tree iterations
   min_seqs: 40                  # only remove outliers when ≥ min_seqs sequences remain after removal
 
+labeling:
+  format: "{species}|{id}|{host}"  # format string for leaf labels (PhyloXML <name>,
+                                    # PDF/PNG tree images, FASTA display names).
+                                    # Placeholders: {species}, {id} (accession), {host},
+                                    # {strain}, {location}, {year}, {genus}.
+                                    # Literal text (separators etc.) is kept verbatim.
+  replace_whitespace: true          # replace spaces in field values with underscores
+  keep_separator_on_empty: false    # false: drop empty fields and their preceding
+                                    #   separator so no leading/consecutive separators appear
+                                    # true: keep separators regardless of field content
+
 coloring:
   genus_inference: deepest      # none: only formal NCBI genus-rank entries are colored
                                 # suffix: single-word taxa ending in "virus" treated as genus

@@ -1,32 +1,39 @@
 """Tests for vfam_trees.rename — short ID assignment and name restoration.
 
-This file is the canonical regression test for the leaf-label naming
-convention used across the entire pipeline (sequence FASTAs, PhyloXML
-``<name>`` elements, Newick leaves, and rendered tree-image labels).
+Canonical regression test for the leaf-label naming convention used across
+the entire pipeline (sequence FASTAs, PhyloXML ``<name>`` elements, Newick
+leaves, and rendered tree-image labels).
 
-The naming format is locked down here:
+Label format (default):
 
-    no host known  → ``<species>|<accession>``
-    host known     → ``<species>|<accession>|<host>``
+    ``{species}|{id}|{host}``
 
-Single-protein and concat modes both delegate to :func:`canonical_leaf_label`
-so identical ``(species, accession, host)`` inputs yield byte-identical
-labels — the cross-mode consistency check below enforces that explicitly.
+    — absent / "unknown" / "n/a" components (case-insensitive) are dropped
+      and their preceding separator is suppressed so no leading or consecutive
+      separators appear (``keep_separator_on_empty=False``).
+
+Custom formats use the same ``{placeholder}`` syntax with any literal
+separators; the same absent-field rule applies unless
+``keep_separator_on_empty=True``.
 
 If you change the leaf naming convention, update the docstring of
-``canonical_leaf_label`` in ``vfam_trees/rename.py`` AND update / add the
-relevant tests here.  The format has regressed before; tests in this file
-exist specifically to catch that.
+``format_leaf_label`` in ``vfam_trees/rename.py`` AND update / add the
+relevant tests here.
 """
 import pytest
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from vfam_trees.rename import (
+    DEFAULT_LABEL_FORMAT,
+    LABEL_FIELDS,
     _build_display_name,
     _family_prefix,
+    _normalize_field,
+    _resolve_label_fields,
     assign_short_ids,
     canonical_leaf_label,
+    format_leaf_label,
     load_id_map,
     restore_fasta_names,
 )
@@ -46,36 +53,161 @@ def _meta(species="Dengue virus", accession="NC_001477", host="Homo sapiens"):
 
 class TestFamilyPrefix:
     def test_four_consonants(self):
-        # "Flaviviridae" consonants: F, L, V, V, R, D → "FLVV"
         assert _family_prefix("Flaviviridae") == "FLVV"
 
     def test_first_four_consonants_only(self):
-        # "Coronaviridae" consonants: C, R, N, V, R, D → "CRNV"
         assert _family_prefix("Coronaviridae") == "CRNV"
 
     def test_too_few_consonants_uses_first_four_chars(self):
-        # Hypothetical family with <4 consonants: falls back to first 4 uppercase
         assert _family_prefix("Abc") == "ABC"
 
     def test_vowel_heavy_name_fallback(self):
-        # "Aeiou" has 0 consonants → fallback to first 4 chars uppercased
         assert _family_prefix("Aeiou") == "AEIO"
 
 
 # ---------------------------------------------------------------------------
-# canonical_leaf_label — single source of truth for leaf naming
+# _normalize_field
+# ---------------------------------------------------------------------------
+
+class TestNormalizeField:
+    @pytest.mark.parametrize("absent", [None, "", " ", "  ", "unknown", "Unknown",
+                                         "UNKNOWN", "n/a", "N/A"])
+    def test_absent_values_become_empty_string(self, absent):
+        assert _normalize_field(absent) == ""
+
+    def test_real_value_preserved(self):
+        assert _normalize_field("Dengue virus") == "Dengue virus"
+
+    def test_strips_surrounding_whitespace(self):
+        assert _normalize_field("  Dengue  ") == "Dengue"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_label_fields
+# ---------------------------------------------------------------------------
+
+class TestResolveLabelFields:
+    def test_all_standard_fields_present(self):
+        meta = {
+            "species": "Dengue virus", "accession": "NC_001477",
+            "host": "Homo sapiens", "strain": "DEN-1",
+            "location": "Thailand", "collection_date": "2005-07-14",
+        }
+        f = _resolve_label_fields(meta)
+        assert f["species"] == "Dengue virus"
+        assert f["id"]      == "NC_001477"
+        assert f["host"]    == "Homo sapiens"
+        assert f["strain"]  == "DEN-1"
+        assert f["location"] == "Thailand"
+        assert f["year"]    == "2005"
+        assert f["genus"]   == ""
+
+    def test_year_extracted_from_full_date(self):
+        assert _resolve_label_fields({"collection_date": "2020-03-15"})["year"] == "2020"
+
+    def test_year_extracted_from_year_only(self):
+        assert _resolve_label_fields({"collection_date": "1999"})["year"] == "1999"
+
+    def test_year_empty_when_no_date(self):
+        assert _resolve_label_fields({})["year"] == ""
+
+    def test_year_empty_when_date_unknown(self):
+        assert _resolve_label_fields({"collection_date": "unknown"})["year"] == ""
+
+    def test_absent_fields_normalized_to_empty(self):
+        f = _resolve_label_fields({"accession": "ACC1", "host": "unknown"})
+        assert f["species"] == ""
+        assert f["host"]    == ""
+
+    def test_all_label_fields_are_present_in_output(self):
+        f = _resolve_label_fields({})
+        assert set(f.keys()) >= LABEL_FIELDS
+
+
+# ---------------------------------------------------------------------------
+# format_leaf_label — the core engine
+# ---------------------------------------------------------------------------
+
+class TestFormatLeafLabel:
+    """Lock down format_leaf_label rendering for all combinations."""
+
+    def test_default_format_all_fields_present(self):
+        f = {"species": "Dengue virus", "id": "NC_001477", "host": "Homo sapiens"}
+        assert format_leaf_label(DEFAULT_LABEL_FORMAT, f) == "Dengue_virus|NC_001477|Homo_sapiens"
+
+    def test_default_format_host_absent_two_components(self):
+        f = {"species": "Dengue virus", "id": "NC_001477", "host": ""}
+        assert format_leaf_label(DEFAULT_LABEL_FORMAT, f) == "Dengue_virus|NC_001477"
+
+    def test_custom_format_species_strain_id(self):
+        f = {"species": "Dengue virus", "strain": "DEN-1", "id": "NC_001477"}
+        assert format_leaf_label("{species}|{strain}|{id}", f) == "Dengue_virus|DEN-1|NC_001477"
+
+    def test_custom_separator_not_pipe(self):
+        f = {"species": "Dengue virus", "id": "NC_001477"}
+        assert format_leaf_label("{species}_{id}", f) == "Dengue_virus_NC_001477"
+
+    def test_empty_middle_field_drops_its_separator(self):
+        f = {"species": "Dengue virus", "strain": "", "id": "NC_001477"}
+        out = format_leaf_label("{species}|{strain}|{id}", f)
+        assert out == "Dengue_virus|NC_001477"
+        assert "||" not in out
+
+    def test_empty_first_field_drops_leading_separator_of_second(self):
+        f = {"strain": "", "species": "Dengue virus", "id": "NC_001477"}
+        out = format_leaf_label("{strain}|{species}|{id}", f)
+        assert out == "Dengue_virus|NC_001477"
+        assert out.startswith("|") is False
+
+    def test_all_fields_empty_returns_empty_string(self):
+        assert format_leaf_label("{species}|{id}", {"species": "", "id": ""}) == ""
+
+    def test_keep_separator_on_empty_true_preserves_all_seps(self):
+        f = {"species": "Dengue virus", "strain": "", "id": "NC_001477"}
+        out = format_leaf_label("{species}|{strain}|{id}", f, keep_separator_on_empty=True)
+        assert out == "Dengue_virus||NC_001477"
+
+    def test_replace_whitespace_true_spaces_become_underscores(self):
+        f = {"species": "Dengue virus", "id": "NC 001"}
+        assert " " not in format_leaf_label("{species}|{id}", f, replace_whitespace=True)
+
+    def test_replace_whitespace_false_spaces_kept(self):
+        f = {"species": "Dengue virus", "id": "NC_001"}
+        out = format_leaf_label("{species}|{id}", f, replace_whitespace=False)
+        assert "Dengue virus" in out
+
+    def test_year_placeholder_uses_year_value(self):
+        f = {"species": "Dengue virus", "id": "NC_001", "year": "2020"}
+        assert format_leaf_label("{species}|{id}|{year}", f) == "Dengue_virus|NC_001|2020"
+
+    def test_location_placeholder(self):
+        f = {"species": "Sp", "id": "ACC", "location": "Thailand"}
+        assert format_leaf_label("{species}|{id}|{location}", f) == "Sp|ACC|Thailand"
+
+    def test_trailing_literal_always_appended(self):
+        f = {"species": "Sp", "id": "ACC"}
+        out = format_leaf_label("{species}|{id}_v1", f)
+        assert out.endswith("_v1")
+
+    def test_unknown_field_name_renders_empty(self):
+        f = {"species": "Sp", "id": "ACC"}
+        out = format_leaf_label("{species}|{bogus}|{id}", f)
+        # {bogus} is absent → empty → its separator dropped
+        assert out == "Sp|ACC"
+
+    @pytest.mark.parametrize("absent", ["", "unknown", "Unknown", "n/a", "N/A"])
+    def test_absent_values_drop_field_and_separator(self, absent):
+        f = {"species": "Sp", "strain": absent, "id": "ACC"}
+        out = format_leaf_label("{species}|{strain}|{id}", f)
+        assert out == "Sp|ACC"
+
+
+# ---------------------------------------------------------------------------
+# canonical_leaf_label — default format with normalized absent values
 # ---------------------------------------------------------------------------
 
 class TestCanonicalLeafLabel:
-    """Lock down the canonical leaf-label format.
-
-    The naming convention is intentionally narrow:
-      - exactly two pipe-separated components when host is absent
-      - exactly three pipe-separated components when host is present
-      - components are: species, accession, host (in that order)
-      - spaces in any component become underscores
-      - host treated as absent when None / "" / whitespace / "unknown"
-    """
+    """Lock down the canonical default-format label behaviour."""
 
     def test_with_host_three_components_in_order(self):
         assert canonical_leaf_label("Dengue virus", "NC_001477", "Homo sapiens") \
@@ -87,15 +219,16 @@ class TestCanonicalLeafLabel:
 
     @pytest.mark.parametrize("absent_host", [
         None, "", " ", "  ", "\t", "unknown", "Unknown", "UNKNOWN", " unknown ",
+        "n/a", "N/A",
     ])
     def test_host_absent_variants_all_omit_host_component(self, absent_host):
         out = canonical_leaf_label("X virus", "ACC1", absent_host)
         assert out == "X_virus|ACC1"
-        assert out.count("|") == 1   # exactly two components
+        assert out.count("|") == 1
 
     def test_host_present_always_yields_three_components(self):
         out = canonical_leaf_label("X virus", "ACC1", "Bat")
-        assert out.count("|") == 2   # exactly three components
+        assert out.count("|") == 2
         assert out.split("|") == ["X_virus", "ACC1", "Bat"]
 
     def test_spaces_replaced_with_underscores_everywhere(self):
@@ -103,34 +236,25 @@ class TestCanonicalLeafLabel:
         assert " " not in out
         assert out == "Foot_and_mouth_virus|AB_12|Bos_taurus"
 
-    def test_missing_species_becomes_unknown(self):
-        assert canonical_leaf_label(None, "ACC1", None) == "unknown|ACC1"
-        assert canonical_leaf_label("", "ACC1", None) == "unknown|ACC1"
+    def test_missing_species_omitted(self):
+        # Absent species → just accession (no "unknown|" prefix)
+        assert canonical_leaf_label(None, "ACC1", None) == "ACC1"
+        assert canonical_leaf_label("", "ACC1", None) == "ACC1"
 
-    def test_missing_accession_becomes_unknown(self):
-        assert canonical_leaf_label("Sp", None, None) == "Sp|unknown"
-        assert canonical_leaf_label("Sp", "", None) == "Sp|unknown"
+    def test_missing_accession_omitted(self):
+        assert canonical_leaf_label("Sp", None, None) == "Sp"
+        assert canonical_leaf_label("Sp", "", None) == "Sp"
 
-    def test_all_missing(self):
-        assert canonical_leaf_label(None, None, None) == "unknown|unknown"
+    def test_all_missing_returns_empty(self):
+        assert canonical_leaf_label(None, None, None) == ""
 
     def test_host_with_only_punctuation_and_spaces_kept(self):
-        # Real edge case: hosts like "Aedes spp." should be kept verbatim
-        # (only None/empty/whitespace/"unknown" are dropped).
         assert canonical_leaf_label("Sp", "ACC1", "Aedes spp.") \
             == "Sp|ACC1|Aedes_spp."
 
-    def test_label_components_never_contain_pipes_in_inputs(self):
-        # If species or host already contains a pipe (very rare), the label
-        # would silently fragment.  Document this limitation: the canonical
-        # builder does not sanitize internal pipes.  If this ever matters,
-        # update both the function and this test deliberately.
-        out = canonical_leaf_label("Weird|name", "ACC", None)
-        assert out == "Weird|name|ACC"   # caller responsibility
-
 
 # ---------------------------------------------------------------------------
-# _build_display_name (single-protein adaptor) — must match canonical_leaf_label
+# _build_display_name (single-protein adaptor)
 # ---------------------------------------------------------------------------
 
 class TestBuildDisplayName:
@@ -139,52 +263,25 @@ class TestBuildDisplayName:
         assert _build_display_name(m) == "Dengue_virus|NC_001477|Homo_sapiens"
 
     def test_host_unknown_omitted(self):
-        m = _meta(host="unknown")
-        assert _build_display_name(m) == "Dengue_virus|NC_001477"
+        assert _build_display_name(_meta(host="unknown")) == "Dengue_virus|NC_001477"
 
     def test_host_empty_omitted(self):
-        m = _meta(host="")
-        assert _build_display_name(m) == "Dengue_virus|NC_001477"
+        assert _build_display_name(_meta(host="")) == "Dengue_virus|NC_001477"
 
     def test_host_none_omitted(self):
-        m = _meta(host=None)
-        assert _build_display_name(m) == "Dengue_virus|NC_001477"
+        assert _build_display_name(_meta(host=None)) == "Dengue_virus|NC_001477"
 
-    def test_missing_fields_replaced_by_unknown(self):
+    def test_missing_fields_omitted(self):
         m = {"accession": "ACC1"}
-        assert _build_display_name(m) == "unknown|ACC1"
-
-    def test_strain_field_ignored(self):
-        # Strain is no longer part of the display name even if present in meta.
-        m = _meta()
-        m["strain"] = "DEN1"
-        assert "DEN1" not in _build_display_name(m)
+        assert _build_display_name(m) == "ACC1"
 
     def test_whitespace_replaced_with_underscore(self):
-        m = _meta(species="Zika virus", host="Aedes aegypti")
-        name = _build_display_name(m)
+        name = _build_display_name(_meta(species="Zika virus", host="Aedes aegypti"))
         assert "Zika_virus" in name
         assert "Aedes_aegypti" in name
         assert " " not in name
 
-    def test_only_three_meta_keys_consulted(self):
-        # Adaptor must consult only species / accession / host.  Any other
-        # field (strain, country, year, ...) must NOT influence the label.
-        baseline = _meta()
-        contaminated = {
-            **baseline,
-            "strain":          "DEN1",
-            "country":         "USA",
-            "collection_year": "2024",
-            "extra":           "should_not_appear",
-        }
-        assert _build_display_name(baseline) == _build_display_name(contaminated)
-
     def test_adaptor_matches_canonical_for_same_inputs(self):
-        # Cross-check: feeding the same (species, accession, host) into
-        # _build_display_name and canonical_leaf_label must yield the same
-        # string.  This catches anyone re-introducing inline construction
-        # in the single-protein adaptor.
         for species in ("Dengue virus", "X", "", None):
             for accession in ("NC_001", "", None):
                 for host in ("Homo sapiens", "", None, "unknown"):
@@ -194,67 +291,91 @@ class TestBuildDisplayName:
 
 
 # ---------------------------------------------------------------------------
-# Concat display-name builder — must produce identical labels to single-protein
+# Concat display-name builder — must match single-protein for same inputs
 # ---------------------------------------------------------------------------
 
 class TestConcatDisplayNamesMatchSingleProtein:
-    """Both modes must produce the exact same canonical label for identical
-    (species, accession, host) inputs.
-
-    This test imports the concat helper directly and feeds it minimal inputs.
-    The concat helper extracts host from a SeqRecord's source feature; we
-    construct minimal SeqRecords here to exercise that path.
-    """
+    """Both modes must produce the exact same canonical label for identical inputs."""
 
     @staticmethod
-    def _genome_with_host(host_value: str | None):
-        """Build a one-marker genome dict whose source feature carries
-        ``/host=<host_value>`` (or no host qualifier when None)."""
+    def _genome(host=None, strain=None, location=None, date=None):
         from Bio.SeqFeature import SeqFeature, FeatureLocation
         rec = SeqRecord(Seq("M"), id="prot1", description="")
         quals = {}
-        if host_value is not None:
-            quals["host"] = [host_value]
+        if host     is not None: quals["host"]            = [host]
+        if strain   is not None: quals["strain"]          = [strain]
+        if location is not None: quals["country"]         = [location]
+        if date     is not None: quals["collection_date"] = [date]
         rec.features = [SeqFeature(FeatureLocation(0, 1), type="source", qualifiers=quals)]
         rec.annotations = {}
         return {"polB": rec}
 
-    def test_with_host_matches_single_protein_label(self):
+    def test_default_format_with_host(self):
         from vfam_trees.pipeline_concat import _build_concat_display_names
-        selected = {"NC_001": self._genome_with_host("Homo sapiens")}
-        species_map = {"NC_001": "Dengue virus"}
-        out = _build_concat_display_names(selected, species_map)
-        meta = {"species": "Dengue virus", "accession": "NC_001", "host": "Homo sapiens"}
-        assert out["NC_001"] == _build_display_name(meta) \
-            == "Dengue_virus|NC_001|Homo_sapiens"
+        selected = {"NC_001": self._genome(host="Homo sapiens")}
+        out = _build_concat_display_names(selected, {"NC_001": "Dengue virus"})
+        assert out["NC_001"] == "Dengue_virus|NC_001|Homo_sapiens"
 
-    def test_without_host_matches_single_protein_label(self):
+    def test_default_format_without_host(self):
         from vfam_trees.pipeline_concat import _build_concat_display_names
-        selected = {"NC_001": self._genome_with_host(None)}
-        species_map = {"NC_001": "Dengue virus"}
-        out = _build_concat_display_names(selected, species_map)
-        meta = {"species": "Dengue virus", "accession": "NC_001", "host": None}
-        assert out["NC_001"] == _build_display_name(meta) == "Dengue_virus|NC_001"
+        selected = {"NC_001": self._genome()}
+        out = _build_concat_display_names(selected, {"NC_001": "Dengue virus"})
+        assert out["NC_001"] == "Dengue_virus|NC_001"
 
     @pytest.mark.parametrize("absent", ["", "unknown", "Unknown", " "])
     def test_absent_host_variants_drop_host_component(self, absent):
         from vfam_trees.pipeline_concat import _build_concat_display_names
-        selected = {"NC_001": self._genome_with_host(absent)}
+        selected = {"NC_001": self._genome(host=absent)}
         out = _build_concat_display_names(selected, {"NC_001": "Sp"})
         assert out["NC_001"] == "Sp|NC_001"
         assert out["NC_001"].count("|") == 1
 
-    def test_empty_marker_dict_still_yields_label_without_host(self):
-        # Defensive: a genome with zero markers should still get a label
-        # (no host available → two-component form).
+    def test_empty_marker_dict_yields_label_without_host(self):
         from vfam_trees.pipeline_concat import _build_concat_display_names
         out = _build_concat_display_names({"NC_x": {}}, {"NC_x": "X virus"})
         assert out["NC_x"] == "X_virus|NC_x"
 
-    def test_no_species_yields_unknown_species(self):
+    def test_no_species_yields_just_accession(self):
         from vfam_trees.pipeline_concat import _build_concat_display_names
-        out = _build_concat_display_names({"NC_x": self._genome_with_host(None)}, {})
-        assert out["NC_x"] == "unknown|NC_x"
+        out = _build_concat_display_names({"NC_x": self._genome()}, {})
+        assert out["NC_x"] == "NC_x"
+
+    def test_custom_format_strain_included(self):
+        from vfam_trees.pipeline_concat import _build_concat_display_names
+        selected = {"NC_001": self._genome(host="Homo sapiens", strain="DEN-1")}
+        out = _build_concat_display_names(
+            selected, {"NC_001": "Dengue virus"},
+            label_format="{species}|{strain}|{id}|{host}",
+        )
+        assert out["NC_001"] == "Dengue_virus|DEN-1|NC_001|Homo_sapiens"
+
+    def test_custom_format_year_and_location(self):
+        from vfam_trees.pipeline_concat import _build_concat_display_names
+        selected = {"NC_001": self._genome(location="Thailand", date="2005-07-14")}
+        out = _build_concat_display_names(
+            selected, {"NC_001": "Dengue virus"},
+            label_format="{species}|{id}|{location}|{year}",
+        )
+        assert out["NC_001"] == "Dengue_virus|NC_001|Thailand|2005"
+
+    def test_custom_format_empty_field_dropped(self):
+        from vfam_trees.pipeline_concat import _build_concat_display_names
+        selected = {"NC_001": self._genome()}  # no strain
+        out = _build_concat_display_names(
+            selected, {"NC_001": "Dengue virus"},
+            label_format="{species}|{strain}|{id}",
+        )
+        assert out["NC_001"] == "Dengue_virus|NC_001"
+
+    def test_keep_separator_on_empty_true(self):
+        from vfam_trees.pipeline_concat import _build_concat_display_names
+        selected = {"NC_001": self._genome()}  # no strain
+        out = _build_concat_display_names(
+            selected, {"NC_001": "Dengue virus"},
+            label_format="{species}|{strain}|{id}",
+            keep_separator_on_empty=True,
+        )
+        assert out["NC_001"] == "Dengue_virus||NC_001"
 
 
 # ---------------------------------------------------------------------------
@@ -290,20 +411,62 @@ class TestAssignShortIds:
 
     def test_original_sequence_preserved_on_renamed_record(self, tmp_path):
         rec = _rec("ACC1", seq="ATGCATGC")
-        records = [rec]
-        metas = [_meta(accession="ACC1")]
         id_map_path = tmp_path / "id_map.tsv"
-        renamed, _ = assign_short_ids(records, metas, "Flaviviridae", id_map_path)
+        renamed, _ = assign_short_ids([rec], [_meta(accession="ACC1")], "Flaviviridae", id_map_path)
         assert str(renamed[0].seq) == "ATGCATGC"
 
     def test_description_cleared_on_renamed_record(self, tmp_path):
         rec = _rec("ACC1")
         rec.description = "some long description"
-        records = [rec]
-        metas = [_meta(accession="ACC1")]
         id_map_path = tmp_path / "id_map.tsv"
-        renamed, _ = assign_short_ids(records, metas, "Flaviviridae", id_map_path)
+        renamed, _ = assign_short_ids([rec], [_meta(accession="ACC1")], "Flaviviridae", id_map_path)
         assert renamed[0].description == ""
+
+    def test_custom_format_strain_in_display_name(self, tmp_path):
+        meta = {**_meta(accession="NC_001477", host=None), "strain": "DEN-1"}
+        id_map_path = tmp_path / "id_map.tsv"
+        _, s2d = assign_short_ids(
+            [_rec("NC_001477")], [meta], "Flaviviridae", id_map_path,
+            label_format="{species}|{strain}|{id}",
+        )
+        assert list(s2d.values()) == ["Dengue_virus|DEN-1|NC_001477"]
+
+    def test_custom_format_year_extracted(self, tmp_path):
+        meta = {**_meta(accession="NC_001477", host=None), "collection_date": "2005-07-14"}
+        id_map_path = tmp_path / "id_map.tsv"
+        _, s2d = assign_short_ids(
+            [_rec("NC_001477")], [meta], "Flaviviridae", id_map_path,
+            label_format="{species}|{id}|{year}",
+        )
+        assert list(s2d.values()) == ["Dengue_virus|NC_001477|2005"]
+
+    def test_default_format_matches_canonical_leaf_label(self, tmp_path):
+        meta = _meta(accession="NC_001477")
+        id_map_path = tmp_path / "id_map.tsv"
+        _, s2d = assign_short_ids([_rec("NC_001477")], [meta], "Flaviviridae", id_map_path)
+        expected = canonical_leaf_label(meta["species"], meta["accession"], meta["host"])
+        assert list(s2d.values()) == [expected]
+
+    def test_empty_field_not_in_label_by_default(self, tmp_path):
+        meta = {**_meta(accession="NC_001477", host=None), "strain": "unknown"}
+        id_map_path = tmp_path / "id_map.tsv"
+        _, s2d = assign_short_ids(
+            [_rec("NC_001477")], [meta], "Flaviviridae", id_map_path,
+            label_format="{species}|{strain}|{id}",
+        )
+        label = list(s2d.values())[0]
+        assert label == "Dengue_virus|NC_001477"
+        assert label.count("|") == 1
+
+    def test_keep_separator_on_empty_produces_double_pipe(self, tmp_path):
+        meta = {**_meta(accession="NC_001477", host=None), "strain": ""}
+        id_map_path = tmp_path / "id_map.tsv"
+        _, s2d = assign_short_ids(
+            [_rec("NC_001477")], [meta], "Flaviviridae", id_map_path,
+            label_format="{species}|{strain}|{id}",
+            keep_separator_on_empty=True,
+        )
+        assert list(s2d.values()) == ["Dengue_virus||NC_001477"]
 
 
 # ---------------------------------------------------------------------------
@@ -337,25 +500,15 @@ def test_restore_fasta_names_replaces_ids(tmp_path):
 
 # ---------------------------------------------------------------------------
 # End-to-end naming-consistency tests
-#
-# These exercise the full path from canonical_leaf_label → through whatever
-# output writer the user sees.  Adding a new output channel?  Add a test
-# here verifying the canonical name flows through unchanged.
 # ---------------------------------------------------------------------------
 
 class TestCanonicalNameFlowsThroughFastaOutput:
-    """Sequence FASTAs must contain the canonical label as the record ID."""
-
     def test_with_host(self, tmp_path):
         rec = _rec("NC_001")
         meta = {"species": "Dengue virus", "accession": "NC_001", "host": "Homo sapiens"}
         id_map_path = tmp_path / "id_map.tsv"
         renamed, mapping = assign_short_ids([rec], [meta], "Flaviviridae", id_map_path)
-
-        # 1. id_map carries the canonical name
         assert list(mapping.values()) == ["Dengue_virus|NC_001|Homo_sapiens"]
-
-        # 2. Round-trip through restore_fasta_names produces it as the FASTA ID
         in_fa = tmp_path / "short.fasta"
         in_fa.write_text(f">{renamed[0].id}\nATGC\n")
         out_fa = tmp_path / "display.fasta"
@@ -368,7 +521,6 @@ class TestCanonicalNameFlowsThroughFastaOutput:
         id_map_path = tmp_path / "id_map.tsv"
         renamed, mapping = assign_short_ids([rec], [meta], "Flaviviridae", id_map_path)
         assert list(mapping.values()) == ["Zika_virus|NC_002"]
-
         in_fa = tmp_path / "short.fasta"
         in_fa.write_text(f">{renamed[0].id}\nATGC\n")
         out_fa = tmp_path / "display.fasta"
@@ -377,15 +529,12 @@ class TestCanonicalNameFlowsThroughFastaOutput:
 
 
 class TestCanonicalNameFlowsThroughPhyloXML:
-    """PhyloXML ``<name>`` for external nodes must be the canonical label."""
-
     def _xml_leaf_names(self, xml_path):
         import xml.etree.ElementTree as ET
         ns = {"px": "http://www.phyloxml.org"}
         tree = ET.parse(str(xml_path))
         names = []
         for clade in tree.iter("{http://www.phyloxml.org}clade"):
-            # External node = no nested <clade> children
             children = clade.findall("px:clade", ns)
             if not children:
                 name_el = clade.find("px:name", ns)
@@ -395,27 +544,17 @@ class TestCanonicalNameFlowsThroughPhyloXML:
 
     def test_single_protein_phyloxml_name_with_host(self, tmp_path):
         from vfam_trees.phyloxml_writer import write_phyloxml
-        # canonical label that the rest of the pipeline would produce
         canonical = canonical_leaf_label("Dengue virus", "NC_001", "Homo sapiens")
         nwk = tmp_path / "tree.nwk"
         nwk.write_text("(SHORT_001:0.1,SHORT_002:0.1);")
         xml_path = tmp_path / "tree.xml"
         write_phyloxml(
-            newick_path=nwk,
-            output_xml=xml_path,
+            newick_path=nwk, output_xml=xml_path,
             id_map={"SHORT_001": canonical, "SHORT_002": "Other_sp|ACC2"},
-            leaf_metadata={
-                "SHORT_001": {"accession": "NC_001"},
-                "SHORT_002": {"accession": "ACC2"},
-            },
-            family="Flaviviridae",
-            tree=None,
-            phylogeny_name="Flaviviridae",
-            phylogeny_detail="test",
-            confidence_type="SH_like",
-            leaf_colors={},
-            aligned_seqs={},
-            seq_type="protein",
+            leaf_metadata={"SHORT_001": {"accession": "NC_001"}, "SHORT_002": {"accession": "ACC2"}},
+            family="Flaviviridae", tree=None, phylogeny_name="Flaviviridae",
+            phylogeny_detail="test", confidence_type="SH_like",
+            leaf_colors={}, aligned_seqs={}, seq_type="protein",
         )
         names = self._xml_leaf_names(xml_path)
         assert canonical in names
@@ -428,19 +567,12 @@ class TestCanonicalNameFlowsThroughPhyloXML:
         nwk.write_text("(SHORT_001:0.1,SHORT_002:0.1);")
         xml_path = tmp_path / "tree.xml"
         write_phyloxml(
-            newick_path=nwk,
-            output_xml=xml_path,
+            newick_path=nwk, output_xml=xml_path,
             id_map={"SHORT_001": canonical, "SHORT_002": "Other|ACC2"},
             leaf_metadata={"SHORT_001": {"accession": "NC_002"}, "SHORT_002": {}},
-            family="Flaviviridae",
-            tree=None,
-            phylogeny_name="Flaviviridae",
-            phylogeny_detail="test",
-            confidence_type="SH_like",
-            leaf_colors={},
-            aligned_seqs={},
-            seq_type="protein",
+            family="Flaviviridae", tree=None, phylogeny_name="Flaviviridae",
+            phylogeny_detail="test", confidence_type="SH_like",
+            leaf_colors={}, aligned_seqs={}, seq_type="protein",
         )
         assert canonical in self._xml_leaf_names(xml_path)
-        # exactly two pipe-separated components, no host
         assert canonical == "Zika_virus|NC_002"

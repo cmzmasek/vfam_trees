@@ -646,6 +646,20 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "max_iterations": 3,
         "min_seqs": 40,
     },
+    "labeling": {
+        # Python-style format string controlling leaf labels in PhyloXML
+        # <name> elements, PDF/PNG tree images, and FASTA display names.
+        # Supported placeholders: {species}, {id} (accession), {host},
+        # {strain}, {location}, {year}, {genus}.
+        # Literal text (including separators like "|") is reproduced verbatim.
+        "format": "{species}|{id}|{host}",
+        # Replace spaces with underscores in field values (Newick-safe).
+        "replace_whitespace": True,
+        # When False (default): empty / "unknown" / "n/a" fields AND their
+        # immediately preceding separator are dropped so no leading or
+        # consecutive separators appear.  Set True to keep them.
+        "keep_separator_on_empty": False,
+    },
     "coloring": {
         # Genus inference strategy when no formal genus rank is present in the
         # NCBI lineage.  "none" keeps the current behaviour (grey).

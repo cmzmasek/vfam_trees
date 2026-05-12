@@ -468,6 +468,27 @@ defaults:
   #   deepest — suffix match first; if that fails, use the deepest lineage entry
   #             above species level as a grouping key (maximally aggressive —
   #             useful for poorly annotated families).
+  # Leaf label content — controls what appears in PhyloXML <name> elements,
+  # PDF/PNG tree images, and FASTA display names.
+  labeling:
+    # Format string for leaf labels.  Use {placeholder} tokens from:
+    #   {species}   NCBI species name
+    #   {id}        accession number
+    #   {host}      host organism
+    #   {strain}    strain / isolate name
+    #   {location}  collection country / region
+    #   {year}      4-digit collection year (extracted from collection_date)
+    #   {genus}     genus (when populated in metadata; empty otherwise)
+    # Any literal text between tokens — including separators like "|" — is
+    # reproduced verbatim.  Default: "{species}|{id}|{host}"
+    format: "{species}|{id}|{host}"
+    # Replace spaces in field values with underscores (keeps Newick parseable).
+    replace_whitespace: true
+    # When false (default): empty / "unknown" / "n/a" fields AND their
+    # immediately preceding separator are dropped so no leading or consecutive
+    # separators appear.  Set true to keep separators regardless.
+    keep_separator_on_empty: false
+
   coloring:
     genus_inference: deepest
 

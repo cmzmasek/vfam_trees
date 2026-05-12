@@ -49,7 +49,10 @@ from .fetch import (
 )
 from .logger import get_logger
 from .phyloxml_writer import write_phyloxml
-from .rename import canonical_leaf_label, restore_fasta_names
+from .rename import (
+    DEFAULT_LABEL_FORMAT, _normalize_field, _YEAR_RE,
+    format_leaf_label, restore_fasta_names,
+)
 from .report import generate_family_report, save_tree_icon, save_tree_images
 from .summary import (
     build_status_row,
@@ -783,7 +786,14 @@ def _run_target_concat(
             break
 
     # 6. Build display names (one per genome) — used for visualization / PhyloXML.
-    short_to_display = _build_concat_display_names(selected_genomes, genome_to_species)
+    labeling_cfg = family_cfg.get("labeling") or {}
+    short_to_display = _build_concat_display_names(
+        selected_genomes,
+        genome_to_species,
+        label_format=labeling_cfg.get("format", DEFAULT_LABEL_FORMAT),
+        replace_whitespace=labeling_cfg.get("replace_whitespace", True),
+        keep_separator_on_empty=labeling_cfg.get("keep_separator_on_empty", False),
+    )
 
     # 6.5. Publish per-target outputs to family_dir for parity with the
     #      single-protein pipeline (and additional concat-specific files).
@@ -1221,23 +1231,41 @@ def _zero_stats() -> dict:
 def _build_concat_display_names(
     selected_genomes: dict[str, dict[str, SeqRecord]],
     genome_to_species: dict[str, str],
+    label_format: str = DEFAULT_LABEL_FORMAT,
+    replace_whitespace: bool = True,
+    keep_separator_on_empty: bool = False,
 ) -> dict[str, str]:
     """Build the per-genome ``short_id → display_name`` map for concat mode.
 
-    Delegates to :func:`vfam_trees.rename.canonical_leaf_label` so concat
-    and single-protein modes emit identical labels for the same
-    ``(species, accession, host)`` triple.  Host is pulled from any one
-    marker record per genome (all share the same source feature).
+    Delegates to :func:`vfam_trees.rename.format_leaf_label` so concat and
+    single-protein modes produce identical labels for the same inputs.
+    Source-feature fields (host, strain, location, collection_date) are
+    pulled from any one marker record per genome.
     """
     short_to_display: dict[str, str] = {}
     for gid in selected_genomes:
         sp_name = genome_to_species.get(gid, "")
-        host_val = ""
         marker_records = selected_genomes[gid]
+        src_meta: dict = {}
         if marker_records:
             sample = next(iter(marker_records.values()))
-            host_val = extract_metadata(sample).get("host", "")
-        short_to_display[gid] = canonical_leaf_label(sp_name, gid, host_val)
+            src_meta = extract_metadata(sample)
+        raw_date = src_meta.get("collection_date", "") or ""
+        year_m = _YEAR_RE.search(raw_date)
+        field_values = {
+            "species":  _normalize_field(sp_name),
+            "id":       _normalize_field(gid),
+            "host":     _normalize_field(src_meta.get("host", "")),
+            "strain":   _normalize_field(src_meta.get("strain", "")),
+            "location": _normalize_field(src_meta.get("location", "")),
+            "year":     year_m.group(1) if year_m else "",
+            "genus":    "",  # not available at this stage in concat mode
+        }
+        short_to_display[gid] = format_leaf_label(
+            label_format, field_values,
+            replace_whitespace=replace_whitespace,
+            keep_separator_on_empty=keep_separator_on_empty,
+        )
     return short_to_display
 
 
