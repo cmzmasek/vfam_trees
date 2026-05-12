@@ -417,9 +417,13 @@ defaults:
     tool: trimal
     options: "-automated1"
 
+  # FastTree (tree_500) uses the same per-sequence-type option split as
+  # IQ-TREE (tree_100) — options_nuc for nucleotide runs, options_aa for
+  # protein runs (e.g. large DNA virus families with marker-gene fetches).
   tree_500:
     tool: fasttree
-    options: ""
+    options_nuc: ""
+    options_aa: ""
     model_nuc: GTR+G
     model_aa: LG+G
 

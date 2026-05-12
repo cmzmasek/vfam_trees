@@ -10,6 +10,17 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.33] — 2026-05-12
+
+### Changed
+- **`tree_500` config now mirrors `tree_100`** — the single `options:` key
+  under `tree_500:` has been replaced with `options_nuc:` and `options_aa:`
+  so nucleotide and protein runs can be tuned independently, exactly as
+  `tree_100:` already allowed.  Existing per-family YAMLs that still carry
+  the bare `options:` key continue to work via a backwards-compatible
+  fallback in `_resolve_tree_options`.  The concat pipeline's tree_500 path
+  now reads `options_aa` (concat is always protein) with the same fallback.
+
 ## [1.2.32] — 2026-05-12
 
 ### Added

@@ -919,6 +919,15 @@ class TestFileConfigOverridesAllDefaults:
         assert merged["tree_500"]["tool"] == "iqtree"
         assert merged["tree_500"]["model_nuc"] == "HKY+G"
 
+    def test_overrides_default_tree_500_options_nuc_and_aa(self):
+        merged = _merge_with_defaults(
+            {"tree_500": {"options_nuc": "-fastest", "options_aa": "-lg"}},
+            MINIMAL_GLOBAL, "Flaviviridae",
+        )
+        assert merged["tree_500"]["options_nuc"] == "-fastest"
+        assert merged["tree_500"]["options_aa"] == "-lg"
+        assert "options" not in merged["tree_500"]
+
     def test_overrides_default_tree_100_model(self):
         merged = _merge_with_defaults(
             {"tree_100": {"model_nuc": "K80+G"}},

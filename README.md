@@ -242,7 +242,8 @@ msa_trim:
 
 tree_500:
   tool: fasttree
-  options: ""
+  options_nuc: ""             # used for nucleotide sequences
+  options_aa: ""              # used for amino acid sequences (e.g. marker-gene families)
   model_nuc: GTR+G
   model_aa: LG+G              # LG+G used for amino acid sequences
 

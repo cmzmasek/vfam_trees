@@ -578,7 +578,8 @@ DEFAULT_FAMILY_CONFIG: dict = {
     },
     "tree_500": {
         "tool": "fasttree",
-        "options": "",
+        "options_nuc": "",
+        "options_aa": "",
         "model_nuc": "GTR+G",
         "model_aa": "LG+G",
     },

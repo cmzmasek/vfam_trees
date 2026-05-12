@@ -689,7 +689,7 @@ def _run_target_concat(
             ).strip()
             model_aa = model_nuc = "MFP"
         else:
-            tree_options = tree_cfg.get("options", "") or ""
+            tree_options = tree_cfg.get("options_aa", tree_cfg.get("options", "")) or ""
             model_aa  = tree_cfg.get("model_aa", "LG+G")
             model_nuc = tree_cfg.get("model_nuc", "GTR+G")
 

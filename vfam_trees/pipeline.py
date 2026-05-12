@@ -97,9 +97,10 @@ def _compute_key(obj) -> str:
 def _resolve_tree_options(tree_cfg: dict, seq_type: str) -> str:
     """Return the tree-tool options string for *seq_type*.
 
-    Prefers the per-sequence-type keys (``options_nuc`` / ``options_aa``)
-    introduced in 1.0.15 and falls back to the legacy single ``options``
-    key so pre-existing family YAMLs continue to work unchanged.
+    Uses ``options_nuc`` / ``options_aa`` (the standard per-sequence-type
+    keys used by both tree_500 and tree_100).  Falls back to a bare
+    ``options`` key so existing user YAMLs written before v1.2.32 continue
+    to work unchanged.
     """
     key = "options_aa" if seq_type == "protein" else "options_nuc"
     if key in tree_cfg:
