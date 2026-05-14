@@ -135,8 +135,9 @@ def _load_fasta_file_entries(path: Path, family: str) -> list[dict]:
 
     Each record becomes {"id": ..., "organism": ..., "sequence": ...}.
     rec.id (first whitespace-delimited token) is the sequence id; the
-    remainder of rec.description is the organism.  If the header has no
-    remainder, the id is reused as the organism.
+    remainder of rec.description is the organism.  If the header is a
+    single token (no remainder) the organism is left empty — the id is
+    not reused, since doing so would duplicate it in the leaf label.
     """
     try:
         records = list(SeqIO.parse(str(path), "fasta"))
@@ -154,7 +155,7 @@ def _load_fasta_file_entries(path: Path, family: str) -> list[dict]:
     for rec in records:
         entry_id = rec.id
         remainder = rec.description[len(entry_id):].strip()
-        organism = remainder if remainder else entry_id
+        organism = remainder
         seq_str = str(rec.seq).upper()
         if not seq_str:
             log.warning(
@@ -204,7 +205,7 @@ def _inject_pasted_sequences(
         rec = SeqRecord(Seq(seq_str), id=entry_id, description=organism)
         meta = {
             "accession": entry_id,
-            "seq_name": organism,
+            "seq_name": organism or entry_id,
             "species": organism,
             "strain": "unknown",
             "host": "unknown",
@@ -214,8 +215,12 @@ def _inject_pasted_sequences(
             "length": len(seq_str),
             "lineage": [],
         }
+        # When the organism is empty (single-token FASTA header) the id is
+        # used as the bucket key so distinct entries are not merged into one
+        # "species" bucket; meta["species"] stays empty so the leaf-label
+        # formatter omits it instead of duplicating the id.
         bucket = species_data.setdefault(
-            organism, {"records": [], "metadata": []}
+            organism or entry_id, {"records": [], "metadata": []}
         )
         bucket["records"].append(rec)
         bucket["metadata"].append(meta)

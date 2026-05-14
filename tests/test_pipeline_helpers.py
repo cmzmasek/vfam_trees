@@ -116,6 +116,25 @@ class TestInjectPastedSequences:
         assert meta["strain"] == "unknown"
         assert meta["host"] == "unknown"
 
+    def test_empty_organism_buckets_by_id_and_keeps_species_empty(self):
+        # Single-token FASTA headers yield an empty organism.  meta["species"]
+        # must stay empty (so the leaf-label formatter omits it instead of
+        # duplicating the id), and the bucket key falls back to the id so
+        # distinct entries are not merged into one "" bucket.
+        species_data: dict = {}
+        _inject_pasted_sequences(
+            species_data, set(),
+            [
+                {"id": "SeqA", "organism": "", "sequence": "ACGT"},
+                {"id": "SeqB", "organism": "", "sequence": "TGCA"},
+            ],
+            "Test",
+        )
+        assert set(species_data.keys()) == {"SeqA", "SeqB"}
+        meta_a = species_data["SeqA"]["metadata"][0]
+        assert meta_a["species"] == ""
+        assert meta_a["seq_name"] == "SeqA"
+
     def test_entry_joins_existing_species_bucket(self):
         species_data = {"Foo virus": _make_fetched_species("Foo virus", "NC_001.1")}
         _inject_pasted_sequences(
@@ -196,11 +215,14 @@ class TestLoadFastaFileEntries:
         assert entries[0]["organism"] == "Foo virus complete genome"
         assert entries[0]["sequence"] == "ACGTACGT"
 
-    def test_id_only_header_uses_id_as_organism(self, tmp_path):
+    def test_id_only_header_leaves_organism_empty(self, tmp_path):
+        # A single-token header has no organism remainder.  The id must not
+        # be reused as the organism — doing so duplicates it in the leaf
+        # label (id and species would both render the same string).
         p = self._write_fasta(tmp_path, ">MySeq1\nACGT\n")
         entries = _load_fasta_file_entries(p, "Test")
         assert entries[0]["id"] == "MySeq1"
-        assert entries[0]["organism"] == "MySeq1"
+        assert entries[0]["organism"] == ""
 
     def test_sequence_uppercased(self, tmp_path):
         p = self._write_fasta(tmp_path, ">seq1 Foo\nacgtacgt\n")

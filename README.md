@@ -340,7 +340,7 @@ manual:
 Notes on `include_seq` and `include_fasta_files`:
 
 - `id` (for `include_seq`) or the first whitespace-delimited token of the FASTA header (for `include_fasta_files`) is used throughout the pipeline (FASTA headers, tree leaves, PhyloXML) and must not collide with any accession returned by NCBI for the family, with anything in `include` / `exclude`, or across the two options — collisions raise a hard error.
-- `organism` (for `include_seq`) or the remainder of the FASTA header after the id (for `include_fasta_files`) controls the species bucket the entry joins (matching a fetched species name appends to that bucket; a novel name creates a new one) and shows up in leaf labels. If a FASTA header has no remainder, the id is reused as the organism.
+- `organism` (for `include_seq`) or the remainder of the FASTA header after the id (for `include_fasta_files`) controls the species bucket the entry joins (matching a fetched species name appends to that bucket; a novel name creates a new one) and shows up in leaf labels. If a FASTA header is a single token (no remainder), the organism is left empty and the leaf label is just the header itself.
 - For `include_seq`, the sequence may be wrapped across lines — whitespace is stripped and the sequence is uppercased.
 - Injected leaves render gray (no genus) and do not participate in LCA voting, since only id and organism are required.
 - Not supported when `sequence.region == "concatenated"` — injected sequences cannot be split into per-marker proteins.

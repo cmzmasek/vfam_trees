@@ -10,6 +10,17 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.37] — 2026-05-13
+
+### Fixed
+- **`manual.include_fasta_files` no longer duplicates single-token headers** —
+  a FASTA header with no whitespace (e.g. a pre-formatted pipe-delimited
+  label) was used as both the sequence id *and* the organism, so the
+  leaf-label formatter rendered it twice (`HEADER|HEADER`).  Single-token
+  headers now yield an empty organism, so the leaf label is just the header
+  itself.  Such entries are bucketed by id rather than sharing one empty
+  "species" bucket.
+
 ## [1.2.36] — 2026-05-13
 
 ### Changed
@@ -23,7 +34,8 @@ user-visible surface area.
   list of paths to FASTA-formatted files.  Sequences are injected identically
   to `include_seq` entries: the FASTA id field (first whitespace-delimited
   token of the header) becomes the sequence id; the remainder of the header
-  line becomes the organism/name (the id is reused when no remainder exists).
+  line becomes the organism/name (a single-token header yields an empty
+  organism, so the leaf label is just the header itself).
   Subject to the same collision rules, QC bypass, downstream protection, and
   concat-mode restriction as `include_seq`.  Paths are resolved relative to
   the working directory where `vfam_trees run` is invoked.

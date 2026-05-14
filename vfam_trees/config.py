@@ -699,9 +699,10 @@ DEFAULT_FAMILY_CONFIG: dict = {
         #          are injected identically to include_seq entries.  The FASTA
         #          id field (first whitespace-delimited token of the header) is
         #          used as the sequence id; the remainder of the header line
-        #          becomes the organism/name.  If the header has no remainder,
-        #          the id is reused as the organism.  Subject to the same
-        #          collision rules and concat-mode restriction as include_seq.
+        #          becomes the organism/name.  A single-token header (no
+        #          remainder) yields an empty organism, so the leaf label is
+        #          just the header itself.  Subject to the same collision
+        #          rules and concat-mode restriction as include_seq.
         # exclude: dropped immediately after fetch, before QC.
         # include_species: restrict the pipeline to a subset of species.  Each
         #          entry is either a species name (matched case-insensitively)
