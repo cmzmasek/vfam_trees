@@ -538,6 +538,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
     },
     "quality": {
         "min_length": None,
+        "max_length": None,
         "max_ambiguous": 0.01,
         "exclude_organisms": [
             "synthetic construct",
@@ -686,7 +687,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
         #          exclusion) and is protected through clustering, proportional
         #          merge, and length-outlier filtering (stronger than RefSeq at
         #          QC, equal to RefSeq downstream).
-        # include_fasta: paste sequences directly (e.g. records not yet in
+        # include_seq: paste sequences directly (e.g. records not yet in
         #          GenBank).  Each entry is a mapping with required keys
         #          'id', 'organism', and 'sequence'.  Injected after fetch,
         #          fully bypass QC, and receive the same downstream protection
@@ -694,6 +695,13 @@ DEFAULT_FAMILY_CONFIG: dict = {
         #          any accession returned by NCBI for this family or any id in
         #          manual.include / manual.exclude.  Not supported when
         #          sequence.region is 'concatenated'.
+        # include_fasta_files: paths to one or more FASTA files whose sequences
+        #          are injected identically to include_seq entries.  The FASTA
+        #          id field (first whitespace-delimited token of the header) is
+        #          used as the sequence id; the remainder of the header line
+        #          becomes the organism/name.  If the header has no remainder,
+        #          the id is reused as the organism.  Subject to the same
+        #          collision rules and concat-mode restriction as include_seq.
         # exclude: dropped immediately after fetch, before QC.
         # include_species: restrict the pipeline to a subset of species.  Each
         #          entry is either a species name (matched case-insensitively)
@@ -701,7 +709,8 @@ DEFAULT_FAMILY_CONFIG: dict = {
         #          not in this list are skipped entirely — no download, no QC.
         #          When empty or absent the full discovered species list is used.
         "include": [],
-        "include_fasta": [],
+        "include_seq": [],
+        "include_fasta_files": [],
         "exclude": [],
         "include_species": [],
     },
@@ -805,11 +814,12 @@ def _validate_concatenation_block(cfg: dict, family: str) -> None:
 
 
 def _validate_manual_block(cfg: dict, family: str) -> None:
-    """Validate the optional manual.{include,include_fasta,exclude} entries.
+    """Validate the optional manual.{include,include_seq,include_fasta_files,exclude} entries.
 
     include / exclude are lists of non-empty accession strings and must be
-    disjoint.  include_fasta is a list of {id, organism, sequence} mappings;
-    its ids must not collide with each other or with include/exclude entries.
+    disjoint.  include_seq is a list of {id, organism, sequence} mappings;
+    include_fasta_files is a list of path strings; both share the same id
+    collision rules and concat-mode restriction.
     Whitespace is stripped and accession-list duplicates are deduped in-place
     with a warning — typos are easier to spot at the line level than after a
     full pipeline run.
@@ -818,7 +828,14 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
     if not isinstance(block, dict):
         raise ValueError(
             f"{family}: 'manual' must be a mapping with 'include', "
-            "'include_fasta', and 'exclude' entries."
+            "'include_seq', 'include_fasta_files', and 'exclude' entries."
+        )
+
+    if block.get("include_fasta"):
+        log.warning(
+            "%s: manual.include_fasta is renamed to manual.include_seq — "
+            "please rename the key in your config.",
+            family,
         )
 
     for key in ("include", "exclude"):
@@ -854,10 +871,10 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
             f"{sorted(overlap)} — an accession cannot be both forced-in and dropped."
         )
 
-    fasta_raw = block.get("include_fasta") or []
+    fasta_raw = block.get("include_seq") or []
     if not isinstance(fasta_raw, list):
         raise ValueError(
-            f"{family}: manual.include_fasta must be a list of mappings with "
+            f"{family}: manual.include_seq must be a list of mappings with "
             f"keys id/organism/sequence (got {type(fasta_raw).__name__})."
         )
     cleaned_fasta: list[dict] = []
@@ -865,7 +882,7 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
     for i, entry in enumerate(fasta_raw):
         if not isinstance(entry, dict):
             raise ValueError(
-                f"{family}: manual.include_fasta[{i}] must be a mapping with "
+                f"{family}: manual.include_seq[{i}] must be a mapping with "
                 f"keys id/organism/sequence (got {type(entry).__name__})."
             )
         cleaned_entry: dict = {}
@@ -873,27 +890,27 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
             val = entry.get(fkey)
             if not isinstance(val, str):
                 raise ValueError(
-                    f"{family}: manual.include_fasta[{i}].{fkey} must be a "
+                    f"{family}: manual.include_seq[{i}].{fkey} must be a "
                     f"non-empty string (got {type(val).__name__})."
                 )
             stripped = val.strip()
             if not stripped:
                 raise ValueError(
-                    f"{family}: manual.include_fasta[{i}].{fkey} is empty — "
+                    f"{family}: manual.include_seq[{i}].{fkey} is empty — "
                     "remove the entry or fill it in."
                 )
             cleaned_entry[fkey] = stripped
         seq_compact = "".join(cleaned_entry["sequence"].split()).upper()
         if not seq_compact:
             raise ValueError(
-                f"{family}: manual.include_fasta[{i}].sequence is empty after "
+                f"{family}: manual.include_seq[{i}].sequence is empty after "
                 "stripping whitespace."
             )
         cleaned_entry["sequence"] = seq_compact
 
         if cleaned_entry["id"] in fasta_ids:
             raise ValueError(
-                f"{family}: manual.include_fasta[{i}].id duplicates an earlier "
+                f"{family}: manual.include_seq[{i}].id duplicates an earlier "
                 f"entry ({cleaned_entry['id']!r})."
             )
         fasta_ids.add(cleaned_entry["id"])
@@ -902,27 +919,50 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
     clash_include = fasta_ids & set(block.get("include", []))
     if clash_include:
         raise ValueError(
-            f"{family}: manual.include_fasta ids overlap with manual.include "
+            f"{family}: manual.include_seq ids overlap with manual.include "
             f"accessions: {sorted(clash_include)}."
         )
     clash_exclude = fasta_ids & set(block.get("exclude", []))
     if clash_exclude:
         raise ValueError(
-            f"{family}: manual.include_fasta ids overlap with manual.exclude "
+            f"{family}: manual.include_seq ids overlap with manual.exclude "
             f"accessions: {sorted(clash_exclude)}."
         )
 
-    if cleaned_fasta:
+    files_raw = block.get("include_fasta_files") or []
+    if not isinstance(files_raw, list):
+        raise ValueError(
+            f"{family}: manual.include_fasta_files must be a list of path "
+            f"strings (got {type(files_raw).__name__})."
+        )
+    cleaned_files: list[str] = []
+    for i, entry in enumerate(files_raw):
+        if not isinstance(entry, str):
+            raise ValueError(
+                f"{family}: manual.include_fasta_files[{i}] must be a path "
+                f"string (got {type(entry).__name__})."
+            )
+        stripped = entry.strip()
+        if not stripped:
+            raise ValueError(
+                f"{family}: manual.include_fasta_files[{i}] is empty — "
+                "remove the entry or fill it in."
+            )
+        cleaned_files.append(stripped)
+
+    if cleaned_fasta or cleaned_files:
         region = (cfg.get("sequence") or {}).get("region", "")
         if region == "concatenated":
             raise ValueError(
-                f"{family}: manual.include_fasta is not supported when "
-                "sequence.region is 'concatenated' — pasted sequences cannot "
-                "be split into the configured marker proteins.  Remove the "
-                "include_fasta entries or switch the region."
+                f"{family}: manual.include_seq / include_fasta_files are not "
+                "supported when sequence.region is 'concatenated' — pasted "
+                "sequences cannot be split into the configured marker proteins.  "
+                "Remove the include_seq / include_fasta_files entries or switch "
+                "the region."
             )
 
-    block["include_fasta"] = cleaned_fasta
+    block["include_seq"] = cleaned_fasta
+    block["include_fasta_files"] = cleaned_files
 
     species_raw = block.get("include_species") or []
     if not isinstance(species_raw, list):

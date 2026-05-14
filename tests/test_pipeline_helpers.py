@@ -1,12 +1,17 @@
 """Tests for pipeline helper functions."""
 import json
+import logging
 from pathlib import Path
 
 import pytest
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 
-from vfam_trees.pipeline import _mark_done, _mark_skipped, _inject_pasted_sequences, _filter_species_by_include_list
+from vfam_trees.pipeline import (
+    _mark_done, _mark_skipped,
+    _inject_pasted_sequences, _load_fasta_file_entries,
+    _filter_species_by_include_list,
+)
 
 
 @pytest.fixture
@@ -46,7 +51,7 @@ def test_mark_skipped_writes_sentinel(dirs):
 
 
 # ---------------------------------------------------------------------------
-# _inject_pasted_sequences — manual.include_fasta injection
+# _inject_pasted_sequences — manual.include_seq / include_fasta_files injection
 # ---------------------------------------------------------------------------
 
 def _make_fetched_species(name: str, accession: str, seq: str = "ACGT") -> dict:
@@ -171,6 +176,54 @@ class TestInjectPastedSequences:
         msg = str(exc.value)
         assert "Flaviviridae" in msg
         assert "NC_001.1" in msg
+
+
+# ---------------------------------------------------------------------------
+# _load_fasta_file_entries — FASTA file parsing for include_fasta_files
+# ---------------------------------------------------------------------------
+
+class TestLoadFastaFileEntries:
+    def _write_fasta(self, tmp_path, content: str, name: str = "seqs.fasta"):
+        p = tmp_path / name
+        p.write_text(content)
+        return p
+
+    def test_id_and_description_parsed(self, tmp_path):
+        p = self._write_fasta(tmp_path, ">NC_001.1 Foo virus complete genome\nACGTACGT\n")
+        entries = _load_fasta_file_entries(p, "Test")
+        assert len(entries) == 1
+        assert entries[0]["id"] == "NC_001.1"
+        assert entries[0]["organism"] == "Foo virus complete genome"
+        assert entries[0]["sequence"] == "ACGTACGT"
+
+    def test_id_only_header_uses_id_as_organism(self, tmp_path):
+        p = self._write_fasta(tmp_path, ">MySeq1\nACGT\n")
+        entries = _load_fasta_file_entries(p, "Test")
+        assert entries[0]["id"] == "MySeq1"
+        assert entries[0]["organism"] == "MySeq1"
+
+    def test_sequence_uppercased(self, tmp_path):
+        p = self._write_fasta(tmp_path, ">seq1 Foo\nacgtacgt\n")
+        entries = _load_fasta_file_entries(p, "Test")
+        assert entries[0]["sequence"] == "ACGTACGT"
+
+    def test_multiple_records(self, tmp_path):
+        p = self._write_fasta(tmp_path,
+            ">seq1 Foo virus\nACGT\n>seq2 Bar virus\nTGCA\n")
+        entries = _load_fasta_file_entries(p, "Test")
+        assert len(entries) == 2
+        assert entries[0]["id"] == "seq1"
+        assert entries[1]["id"] == "seq2"
+
+    def test_empty_file_returns_empty_list(self, tmp_path):
+        p = self._write_fasta(tmp_path, "")
+        entries = _load_fasta_file_entries(p, "Test")
+        assert entries == []
+
+    def test_missing_file_raises_value_error(self, tmp_path):
+        p = tmp_path / "nonexistent.fasta"
+        with pytest.raises(ValueError, match="could not read"):
+            _load_fasta_file_entries(p, "Test")
 
     def test_collision_check_runs_before_injection(self):
         """If any entry collides, no entries should be injected (fail-fast)."""
@@ -299,3 +352,103 @@ class TestFilterSpeciesByIncludeList:
         result = _filter_species_by_include_list([], ["Dengue virus"], "Flaviviridae", log)
         assert result == []
         assert log.warnings
+
+
+# ---------------------------------------------------------------------------
+# Config warning: nucleotide + named region + no segment
+# ---------------------------------------------------------------------------
+
+_MINIMAL_FAMILY_CFG = {
+    "sequence": {"type": "nucleotide", "region": "glycoprotein g1", "segment": None},
+    "download": {"max_per_species": 10},
+    "quality": {"min_length": None, "max_ambiguous": 0.01, "exclude_organisms": []},
+    "clustering": {
+        "tool": "mmseqs2", "threshold_min": 0.7, "threshold_max": 0.99,
+        "max_reps_500": 5, "max_reps_100": 2,
+    },
+    "targets": {"max_500": 50, "max_100": 10},
+    "manual": {},
+}
+
+
+def test_nuc_named_region_no_segment_config_warning(tmp_path, caplog, monkeypatch):
+    """Regression: run_family must emit a WARNING when seq_type=nucleotide,
+    region is not whole_genome, and segment is null.  This combination silently
+    returned zero sequences before v1.2.35 because the nuccore query searched
+    only [Gene], which is sparsely populated."""
+    import vfam_trees.pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "load_global_config",
+                        lambda p: {"ncbi": {"email": "t@t.com", "api_key": None}})
+    monkeypatch.setattr(pipeline_mod, "configure_entrez", lambda email, api_key: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_annotations", lambda p: {})
+    monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_config",
+                        lambda f, d, g: (_MINIMAL_FAMILY_CFG, False))
+    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p: None)
+    monkeypatch.setattr(pipeline_mod, "discover_species", lambda f: [])
+
+    with caplog.at_level(logging.WARNING):
+        pipeline_mod.run_family(
+            family="TestVirus",
+            global_config_path=tmp_path / "global.yaml",
+            configs_dir=tmp_path / "configs",
+            output_dir=tmp_path / "results",
+        )
+
+    warning_texts = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("glycoprotein g1" in m for m in warning_texts), (
+        f"Expected config warning about 'glycoprotein g1', got: {warning_texts}"
+    )
+
+
+def test_whole_genome_nucleotide_no_warning(tmp_path, caplog, monkeypatch):
+    """whole_genome nucleotide runs must not trigger the niche-config warning."""
+    import vfam_trees.pipeline as pipeline_mod
+
+    cfg = {**_MINIMAL_FAMILY_CFG, "sequence": {"type": "nucleotide", "region": "whole_genome", "segment": None}}
+    monkeypatch.setattr(pipeline_mod, "load_global_config",
+                        lambda p: {"ncbi": {"email": "t@t.com", "api_key": None}})
+    monkeypatch.setattr(pipeline_mod, "configure_entrez", lambda email, api_key: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_annotations", lambda p: {})
+    monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_config", lambda f, d, g: (cfg, False))
+    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p: None)
+    monkeypatch.setattr(pipeline_mod, "discover_species", lambda f: [])
+
+    with caplog.at_level(logging.WARNING):
+        pipeline_mod.run_family(
+            family="TestVirus",
+            global_config_path=tmp_path / "global.yaml",
+            configs_dir=tmp_path / "configs",
+            output_dir=tmp_path / "results",
+        )
+
+    warning_texts = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("niche configuration" in m for m in warning_texts)
+
+
+def test_protein_named_region_no_warning(tmp_path, caplog, monkeypatch):
+    """protein + named region is the normal path and must not trigger the warning."""
+    import vfam_trees.pipeline as pipeline_mod
+
+    cfg = {**_MINIMAL_FAMILY_CFG, "sequence": {"type": "protein", "region": "glycoprotein g1", "segment": None}}
+    monkeypatch.setattr(pipeline_mod, "load_global_config",
+                        lambda p: {"ncbi": {"email": "t@t.com", "api_key": None}})
+    monkeypatch.setattr(pipeline_mod, "configure_entrez", lambda email, api_key: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_annotations", lambda p: {})
+    monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_config", lambda f, d, g: (cfg, False))
+    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p: None)
+    monkeypatch.setattr(pipeline_mod, "discover_species", lambda f: [])
+
+    with caplog.at_level(logging.WARNING):
+        pipeline_mod.run_family(
+            family="TestVirus",
+            global_config_path=tmp_path / "global.yaml",
+            configs_dir=tmp_path / "configs",
+            output_dir=tmp_path / "results",
+        )
+
+    warning_texts = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("niche configuration" in m for m in warning_texts)

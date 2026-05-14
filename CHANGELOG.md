@@ -10,6 +10,24 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.36] — 2026-05-13
+
+### Changed
+- **`manual.include_fasta` renamed to `manual.include_seq`** — the per-family
+  YAML key for pasting inline sequences is now `include_seq`.  Configs that
+  still use `include_fasta` emit a WARNING at load time and are otherwise
+  unchanged (the stale key is ignored; `include_seq` defaults to empty).
+
+### Added
+- **`manual.include_fasta_files`** — new per-family YAML key that accepts a
+  list of paths to FASTA-formatted files.  Sequences are injected identically
+  to `include_seq` entries: the FASTA id field (first whitespace-delimited
+  token of the header) becomes the sequence id; the remainder of the header
+  line becomes the organism/name (the id is reused when no remainder exists).
+  Subject to the same collision rules, QC bypass, downstream protection, and
+  concat-mode restriction as `include_seq`.  Paths are resolved relative to
+  the working directory where `vfam_trees run` is invoked.
+
 ## [1.2.34] — 2026-05-12
 
 ### Changed
@@ -80,11 +98,11 @@ user-visible surface area.
 ## [1.2.31] — 2026-05-11
 
 ### Added
-- **Per-family `manual.include_fasta`** — new optional block in per-family
-  YAML configs that lets curators inject sequences not yet in GenBank
-  directly into the pipeline. Each entry is a mapping with required keys
-  `id`, `organism`, and `sequence` (whitespace is stripped and the
-  sequence is uppercased).
+- **Per-family `manual.include_fasta`** (renamed to `manual.include_seq` in
+  a later release) — new optional block in per-family YAML configs that lets
+  curators inject sequences not yet in GenBank directly into the pipeline.
+  Each entry is a mapping with required keys `id`, `organism`, and `sequence`
+  (whitespace is stripped and the sequence is uppercased).
   - Pasted entries are injected after the per-species fetch loop, fully
     bypass QC (length, ambiguity, organism exclusion), and their ids are
     added to the same protected set as `manual.include` accessions —
@@ -94,7 +112,7 @@ user-visible surface area.
     species joins that species' bucket; otherwise a new species bucket
     is created.
   - Validation rejects non-mapping entries, missing / empty
-    `id` / `organism` / `sequence`, duplicate ids within `include_fasta`,
+    `id` / `organism` / `sequence`, duplicate ids within `include_seq`,
     and id collisions with `manual.include` / `manual.exclude`. At
     pipeline time, id collisions with any accession returned by NCBI
     for the family raise a hard error so the run aborts before MSA.
@@ -102,8 +120,8 @@ user-visible surface area.
     voting (no taxid / no species-rank lineage) — by design, since only
     `id` and `organism` are required.
   - Not supported when `sequence.region == "concatenated"` — a non-empty
-    `include_fasta` in concat mode is rejected at config-load time.
-  - Existing per-family YAMLs without `include_fasta` continue to load
+    `include_seq` in concat mode is rejected at config-load time.
+  - Existing per-family YAMLs without `include_seq` continue to load
     unchanged (defaults to an empty list).
 
 ## [1.2.28] — 2026-05-08

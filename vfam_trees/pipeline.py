@@ -17,7 +17,8 @@ from Bio.SeqRecord import SeqRecord
 from .config import load_family_config, load_global_config
 from .fetch import (
     configure_entrez, discover_species, get_family_taxid,
-    fetch_species_sequences, parse_gb_records, extract_metadata,
+    fetch_species_sequences, fetch_accessions_directly,
+    parse_gb_records, extract_metadata,
     fetch_taxonomy_lineages,
 )
 from .summary import (
@@ -129,13 +130,49 @@ def _check_checkpoint(path: Path, key_obj: dict) -> bool:
     return stored.get("key") == _compute_key(key_obj)
 
 
+def _load_fasta_file_entries(path: Path, family: str) -> list[dict]:
+    """Parse a FASTA file and return entries in include_seq dict format.
+
+    Each record becomes {"id": ..., "organism": ..., "sequence": ...}.
+    rec.id (first whitespace-delimited token) is the sequence id; the
+    remainder of rec.description is the organism.  If the header has no
+    remainder, the id is reused as the organism.
+    """
+    try:
+        records = list(SeqIO.parse(str(path), "fasta"))
+    except Exception as exc:
+        raise ValueError(
+            f"{family}: could not read include_fasta_files entry {str(path)!r}: {exc}"
+        ) from exc
+    if not records:
+        log.warning(
+            "%s: include_fasta_files file %r contains no sequences — skipped",
+            family, str(path),
+        )
+        return []
+    entries: list[dict] = []
+    for rec in records:
+        entry_id = rec.id
+        remainder = rec.description[len(entry_id):].strip()
+        organism = remainder if remainder else entry_id
+        seq_str = str(rec.seq).upper()
+        if not seq_str:
+            log.warning(
+                "%s: include_fasta_files: record %r in %r has empty sequence — skipped",
+                family, entry_id, str(path),
+            )
+            continue
+        entries.append({"id": entry_id, "organism": organism, "sequence": seq_str})
+    return entries
+
+
 def _inject_pasted_sequences(
     species_data: dict[str, dict],
     manual_include_ids: set[str],
     fasta_entries: list[dict],
     family: str,
 ) -> int:
-    """Inject manual.include_fasta entries into species_data after fetch.
+    """Inject manual.include_seq / include_fasta_files entries into species_data.
 
     Each entry is materialised as a SeqRecord + metadata dict and bucketed
     by organism name (joining the existing species bucket if the organism
@@ -158,9 +195,9 @@ def _inject_pasted_sequences(
         entry_id = entry["id"]
         if entry_id in fetched_accessions:
             raise ValueError(
-                f"{family}: manual.include_fasta id {entry_id!r} collides "
-                "with an accession returned by NCBI for this family.  "
-                "Rename the pasted entry or remove it."
+                f"{family}: manual.include_seq / include_fasta_files id "
+                f"{entry_id!r} collides with an accession returned by NCBI "
+                "for this family.  Rename the entry or remove it."
             )
         organism = entry["organism"]
         seq_str = entry["sequence"]
@@ -270,6 +307,13 @@ def run_family(
     segment = family_cfg["sequence"].get("segment") or None
     if segment:
         log.info("Segmented family detected — using segment: %s", segment)
+    if seq_type == "nucleotide" and region != "whole_genome" and not segment:
+        log.warning(
+            "Config note: seq_type=nucleotide with region=%r and no segment — "
+            "searching nuccore by [Title] OR [Gene] (niche configuration; "
+            "consider seq_type=protein or the 'segment' key instead).",
+            region,
+        )
     max_per_species = family_cfg["download"]["max_per_species"]
     clustering_tool = family_cfg["clustering"].get("tool", "mmseqs2")
     quality_cfg = family_cfg["quality"]
@@ -507,6 +551,7 @@ def run_family(
             seq_type=seq_type,
             min_length=quality_cfg["min_length"],
             max_ambiguous=quality_cfg["max_ambiguous"],
+            max_length=quality_cfg.get("max_length"),
             exclude_organisms=quality_cfg.get("exclude_organisms"),
             manual_include_ids=manual_include_ids,
             manual_exclude_ids=manual_exclude_ids,
@@ -535,6 +580,40 @@ def run_family(
     # Sequence length violin plot (per species, after ambiguity filter, before length filter)
     if species_pre_length_lengths:
         save_sequence_length_plot(family, family_dir, species_pre_length_lengths)
+
+    # Active fetch for manual.include accessions not found in the per-species download.
+    # Typical case: a nuccore accession on a protein-mode run (different NCBI database),
+    # or an accession from a taxon outside the family's NCBI taxonomy subtree.
+    # Done here — before the taxonomy fetch — so the new records' taxon IDs are
+    # included in the lineage lookup that follows.
+    unseen_before_direct = manual_include_ids - seen_manual_include
+    if unseen_before_direct:
+        log.info(
+            "manual.include: %d accession(s) not found via per-species download; "
+            "attempting direct fetch: %s",
+            len(unseen_before_direct), sorted(unseen_before_direct),
+        )
+        direct_records = fetch_accessions_directly(unseen_before_direct)
+        fetched_ids = {r.id for r in direct_records}
+        if fetched_ids:
+            bucket = species_data.setdefault(
+                f"_manual_include[{family}]", {"records": [], "metadata": []}
+            )
+            for rec in direct_records:
+                bucket["records"].append(rec)
+                bucket["metadata"].append(extract_metadata(rec))
+            seen_manual_include |= fetched_ids
+            log.info(
+                "manual.include: direct fetch succeeded for %d/%d accession(s): %s",
+                len(fetched_ids), len(unseen_before_direct), sorted(fetched_ids),
+            )
+        still_missing = unseen_before_direct - fetched_ids
+        if still_missing:
+            log.warning(
+                "manual.include: could not fetch %d accession(s) for %s "
+                "(not found in either NCBI database): %s",
+                len(still_missing), family, sorted(still_missing),
+            )
 
     # Fetch ranked taxonomy lineages from NCBI (cached per family)
     taxid_cache = work_dir / "taxonomy_cache.json"
@@ -565,7 +644,8 @@ def run_family(
     unseen_include = manual_include_ids - seen_manual_include
     if unseen_include:
         log.warning(
-            "manual.include accessions not seen in fetched records for %s: %s",
+            "manual.include accessions not found in any fetched or directly "
+            "fetched records for %s (will be absent from the tree): %s",
             family, sorted(unseen_include),
         )
     unseen_exclude = manual_exclude_ids - seen_manual_exclude
@@ -575,19 +655,34 @@ def run_family(
             family, sorted(unseen_exclude),
         )
 
-    # Inject user-pasted sequences (manual.include_fasta).  These join the
-    # fetched records after QC, so they fully bypass length/ambiguity/organism
-    # filters.  Their ids are added to manual_include_ids so the downstream
-    # protected-set logic (clustering, proportional merge, length-outlier
-    # filter) picks them up automatically.
+    # Inject manually-supplied sequences (include_seq + include_fasta_files).
+    # These join the fetched records after QC, fully bypassing
+    # length/ambiguity/organism filters.  Their ids are added to
+    # manual_include_ids so the downstream protected-set logic (clustering,
+    # proportional merge, length-outlier filter) picks them up automatically.
+    inline_entries: list[dict] = manual_cfg.get("include_seq") or []
+    fasta_file_paths: list[str] = manual_cfg.get("include_fasta_files") or []
+    file_entries: list[dict] = []
+    for fp_str in fasta_file_paths:
+        file_entries.extend(_load_fasta_file_entries(Path(fp_str), family))
+    all_manual_entries = inline_entries + file_entries
+    # Cross-source duplicate-ID check (within-include_seq checked at config load).
+    seen_manual_ids: set[str] = {e["id"] for e in inline_entries}
+    for entry in file_entries:
+        if entry["id"] in seen_manual_ids:
+            raise ValueError(
+                f"{family}: duplicate sequence id {entry['id']!r} across "
+                "manual.include_seq and/or manual.include_fasta_files entries."
+            )
+        seen_manual_ids.add(entry["id"])
     n_injected = _inject_pasted_sequences(
         species_data, manual_include_ids,
-        manual_cfg.get("include_fasta") or [],
+        all_manual_entries,
         family,
     )
     if n_injected:
         log.info(
-            "manual.include_fasta: injected %d pasted sequence(s) — "
+            "manual.include_seq / include_fasta_files: injected %d sequence(s) — "
             "bypassed QC and added to protected set",
             n_injected,
         )

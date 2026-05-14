@@ -25,7 +25,7 @@ An optional shared cache (configurable TTL, per-entry locking, negative-result c
 
 Each species' sequences are filtered in this order:
 
-0. **Manual overrides** (per-family `manual.include` / `manual.include_fasta` / `manual.exclude` / `manual.include_species`) — accessions in `manual.exclude` are dropped immediately; accessions in `manual.include` bypass every QC step below and are protected from removal during clustering, proportional merge, and length-outlier filtering. Match is exact, version included (e.g. `NC_002617.1`). `manual.include_fasta` accepts pasted sequences (records not yet in GenBank) as a list of `{id, organism, sequence}` mappings; entries are injected after fetch, receive the same bypass + downstream protection as `manual.include`, and their ids must not collide with any fetched accession (not supported in concat mode). `manual.include_species` restricts the set of species that proceed to download (see [Species discovery](#1-species-discovery)).
+0. **Manual overrides** (per-family `manual.include` / `manual.include_seq` / `manual.include_fasta_files` / `manual.exclude` / `manual.include_species`) — accessions in `manual.exclude` are dropped immediately; accessions in `manual.include` bypass every QC step below and are protected from removal during clustering, proportional merge, and length-outlier filtering. Match is exact, version included (e.g. `NC_002617.1`). `manual.include_seq` accepts pasted sequences (records not yet in GenBank) as a list of `{id, organism, sequence}` mappings; `manual.include_fasta_files` accepts paths to one or more FASTA files whose sequences are injected the same way. Both are injected after fetch, receive the same bypass + downstream protection as `manual.include`, and their ids must not collide with any fetched accession (not supported in concat mode). `manual.include_species` restricts the set of species that proceed to download (see [Species discovery](#1-species-discovery)).
 1. **Organism exclusion** — case-insensitive substring match against `ORGANISM`, `SOURCE`, and `DEFINITION` (joined with newlines so terms cannot straddle field boundaries). Defaults: `synthetic construct`, `metagenome`, `MAG:`, `uncultured`, `unverified`, `vector`, `recombinant`, `patent`.
 2. **Ambiguity** — `max_ambiguous` cap on the fraction of `N` / `X` / IUPAC degenerate characters.
 3. **Minimum length** — `min_length: null` auto-sets the threshold to 50% of the per-species median, with relaxation fallback to 40% then 30% if too few sequences pass; in all cases a hard floor of 200 bp / 100 aa applies.
@@ -299,10 +299,13 @@ manual:                         # curator overrides on per-family record selecti
                                 # are protected through clustering, proportional merge, and
                                 # length-outlier filtering — stronger than RefSeq at QC,
                                 # equal to RefSeq downstream
-  include_fasta: []             # pasted sequences not yet in GenBank — each entry is a
+  include_seq: []               # pasted sequences not yet in GenBank — each entry is a
                                 # {id, organism, sequence} mapping; injected after fetch,
                                 # bypass QC, and receive the same downstream protection as
                                 # manual.include records (not supported in concat mode)
+  include_fasta_files: []       # paths to FASTA files whose sequences are injected identically
+                                # to include_seq entries; FASTA id field → sequence id,
+                                # remainder of header → organism (not supported in concat mode)
   exclude: []                   # exact accessions to drop immediately after fetch, before QC
   include_species: []           # restrict the pipeline to a subset of species — entries are
                                 # species names (case-insensitive) or NCBI taxids (integer or
@@ -318,7 +321,7 @@ Example — adding a pasted reference and forcing a curator-picked accession in:
 manual:
   include:
     - NC_002617.1               # force-keep this RefSeq even if QC would drop it
-  include_fasta:
+  include_seq:
     - id: MyLab_Isolate_2026
       organism: Foo virus
       sequence: |
@@ -327,17 +330,20 @@ manual:
     - id: PreprintSeq_42
       organism: Bar virus
       sequence: ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT
+  include_fasta_files:
+    - /data/unpublished/batch_2026_isolates.fasta
+    - /data/unpublished/outgroup.fa
   exclude:
     - KF234567.1                # drop a known-bad isolate before QC
 ```
 
-Notes on `include_fasta`:
+Notes on `include_seq` and `include_fasta_files`:
 
-- `id` is used throughout the pipeline (FASTA headers, tree leaves, PhyloXML) and must not collide with any accession returned by NCBI for the family or with anything in `include` / `exclude` — collisions raise a hard error.
-- `organism` controls the species bucket the entry joins (matching a fetched species name appends to that bucket; a novel name creates a new one) and shows up in leaf labels.
-- The sequence may be wrapped across lines — whitespace is stripped and the sequence is uppercased.
-- Pasted leaves render gray (no genus) and do not participate in LCA voting, since only `id` and `organism` are required.
-- Not supported when `sequence.region == "concatenated"` — pasted sequences cannot be split into per-marker proteins.
+- `id` (for `include_seq`) or the first whitespace-delimited token of the FASTA header (for `include_fasta_files`) is used throughout the pipeline (FASTA headers, tree leaves, PhyloXML) and must not collide with any accession returned by NCBI for the family, with anything in `include` / `exclude`, or across the two options — collisions raise a hard error.
+- `organism` (for `include_seq`) or the remainder of the FASTA header after the id (for `include_fasta_files`) controls the species bucket the entry joins (matching a fetched species name appends to that bucket; a novel name creates a new one) and shows up in leaf labels. If a FASTA header has no remainder, the id is reused as the organism.
+- For `include_seq`, the sequence may be wrapped across lines — whitespace is stripped and the sequence is uppercased.
+- Injected leaves render gray (no genus) and do not participate in LCA voting, since only id and organism are required.
+- Not supported when `sequence.region == "concatenated"` — injected sequences cannot be split into per-marker proteins.
 
 Example — restricting a family run to a specific subset of species (mixing names and taxids):
 

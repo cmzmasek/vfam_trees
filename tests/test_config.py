@@ -551,7 +551,7 @@ class TestManualBlock:
     def test_missing_block_treated_as_empty(self):
         cfg = {}
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"] == {"include": [], "exclude": [], "include_fasta": [], "include_species": []}
+        assert cfg["manual"] == {"include": [], "exclude": [], "include_seq": [], "include_fasta_files": [], "include_species": []}
 
     def test_include_and_exclude_overlap_rejected(self):
         cfg = {"manual": {"include": ["NC_001.1"], "exclude": ["NC_001.1"]}}
@@ -606,83 +606,83 @@ class TestManualBlock:
 
 
 # ---------------------------------------------------------------------------
-# manual.include_fasta — pasted-sequence entries
+# manual.include_seq — pasted-sequence entries
 # ---------------------------------------------------------------------------
 
-def _wrap_fasta(entries):
-    """Helper: wrap include_fasta entries in a minimal cfg."""
+def _wrap_seq(entries):
+    """Helper: wrap include_seq entries in a minimal cfg."""
     return {
         "sequence": {"type": "nucleotide", "region": "whole_genome"},
-        "manual": {"include": [], "exclude": [], "include_fasta": entries},
+        "manual": {"include": [], "exclude": [], "include_seq": entries},
     }
 
 
-class TestManualIncludeFasta:
-    def test_default_has_empty_include_fasta(self):
-        assert DEFAULT_FAMILY_CONFIG["manual"]["include_fasta"] == []
+class TestManualIncludeSeq:
+    def test_default_has_empty_include_seq(self):
+        assert DEFAULT_FAMILY_CONFIG["manual"]["include_seq"] == []
 
     def test_empty_list_passes(self):
-        cfg = _wrap_fasta([])
+        cfg = _wrap_seq([])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["include_fasta"] == []
+        assert cfg["manual"]["include_seq"] == []
 
     def test_valid_entry_passes(self):
-        cfg = _wrap_fasta([
+        cfg = _wrap_seq([
             {"id": "MySeq1", "organism": "Foo virus", "sequence": "ACGTACGT"},
         ])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["include_fasta"] == [
+        assert cfg["manual"]["include_seq"] == [
             {"id": "MySeq1", "organism": "Foo virus", "sequence": "ACGTACGT"},
         ]
 
     def test_sequence_whitespace_stripped_and_uppercased(self):
-        cfg = _wrap_fasta([
+        cfg = _wrap_seq([
             {"id": "MySeq1", "organism": "Foo virus", "sequence": "acgt\n acgt\n"},
         ])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["include_fasta"][0]["sequence"] == "ACGTACGT"
+        assert cfg["manual"]["include_seq"][0]["sequence"] == "ACGTACGT"
 
     def test_id_and_organism_stripped(self):
-        cfg = _wrap_fasta([
+        cfg = _wrap_seq([
             {"id": "  MySeq1  ", "organism": "  Foo virus  ", "sequence": "ACGT"},
         ])
         _validate_manual_block(cfg, "Test")
-        entry = cfg["manual"]["include_fasta"][0]
+        entry = cfg["manual"]["include_seq"][0]
         assert entry["id"] == "MySeq1"
         assert entry["organism"] == "Foo virus"
 
     def test_non_list_rejected(self):
-        cfg = _wrap_fasta("not a list")
+        cfg = _wrap_seq("not a list")
         with pytest.raises(ValueError, match="must be a list"):
             _validate_manual_block(cfg, "Test")
 
     def test_non_mapping_entry_rejected(self):
-        cfg = _wrap_fasta(["not a mapping"])
+        cfg = _wrap_seq(["not a mapping"])
         with pytest.raises(ValueError, match="must be a mapping"):
             _validate_manual_block(cfg, "Test")
 
     def test_missing_id_rejected(self):
-        cfg = _wrap_fasta([{"organism": "Foo virus", "sequence": "ACGT"}])
-        with pytest.raises(ValueError, match=r"include_fasta\[0\]\.id"):
+        cfg = _wrap_seq([{"organism": "Foo virus", "sequence": "ACGT"}])
+        with pytest.raises(ValueError, match=r"include_seq\[0\]\.id"):
             _validate_manual_block(cfg, "Test")
 
     def test_missing_organism_rejected(self):
-        cfg = _wrap_fasta([{"id": "X", "sequence": "ACGT"}])
-        with pytest.raises(ValueError, match=r"include_fasta\[0\]\.organism"):
+        cfg = _wrap_seq([{"id": "X", "sequence": "ACGT"}])
+        with pytest.raises(ValueError, match=r"include_seq\[0\]\.organism"):
             _validate_manual_block(cfg, "Test")
 
     def test_missing_sequence_rejected(self):
-        cfg = _wrap_fasta([{"id": "X", "organism": "Foo"}])
-        with pytest.raises(ValueError, match=r"include_fasta\[0\]\.sequence"):
+        cfg = _wrap_seq([{"id": "X", "organism": "Foo"}])
+        with pytest.raises(ValueError, match=r"include_seq\[0\]\.sequence"):
             _validate_manual_block(cfg, "Test")
 
     def test_empty_sequence_rejected(self):
-        cfg = _wrap_fasta([{"id": "X", "organism": "Foo", "sequence": "   \n  "}])
+        cfg = _wrap_seq([{"id": "X", "organism": "Foo", "sequence": "   \n  "}])
         with pytest.raises(ValueError, match="empty"):
             _validate_manual_block(cfg, "Test")
 
-    def test_duplicate_id_within_fasta_rejected(self):
-        cfg = _wrap_fasta([
+    def test_duplicate_id_within_seq_rejected(self):
+        cfg = _wrap_seq([
             {"id": "X", "organism": "Foo", "sequence": "ACGT"},
             {"id": "X", "organism": "Bar", "sequence": "TGCA"},
         ])
@@ -695,7 +695,7 @@ class TestManualIncludeFasta:
             "manual": {
                 "include": ["NC_X.1"],
                 "exclude": [],
-                "include_fasta": [
+                "include_seq": [
                     {"id": "NC_X.1", "organism": "Foo", "sequence": "ACGT"},
                 ],
             },
@@ -709,7 +709,7 @@ class TestManualIncludeFasta:
             "manual": {
                 "include": [],
                 "exclude": ["NC_X.1"],
-                "include_fasta": [
+                "include_seq": [
                     {"id": "NC_X.1", "organism": "Foo", "sequence": "ACGT"},
                 ],
             },
@@ -717,13 +717,13 @@ class TestManualIncludeFasta:
         with pytest.raises(ValueError, match="overlap with manual.exclude"):
             _validate_manual_block(cfg, "Test")
 
-    def test_concatenated_region_rejects_include_fasta(self):
+    def test_concatenated_region_rejects_include_seq(self):
         cfg = {
             "sequence": {"type": "protein", "region": "concatenated"},
             "manual": {
                 "include": [],
                 "exclude": [],
-                "include_fasta": [
+                "include_seq": [
                     {"id": "MySeq1", "organism": "Foo", "sequence": "MKL"},
                 ],
             },
@@ -731,14 +731,14 @@ class TestManualIncludeFasta:
         with pytest.raises(ValueError, match="not supported when sequence.region is 'concatenated'"):
             _validate_manual_block(cfg, "Test")
 
-    def test_concatenated_region_with_empty_fasta_ok(self):
+    def test_concatenated_region_with_empty_seq_ok(self):
         cfg = {
             "sequence": {"type": "protein", "region": "concatenated"},
-            "manual": {"include": [], "exclude": [], "include_fasta": []},
+            "manual": {"include": [], "exclude": [], "include_seq": []},
         }
         _validate_manual_block(cfg, "Test")
 
-    def test_loaded_stale_config_gets_empty_include_fasta(self, tmp_path):
+    def test_loaded_stale_config_gets_empty_include_seq(self, tmp_path):
         cfg_dir = tmp_path / "configs"
         cfg_dir.mkdir()
         (cfg_dir / "Flaviviridae.yaml").write_text(yaml.dump({
@@ -746,7 +746,83 @@ class TestManualIncludeFasta:
             "manual": {"include": [], "exclude": []},
         }))
         cfg, _ = load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
-        assert cfg["manual"]["include_fasta"] == []
+        assert cfg["manual"]["include_seq"] == []
+
+
+# ---------------------------------------------------------------------------
+# manual.include_fasta_files — external FASTA file paths
+# ---------------------------------------------------------------------------
+
+def _wrap_fasta_files(paths):
+    """Helper: wrap include_fasta_files paths in a minimal cfg."""
+    return {
+        "sequence": {"type": "nucleotide", "region": "whole_genome"},
+        "manual": {"include": [], "exclude": [], "include_fasta_files": paths},
+    }
+
+
+class TestManualIncludeFastaFiles:
+    def test_default_has_empty_include_fasta_files(self):
+        assert DEFAULT_FAMILY_CONFIG["manual"]["include_fasta_files"] == []
+
+    def test_empty_list_passes(self):
+        cfg = _wrap_fasta_files([])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_fasta_files"] == []
+
+    def test_non_empty_string_list_passes(self):
+        cfg = _wrap_fasta_files(["/path/to/seqs.fasta", "/other/file.fa"])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_fasta_files"] == ["/path/to/seqs.fasta", "/other/file.fa"]
+
+    def test_whitespace_stripped(self):
+        cfg = _wrap_fasta_files(["  /path/to/seqs.fasta  "])
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["include_fasta_files"] == ["/path/to/seqs.fasta"]
+
+    def test_non_list_rejected(self):
+        cfg = _wrap_fasta_files("/path/to/seqs.fasta")
+        with pytest.raises(ValueError, match="must be a list"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_non_string_entry_rejected(self):
+        cfg = _wrap_fasta_files([123])
+        with pytest.raises(ValueError, match="path string"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_empty_string_entry_rejected(self):
+        cfg = _wrap_fasta_files(["   "])
+        with pytest.raises(ValueError, match="empty"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_concatenated_region_rejects_nonempty_fasta_files(self):
+        cfg = {
+            "sequence": {"type": "protein", "region": "concatenated"},
+            "manual": {
+                "include": [],
+                "exclude": [],
+                "include_fasta_files": ["/some/file.fa"],
+            },
+        }
+        with pytest.raises(ValueError, match="not supported when sequence.region is 'concatenated'"):
+            _validate_manual_block(cfg, "Test")
+
+    def test_concatenated_region_with_empty_fasta_files_ok(self):
+        cfg = {
+            "sequence": {"type": "protein", "region": "concatenated"},
+            "manual": {"include": [], "exclude": [], "include_fasta_files": []},
+        }
+        _validate_manual_block(cfg, "Test")
+
+    def test_loaded_stale_config_gets_empty_include_fasta_files(self, tmp_path):
+        cfg_dir = tmp_path / "configs"
+        cfg_dir.mkdir()
+        (cfg_dir / "Flaviviridae.yaml").write_text(yaml.dump({
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "manual": {"include": [], "exclude": []},
+        }))
+        cfg, _ = load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
+        assert cfg["manual"]["include_fasta_files"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -757,7 +833,7 @@ class TestManualIncludeSpecies:
     def _base_cfg(self, species=None):
         cfg = {
             "sequence": {"type": "nucleotide", "region": "whole_genome"},
-            "manual": {"include": [], "exclude": [], "include_fasta": []},
+            "manual": {"include": [], "exclude": [], "include_seq": []},
         }
         if species is not None:
             cfg["manual"]["include_species"] = species
