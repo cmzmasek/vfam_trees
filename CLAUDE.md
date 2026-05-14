@@ -125,3 +125,9 @@ Synthetic quality tests should use varying lengths (see `_NORMAL_LENGTHS` in `te
 ## Versioning
 
 Single source of truth: `vfam_trees/__init__.py:__version__`.  `setup.py` reads it via regex.  `CHANGELOG.md` documents user-visible changes.
+
+---
+
+## Git
+
+Never use `git add -A` or `git add .` — the working tree carries large untracked data directories (`OLDresults_*`, `results_*`, `work/`, `memory/`, `families_*.txt`, `config/`).  Always stage commits by explicit file path.
