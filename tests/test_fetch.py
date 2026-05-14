@@ -14,6 +14,7 @@ from vfam_trees.fetch import (
     _extract_isolate,
     _safe_marker_filename,
     _source_nuc_accession,
+    fetch_accessions_directly,
     fetch_nuc_lengths,
     group_proteins_by_genome,
 )
@@ -42,6 +43,32 @@ def test_marker_gene_query():
     assert '"B646L"[Gene]' in q
 
 
+def test_nuc_marker_also_searches_title():
+    """Regression: nucleotide region searches must include [Title] so that
+    hantavirus / other records annotated by name in the title (not the [Gene]
+    field) are found when seq_type is 'nucleotide' with a non-whole_genome
+    region (e.g. 'glycoprotein g1')."""
+    q = _build_species_query(12345, "nucleotide", "glycoprotein g1")
+    assert '"glycoprotein g1"[Title]' in q
+    assert '"glycoprotein g1"[Gene]' in q
+
+
+def test_nuc_marker_title_and_gene_or_combined():
+    """Title and Gene must be OR-ed inside a parenthesised clause, not added
+    as independent AND clauses."""
+    q = _build_species_query(12345, "nucleotide", "RNA polymerase")
+    # Both fields must appear and must be within the same OR clause
+    title_term = '"RNA polymerase"[Title]'
+    gene_term = '"RNA polymerase"[Gene]'
+    assert title_term in q
+    assert gene_term in q
+    # The OR must sit between them — find both sides of OR
+    ti = q.index(title_term)
+    gi = q.index(gene_term)
+    between = q[min(ti, gi):max(ti, gi) + len(gene_term if gi > ti else title_term)]
+    assert " OR " in between
+
+
 def test_marker_gene_excludes_complete_genome():
     q = _build_species_query(12345, "nucleotide", "B646L")
     assert 'NOT "complete genome"[Title]' in q
@@ -51,6 +78,7 @@ def test_marker_gene_excludes_complete_genome():
 def test_marker_gene_hexon_excludes_complete():
     q = _build_species_query(12345, "nucleotide", "hexon")
     assert '"hexon"[Gene]' in q
+    assert '"hexon"[Title]' in q
     assert 'NOT "complete genome"[Title]' in q
 
 
@@ -800,4 +828,185 @@ class TestLocusRegex:
 
     def test_empty_string_is_zero(self):
         assert len(_LOCUS_RE.findall("")) == 0
+
+
+# ---------------------------------------------------------------------------
+# fetch_accessions_directly — auto-routing nuccore vs protein
+# ---------------------------------------------------------------------------
+
+# Minimal GenBank flat-file stub for two records: one nuccore, one protein.
+_NUC_GB = """\
+LOCUS       KC567260                 100 bp    RNA     linear   VRL 01-JAN-2020
+DEFINITION  Orthohantavirus andesense glycoprotein G1 gene.
+ACCESSION   KC567260
+VERSION     KC567260.1
+ORGANISM    Orthohantavirus andesense
+            Viruses; Riboviria; Orthornavirae; Negarnaviricota;
+            Ellioviricetes; Bunyavirales; Hantaviridae.
+FEATURES             Location/Qualifiers
+     source          1..100
+                     /organism="Orthohantavirus andesense"
+                     /mol_type="genomic RNA"
+                     /db_xref="taxon:1980456"
+     gene            1..100
+                     /gene="G1"
+ORIGIN
+        1 atgatgatga tgatgatgat gatgatgatg atgatgatga tgatgatgat gatgatgatg
+       61 atgatgatga tgatgatgat gatgatgatg
+//
+"""
+
+_PROT_GB = """\
+LOCUS       YP_009999999             50 aa     linear   VRL 01-JAN-2020
+DEFINITION  glycoprotein G1 [Test virus].
+ACCESSION   YP_009999999
+VERSION     YP_009999999.1
+ORGANISM    Test virus
+            Viruses; Riboviria.
+FEATURES             Location/Qualifiers
+     source          1..50
+                     /organism="Test virus"
+                     /db_xref="taxon:99999"
+ORIGIN
+        1 mmmmmmmmmm mmmmmmmmmm mmmmmmmmmm mmmmmmmmmm mmmmmmmmmm
+//
+"""
+
+
+class TestFetchAccessionsdirectly:
+    """Regression: fetch_accessions_directly auto-routes to the correct NCBI db
+    and returns parsed SeqRecords without hitting the network."""
+
+    def _make_efetch(self, monkeypatch, nuc_data: str, prot_data: str):
+        """Patch Entrez.efetch to return canned data per db, and disable sleep."""
+        import vfam_trees.fetch as fetch_mod
+
+        class _FakeHandle:
+            def __init__(self, text):
+                self._text = text
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return self._text
+
+        def fake_efetch(db, id, rettype, retmode):
+            return _FakeHandle(nuc_data if db == "nuccore" else prot_data)
+
+        monkeypatch.setattr(fetch_mod.Entrez, "efetch", fake_efetch)
+        monkeypatch.setattr(fetch_mod.time, "sleep", lambda *_: None)
+
+    def test_nuccore_accession_routed_to_nuccore(self, monkeypatch):
+        """A 2+6 nuccore accession (e.g. KC567260.1) must be fetched from nuccore."""
+        import vfam_trees.fetch as fetch_mod
+        calls: list[str] = []
+
+        class _FakeHandle:
+            def __init__(self, text):
+                self._text = text
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return self._text
+
+        def fake_efetch(db, id, rettype, retmode):
+            calls.append(db)
+            return _FakeHandle(_NUC_GB if db == "nuccore" else "")
+
+        monkeypatch.setattr(fetch_mod.Entrez, "efetch", fake_efetch)
+        monkeypatch.setattr(fetch_mod.time, "sleep", lambda *_: None)
+
+        recs = fetch_accessions_directly(["KC567260.1"])
+        assert "nuccore" in calls
+        assert "protein" not in calls
+        assert len(recs) == 1
+        assert recs[0].id == "KC567260.1"
+
+    def test_protein_accession_routed_to_protein(self, monkeypatch):
+        """A RefSeq protein accession (YP_…) must be fetched from the protein db."""
+        import vfam_trees.fetch as fetch_mod
+        calls: list[str] = []
+
+        class _FakeHandle:
+            def __init__(self, text):
+                self._text = text
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return self._text
+
+        def fake_efetch(db, id, rettype, retmode):
+            calls.append(db)
+            return _FakeHandle(_PROT_GB if db == "protein" else "")
+
+        monkeypatch.setattr(fetch_mod.Entrez, "efetch", fake_efetch)
+        monkeypatch.setattr(fetch_mod.time, "sleep", lambda *_: None)
+
+        recs = fetch_accessions_directly(["YP_009999999.1"])
+        assert "protein" in calls
+        assert "nuccore" not in calls
+        assert len(recs) == 1
+
+    def test_mixed_accessions_split_across_databases(self, monkeypatch):
+        """Nuccore and protein accessions in one call must be routed to separate dbs."""
+        import vfam_trees.fetch as fetch_mod
+        calls: list[str] = []
+
+        class _FakeHandle:
+            def __init__(self, text):
+                self._text = text
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return self._text
+
+        def fake_efetch(db, id, rettype, retmode):
+            calls.append(db)
+            return _FakeHandle(_NUC_GB if db == "nuccore" else _PROT_GB)
+
+        monkeypatch.setattr(fetch_mod.Entrez, "efetch", fake_efetch)
+        monkeypatch.setattr(fetch_mod.time, "sleep", lambda *_: None)
+
+        recs = fetch_accessions_directly(["KC567260.1", "YP_009999999.1"])
+        assert "nuccore" in calls
+        assert "protein" in calls
+        assert len(recs) == 2
+
+    def test_empty_ncbi_response_returns_empty_list(self, monkeypatch):
+        """When NCBI returns nothing, the function must return [] without error."""
+        import vfam_trees.fetch as fetch_mod
+
+        class _FakeHandle:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return ""
+
+        monkeypatch.setattr(fetch_mod.Entrez, "efetch", lambda **_: _FakeHandle())
+        monkeypatch.setattr(fetch_mod.time, "sleep", lambda *_: None)
+
+        recs = fetch_accessions_directly(["KC567260.1"])
+        assert recs == []
+
+    def test_empty_input_returns_empty_list(self, monkeypatch):
+        """Empty accession set must short-circuit without any network call."""
+        import vfam_trees.fetch as fetch_mod
+        called = {"n": 0}
+
+        def boom(*a, **kw):
+            called["n"] += 1
+
+        monkeypatch.setattr(fetch_mod.Entrez, "efetch", boom)
+        recs = fetch_accessions_directly([])
+        assert recs == []
+        assert called["n"] == 0
 

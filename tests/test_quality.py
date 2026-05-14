@@ -111,6 +111,36 @@ def test_accepts_when_no_min_length():
     assert len(passed) == 1
 
 
+def test_excludes_by_max_length():
+    records = [_rec(GOOD_SEQ)]
+    passed, _, stats = filter_sequences(
+        records, seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, max_length=10, exclude_organisms=[],
+    )
+    assert len(passed) == 0
+    assert stats["n_excluded_length"] == 1
+
+
+def test_max_length_does_not_drop_manual_include():
+    short_enough = _rec(GOOD_SEQ, acc="MANUAL.1")
+    passed, _, stats = filter_sequences(
+        [short_enough], seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, max_length=10, exclude_organisms=[],
+        manual_include_ids={"MANUAL.1"},
+    )
+    assert len(passed) == 1
+    assert stats["n_manual_include_bypassed"] == 1
+
+
+def test_max_length_null_does_not_filter():
+    records = [_rec(GOOD_SEQ)]
+    passed, _, _ = filter_sequences(
+        records, seq_type="nucleotide", min_length=None,
+        max_ambiguous=0.01, max_length=None, exclude_organisms=[],
+    )
+    assert len(passed) == 1
+
+
 def test_pre_length_lengths_present_in_stats():
     records = [_rec(GOOD_SEQ)]
     _, _, stats = filter_sequences(

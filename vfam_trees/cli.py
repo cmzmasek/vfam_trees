@@ -734,6 +734,16 @@ def _load_cache(global_config: Path):
     help="Clear the entire cache (all families).",
 )
 @click.option(
+    "--empty-only", "empty_only",
+    is_flag=True,
+    default=False,
+    help=(
+        "Remove only the negative-result (empty) sentinels, keeping downloaded "
+        "sequence data.  Useful after a query fix when NCBI now returns results "
+        "for species previously cached as empty."
+    ),
+)
+@click.option(
     "--global-config", "-g",
     default=DEFAULT_GLOBAL_CFG,
     show_default=True,
@@ -745,13 +755,21 @@ def _load_cache(global_config: Path):
     default=False,
     help="Skip confirmation prompt.",
 )
-def cache_clear(family: str | None, clear_all: bool, global_config: Path, yes: bool):
+def cache_clear(
+    family: str | None,
+    clear_all: bool,
+    empty_only: bool,
+    global_config: Path,
+    yes: bool,
+):
     """Clear cached sequences for a family or the entire cache.
 
     \b
     Examples:
-      vfam_trees cache clear Asfarviridae
+      vfam_trees cache clear Hantaviridae
+      vfam_trees cache clear Hantaviridae --empty-only
       vfam_trees cache clear --all
+      vfam_trees cache clear --all --empty-only
       vfam_trees cache clear --all --yes
     """
     if not family and not clear_all:
@@ -764,22 +782,41 @@ def cache_clear(family: str | None, clear_all: bool, global_config: Path, yes: b
     sc = _load_cache(global_config)
 
     if clear_all:
-        st = sc.stats()
-        if not yes:
-            click.confirm(
-                f"Delete all {st['entries']} cache entries ({st['size_mb']} MB) in {sc.cache_dir}?",
-                abort=True,
-            )
-        removed = sc.clear_all()
-        click.echo(f"Removed {removed} cache entries.")
-    else:
-        if not yes:
-            click.confirm(f"Delete all cached sequences for {family}?", abort=True)
-        removed = sc.clear_family(family)
-        if removed:
-            click.echo(f"Removed {removed} cache entries for {family}.")
+        if empty_only:
+            if not yes:
+                click.confirm(
+                    "Delete all empty-result sentinels from the cache?", abort=True,
+                )
+            removed = sc.clear_empty_all()
+            click.echo(f"Removed {removed} empty-result sentinel(s).")
         else:
-            click.echo(f"No cache entries found for {family}.")
+            st = sc.stats()
+            if not yes:
+                click.confirm(
+                    f"Delete all {st['entries']} cache entries ({st['size_mb']} MB) in {sc.cache_dir}?",
+                    abort=True,
+                )
+            removed = sc.clear_all()
+            click.echo(f"Removed {removed} cache entries.")
+    else:
+        if empty_only:
+            if not yes:
+                click.confirm(
+                    f"Delete empty-result sentinels for {family}?", abort=True,
+                )
+            removed = sc.clear_empty_family(family)
+            if removed:
+                click.echo(f"Removed {removed} empty-result sentinel(s) for {family}.")
+            else:
+                click.echo(f"No empty-result sentinels found for {family}.")
+        else:
+            if not yes:
+                click.confirm(f"Delete all cached sequences for {family}?", abort=True)
+            removed = sc.clear_family(family)
+            if removed:
+                click.echo(f"Removed {removed} cache entries for {family}.")
+            else:
+                click.echo(f"No cache entries found for {family}.")
 
 
 @cache.command("stats")

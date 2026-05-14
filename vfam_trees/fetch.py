@@ -290,6 +290,34 @@ def fetch_species_sequences(
     return total
 
 
+def fetch_accessions_directly(accessions: Iterable[str]) -> list[SeqRecord]:
+    """Fetch a set of accessions from NCBI, auto-detecting nuccore vs protein db.
+
+    Accessions that match the nuccore shape are fetched from nuccore; all
+    others are assumed to be protein accessions and fetched from the protein
+    db.  Used to actively retrieve manual.include IDs that were not returned
+    by the normal per-species download — for example a nuccore accession
+    specified on a protein-mode run, or an accession from a species outside
+    the family's NCBI taxonomy subtree.
+
+    Returns parsed SeqRecords for every accession NCBI successfully returns.
+    Unfetchable accessions are silently omitted; callers should compare the
+    input and output sets to detect gaps.
+    """
+    accs = list(accessions)
+    nuccore_accs = [a for a in accs if _is_nuccore_accession(a)]
+    protein_accs = [a for a in accs if not _is_nuccore_accession(a)]
+
+    records: list[SeqRecord] = []
+    for db, db_accs in [("nuccore", nuccore_accs), ("protein", protein_accs)]:
+        if not db_accs:
+            continue
+        data = _fetch_batch(db, db_accs)
+        if data.strip():
+            records.extend(SeqIO.parse(io.StringIO(data), "genbank"))
+    return records
+
+
 def _build_species_query(
     taxid: int,
     seq_type: str,
@@ -315,7 +343,10 @@ def _build_species_query(
             base += ' AND ("complete genome"[Title] OR "complete sequence"[Title])'
     else:
         # Marker gene / marker protein for large DNA viruses.
-        # nuccore: search [Gene] — gene-name annotation on nucleotide records.
+        # nuccore: search [Title] OR [Gene].  [Gene] is sparsely annotated for
+        #   many viral families and uses symbol-level names (e.g. "GPC", "G1");
+        #   [Title] reliably carries the descriptive name from the FASTA defline
+        #   (e.g. "glycoprotein g1") so it must be the primary field.
         # protein: search [Protein Name] OR [Title] OR [Gene].
         #   [Protein Name] should hold descriptive names like "DNA polymerase",
         #   but a 2026-05 audit found this field is sparsely populated for
@@ -332,7 +363,8 @@ def _build_species_query(
             )
         else:
             base += (
-                f' AND "{region}"[Gene]'
+                f' AND ("{region}"[Title]'
+                f' OR "{region}"[Gene])'
                 ' NOT "complete genome"[Title]'
                 ' NOT "complete sequence"[Title]'
             )

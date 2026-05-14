@@ -356,6 +356,44 @@ class SequenceCache:
             log.debug("Cleared cache entry for %s: %s", family, entry_dir)
         return len(to_remove)
 
+    def clear_empty_family(self, family: str) -> int:
+        """Delete only the negative-result sentinels for *family*, leaving any
+        downloaded sequence data intact.
+
+        Useful when a query improvement means NCBI now returns results for
+        species that were previously cached as empty.  Returns the number of
+        sentinels removed.
+        """
+        removed = 0
+        for sentinel_path in self.cache_dir.rglob("_no_results"):
+            try:
+                data = json.loads(sentinel_path.read_text())
+            except Exception:
+                continue
+            if data.get("family") == family:
+                try:
+                    sentinel_path.unlink()
+                    log.debug("Cleared empty sentinel for %s: %s", family, sentinel_path)
+                    removed += 1
+                except Exception as exc:
+                    log.warning("Could not remove sentinel %s: %s", sentinel_path, exc)
+        return removed
+
+    def clear_empty_all(self) -> int:
+        """Delete all negative-result sentinels across the entire cache.
+
+        Returns the number of sentinels removed.
+        """
+        removed = 0
+        for sentinel_path in self.cache_dir.rglob("_no_results"):
+            try:
+                sentinel_path.unlink()
+                log.debug("Cleared empty sentinel: %s", sentinel_path)
+                removed += 1
+            except Exception as exc:
+                log.warning("Could not remove sentinel %s: %s", sentinel_path, exc)
+        return removed
+
     def clear_all(self) -> int:
         """Delete every entry in the cache.  Returns the number removed."""
         removed = 0

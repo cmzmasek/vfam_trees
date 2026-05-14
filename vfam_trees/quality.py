@@ -28,6 +28,7 @@ def filter_sequences(
     seq_type: str,
     min_length: int | None,
     max_ambiguous: float,
+    max_length: int | None = None,
     exclude_organisms: list[str] | None = None,
     manual_include_ids: set[str] | None = None,
     manual_exclude_ids: set[str] | None = None,
@@ -40,6 +41,7 @@ def filter_sequences(
         min_length: minimum sequence length; None = auto (50% of median,
                     with fallback to 40%, 30% if no sequences pass)
         max_ambiguous: maximum fraction of ambiguous characters
+        max_length: maximum sequence length; None = no upper limit
         exclude_organisms: list of substrings matched case-insensitively
                            against the ORGANISM, SOURCE, and DEFINITION fields
         manual_include_ids: accessions (exact match incl. version) that bypass
@@ -148,17 +150,17 @@ def filter_sequences(
             log.info("min_length %d raised to hard floor %d", min_length, floor)
         else:
             log.info("Using min_length=%d", min_length)
-        passed, n_short, n_ambig, n_undefined, pre_length_lengths = _apply_length_filter(
-            passed_organism, effective, ambig_chars, max_ambiguous
+        passed, n_excl_len, n_ambig, n_undefined, pre_length_lengths = _apply_length_filter(
+            passed_organism, effective, ambig_chars, max_ambiguous, max_length
         )
         log.info(
-            "Quality filter: %d passed, %d excluded organism, %d too short, "
+            "Quality filter: %d passed, %d excluded organism, %d excluded by length, "
             "%d too ambiguous, %d undefined sequence (from %d total)",
-            len(passed), n_excluded_organism, n_short, n_ambig, n_undefined, len(records),
+            len(passed), n_excluded_organism, n_excl_len, n_ambig, n_undefined, len(records),
         )
         qc_stats = {
             "n_excluded_organism": n_excluded_organism,
-            "n_excluded_length": n_short,
+            "n_excluded_length": n_excl_len,
             "n_excluded_ambiguity": n_ambig,
             "n_undefined": n_undefined,
             "pre_length_lengths": pre_length_lengths,
@@ -169,7 +171,7 @@ def filter_sequences(
     # Auto mode: try fractions from most to least strict; stop when >0 sequences pass
     fraction_used = _AUTO_FRACTIONS[-1]
     passed: list[SeqRecord] = []
-    n_short = n_ambig = n_undefined = 0
+    n_excl_len = n_ambig = n_undefined = 0
     pre_length_lengths: list[int] = []
     for fraction in _AUTO_FRACTIONS:
         effective = max(int(median_len * fraction), floor)
@@ -177,13 +179,13 @@ def filter_sequences(
             "Auto min_length set to %d (%.0f%% of median %d)",
             effective, fraction * 100, median_len,
         )
-        passed, n_short, n_ambig, n_undefined, pre_length_lengths = _apply_length_filter(
-            passed_organism, effective, ambig_chars, max_ambiguous
+        passed, n_excl_len, n_ambig, n_undefined, pre_length_lengths = _apply_length_filter(
+            passed_organism, effective, ambig_chars, max_ambiguous, max_length
         )
         log.info(
-            "Quality filter: %d passed, %d excluded organism, %d too short, "
+            "Quality filter: %d passed, %d excluded organism, %d excluded by length, "
             "%d too ambiguous, %d undefined sequence (from %d total)",
-            len(passed), n_excluded_organism, n_short, n_ambig, n_undefined, len(records),
+            len(passed), n_excluded_organism, n_excl_len, n_ambig, n_undefined, len(records),
         )
         fraction_used = fraction
         if passed:
@@ -196,7 +198,7 @@ def filter_sequences(
 
     qc_stats = {
         "n_excluded_organism": n_excluded_organism,
-        "n_excluded_length": n_short,
+        "n_excluded_length": n_excl_len,
         "n_excluded_ambiguity": n_ambig,
         "n_undefined": n_undefined,
         "pre_length_lengths": pre_length_lengths,
@@ -352,6 +354,7 @@ def _apply_length_filter(
     min_length: int,
     ambig_chars: set,
     max_ambiguous: float,
+    max_length: int | None = None,
 ) -> tuple[list[SeqRecord], int, int, int, list[int]]:
     """Filter records by ambiguity then length.
 
@@ -360,7 +363,7 @@ def _apply_length_filter(
     before the minimum-length check is applied.
     """
     passed = []
-    n_short = 0
+    n_excluded_length = 0
     n_ambig = 0
     n_undefined = 0
     pre_length_lengths: list[int] = []
@@ -375,11 +378,12 @@ def _apply_length_filter(
             n_ambig += 1
             continue
         pre_length_lengths.append(len(seq_str))
-        if len(seq_str) < min_length:
-            n_short += 1
+        L = len(seq_str)
+        if L < min_length or (max_length is not None and L > max_length):
+            n_excluded_length += 1
             continue
         passed.append(rec)
-    return passed, n_short, n_ambig, n_undefined, pre_length_lengths
+    return passed, n_excluded_length, n_ambig, n_undefined, pre_length_lengths
 
 
 def deduplicate(records: list[SeqRecord]) -> list[SeqRecord]:
