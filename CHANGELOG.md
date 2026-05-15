@@ -10,6 +10,20 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.41] — 2026-05-15
+
+### Fixed
+- **PhyloXML write crashed with `UnboundLocalError: display_name`** when
+  `manual.name` was set.  The `display_name` value is computed in
+  `run_family` (and `run_family_concat`) but was not threaded through to
+  `_run_target` / `_run_target_concat`, where it is consumed when building
+  the PhyloXML `<name>` element.  In `_run_target` the situation was made
+  worse by local rebindings of `display_name` inside the branch-outlier
+  logging loops, which made the parameter look local-from-entry to Python
+  and raised `UnboundLocalError` at the first read.  Now `display_name` is
+  passed explicitly to both helpers and the loop-local variable is renamed
+  to `leaf_display` so it can no longer shadow the family-level value.
+
 ## [1.2.40] — 2026-05-15
 
 ### Changed

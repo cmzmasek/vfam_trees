@@ -834,6 +834,7 @@ def run_family(
             clustering_cfg=clustering_cfg,
             family_cfg=family_cfg,
             family=family,
+            display_name=display_name,
             family_dir=family_dir,
             work_dir=work_dir,
             threads=threads,
@@ -962,6 +963,7 @@ def _run_target(
     clustering_cfg: dict,
     family_cfg: dict,
     family: str,
+    display_name: str,
     family_dir: Path,
     work_dir: Path,
     threads: int,
@@ -1245,14 +1247,14 @@ def _run_target(
         )
 
         for oid in protected_outliers:
-            display_name = short_to_display.get(oid, oid)
+            leaf_display = short_to_display.get(oid, oid)
             bl = _bl_map.get(oid, float("nan"))
             mads_above = (bl - _median) / _mad if _mad else float("nan")
             log.warning(
                 "tree_%s iteration %d: RefSeq '%s' looks like a branch-length "
                 "outlier — branch length %.5f (%.1f× MAD above median, "
                 "threshold=%.5f) — KEEPING (RefSeq protected)",
-                label, iteration, display_name, bl, mads_above, _threshold,
+                label, iteration, leaf_display, bl, mads_above, _threshold,
             )
 
         if not outlier_ids:
@@ -1274,13 +1276,13 @@ def _run_target(
             break
 
         for oid in outlier_ids:
-            display_name = short_to_display.get(oid, oid)
+            leaf_display = short_to_display.get(oid, oid)
             bl = _bl_map.get(oid, float("nan"))
             mads_above = (bl - _median) / _mad if _mad else float("nan")
             log.info(
                 "tree_%s iteration %d: removing outlier '%s' — branch length %.5f "
                 "(%.1f× MAD above median, threshold=%.5f)",
-                label, iteration, display_name, bl, mads_above, _threshold,
+                label, iteration, leaf_display, bl, mads_above, _threshold,
             )
 
         n_outliers_removed += len(outlier_ids)
