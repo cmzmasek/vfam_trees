@@ -117,6 +117,31 @@ def _taxonomy_search(query: str, max_records: int) -> list[str]:
     return []
 
 
+def fetch_species_taxids_under_lineages(entries: list[str]) -> dict[str, set[int]]:
+    """For each entry (taxid digit-string or scientific name), return the
+    set of species-rank descendant taxids under that taxon in NCBI taxonomy.
+
+    Entries can be at any rank — species, genus, subfamily, family, etc.
+    The returned mapping ``{entry: {species_taxids}}`` is empty for an entry
+    whose name does not resolve, or whose taxon has no species-rank
+    descendants.  Callers can use the empty sets to warn per-entry.
+    """
+    result: dict[str, set[int]] = {}
+    for entry in entries:
+        if entry.isdigit():
+            taxid: int | None = int(entry)
+        else:
+            taxid = _get_family_taxid(entry)
+            if taxid is None:
+                result[entry] = set()
+                continue
+        ids = _taxonomy_search(
+            f"txid{taxid}[subtree] AND species[rank]", max_records=50000,
+        )
+        result[entry] = {int(i) for i in ids}
+    return result
+
+
 def _filter_species(species: list[dict], family: str) -> list[dict]:
     """Remove environmental samples and unclassified entries."""
     family_lower = family.lower()

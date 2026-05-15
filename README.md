@@ -13,7 +13,7 @@ The per-family pipeline runs in seven stages. Each stage is configurable per fam
 
 ### 1. Species discovery
 
-The family TaxID is resolved from NCBI Taxonomy and every descendant species is enumerated. The species list defines the universe of organisms eligible for download. An optional `manual.include_species` list in the per-family config restricts this universe to a named subset — only species whose name or NCBI taxid appears in the list proceed to download; others are skipped entirely.
+The family TaxID is resolved from NCBI Taxonomy and every descendant species is enumerated. The species list defines the universe of organisms eligible for download. An optional `manual.limit_lineages` list in the per-family config restricts this universe to one or more taxonomic lineages — each entry is a taxon at any rank (species, genus, subfamily, ...) given as a scientific name or a taxid; only species whose taxid is a descendant of at least one listed lineage proceed to download; others are skipped entirely.
 
 ### 2. Sequence download
 
@@ -25,7 +25,7 @@ An optional shared cache (configurable TTL, per-entry locking, negative-result c
 
 Each species' sequences are filtered in this order:
 
-0. **Manual overrides** (per-family `manual.include` / `manual.include_seq` / `manual.include_fasta_files` / `manual.exclude` / `manual.include_species`) — accessions in `manual.exclude` are dropped immediately; accessions in `manual.include` bypass every QC step below and are protected from removal during clustering, proportional merge, and length-outlier filtering. Match is exact, version included (e.g. `NC_002617.1`). `manual.include_seq` accepts pasted sequences (records not yet in GenBank) as a list of `{id, organism, sequence}` mappings; `manual.include_fasta_files` accepts paths to one or more FASTA files whose sequences are injected the same way. Both are injected after fetch, receive the same bypass + downstream protection as `manual.include`, and their ids must not collide with any fetched accession (not supported in concat mode). `manual.include_species` restricts the set of species that proceed to download (see [Species discovery](#1-species-discovery)).
+0. **Manual overrides** (per-family `manual.include` / `manual.include_seq` / `manual.include_fasta_files` / `manual.exclude` / `manual.limit_lineages`) — accessions in `manual.exclude` are dropped immediately; accessions in `manual.include` bypass every QC step below and are protected from removal during clustering, proportional merge, and length-outlier filtering. Match is exact, version included (e.g. `NC_002617.1`). `manual.include_seq` accepts pasted sequences (records not yet in GenBank) as a list of `{id, organism, sequence}` mappings; `manual.include_fasta_files` accepts paths to one or more FASTA files whose sequences are injected the same way. Both are injected after fetch, receive the same bypass + downstream protection as `manual.include`, and their ids must not collide with any fetched accession (not supported in concat mode). `manual.limit_lineages` restricts the set of species that proceed to download to those under one or more named taxonomic lineages (see [Species discovery](#1-species-discovery)).
 1. **Organism exclusion** — case-insensitive substring match against `ORGANISM`, `SOURCE`, and `DEFINITION` (joined with newlines so terms cannot straddle field boundaries). Defaults: `synthetic construct`, `metagenome`, `MAG:`, `uncultured`, `unverified`, `vector`, `recombinant`, `patent`.
 2. **Ambiguity** — `max_ambiguous` cap on the fraction of `N` / `X` / IUPAC degenerate characters.
 3. **Minimum length** — `min_length: null` auto-sets the threshold to 50% of the per-species median, with relaxation fallback to 40% then 30% if too few sequences pass; in all cases a hard floor of 200 bp / 100 aa applies.
@@ -307,10 +307,12 @@ manual:                         # curator overrides on per-family record selecti
                                 # to include_seq entries; FASTA id field → sequence id,
                                 # remainder of header → organism (not supported in concat mode)
   exclude: []                   # exact accessions to drop immediately after fetch, before QC
-  include_species: []           # restrict the pipeline to a subset of species — entries are
-                                # species names (case-insensitive) or NCBI taxids (integer or
-                                # digit string); species not listed are skipped before download;
-                                # empty or absent means use the full discovered species list
+  limit_lineages: []            # restrict the pipeline to species under one or more named
+                                # lineages — entries are taxon names at any rank (species,
+                                # genus, subfamily, ...) or NCBI taxids (integer or digit
+                                # string); only species descendant from at least one listed
+                                # lineage proceed to download; empty or absent means use the
+                                # full discovered species list
   name: ""                      # override the display name in PDF/PNG titles and the PhyloXML
                                 # <name> element; e.g. "Hantaviridae 2026"; does not affect
                                 # output file names; empty (default) uses the family name
@@ -348,18 +350,19 @@ Notes on `include_seq` and `include_fasta_files`:
 - Injected leaves render gray (no genus) and do not participate in LCA voting, since only id and organism are required.
 - Not supported when `sequence.region == "concatenated"` — injected sequences cannot be split into per-marker proteins.
 
-Example — restricting a family run to a specific subset of species (mixing names and taxids):
+Example — restricting a family run to specific lineages (mixing ranks, names, and taxids):
 
 ```yaml
 manual:
-  include_species:
-    - Hantaan orthohantavirus       # matched case-insensitively against NCBI species name
-    - Seoul orthohantavirus
+  limit_lineages:
+    - Orthohantavirus               # genus — all species under it are kept
+    - Mobatvirus                    # another genus in the same family
+    - Hantaan orthohantavirus       # individual species also accepted
     - 11595                          # NCBI taxid (integer) — equivalent to the species name above
     - "1980519"                      # taxid as a quoted digit string — also accepted
 ```
 
-Unmatched entries produce a WARNING in the log (no hard error — it may indicate a typo). If `include_species` matches nothing in the discovered species list the family is skipped with an explanatory status entry.
+For each entry, NCBI Taxonomy is queried for the species-rank descendants under that taxon; the family's discovered species list is then restricted to those that fall under at least one of the listed lineages. Entries whose subtree does not overlap the discovered species produce a WARNING in the log (typo, or a taxon outside this family). If `limit_lineages` matches nothing in the discovered species list the family is skipped with an explanatory status entry.
 
 #### Length-outlier behaviour
 

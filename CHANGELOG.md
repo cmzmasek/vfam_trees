@@ -10,6 +10,18 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.39] — 2026-05-15
+
+### Changed
+- **`manual.include_species` renamed to `manual.limit_lineages`** and
+  generalized to match at any taxonomic rank.  Each entry is a scientific
+  name or NCBI taxid for a taxon at any rank (species, genus, subfamily,
+  ...); the pipeline queries NCBI Taxonomy for all species-rank descendants
+  under each listed taxon and restricts the discovered species list to
+  those falling under at least one entry.  The old `include_species` key
+  is now a **hard error** — configs must be renamed.  Pre-production, no
+  migration path.
+
 ## [1.2.38] — 2026-05-14
 
 ### Added

@@ -10,7 +10,7 @@ from Bio.Seq import Seq
 from vfam_trees.pipeline import (
     _mark_done, _mark_skipped,
     _inject_pasted_sequences, _load_fasta_file_entries,
-    _filter_species_by_include_list,
+    _filter_species_by_lineages,
 )
 
 
@@ -276,7 +276,7 @@ class TestLoadFastaFileEntries:
 
 
 # ---------------------------------------------------------------------------
-# _filter_species_by_include_list
+# _filter_species_by_lineages
 # ---------------------------------------------------------------------------
 
 def _make_species(name: str, taxid: int) -> dict:
@@ -295,83 +295,135 @@ class _NullLog:
         self.warnings.append(msg % args if args else msg)
 
 
-class TestFilterSpeciesByIncludeList:
+def _resolver_from(mapping: dict[str, set[int]]):
+    """Build a fake taxid_resolver callback from a fixed mapping.
+
+    Entries absent from *mapping* resolve to an empty set (simulating
+    a name that didn't resolve in NCBI or a taxon with no descendants).
+    """
+    def _resolve(entries):
+        return {e: mapping.get(e, set()) for e in entries}
+    return _resolve
+
+
+class TestFilterSpeciesByLineages:
     def _log(self):
         return _NullLog()
 
-    def test_name_match_case_insensitive(self):
+    def test_species_entry_resolves_to_single_taxid(self):
         species = [_make_species("Dengue virus", 11103)]
-        log = self._log()
-        result = _filter_species_by_include_list(species, ["dengue virus"], "Flaviviridae", log)
-        assert len(result) == 1
-        assert result[0]["taxid"] == 11103
-
-    def test_name_match_exact_case(self):
-        species = [_make_species("Dengue virus", 11103)]
-        result = _filter_species_by_include_list(species, ["Dengue virus"], "Flaviviridae", self._log())
-        assert len(result) == 1
-
-    def test_taxid_match_by_digit_string(self):
-        species = [_make_species("Dengue virus", 11103)]
-        result = _filter_species_by_include_list(species, ["11103"], "Flaviviridae", self._log())
-        assert len(result) == 1
-        assert result[0]["name"] == "Dengue virus"
-
-    def test_unmatched_entry_produces_warning(self):
-        species = [_make_species("Dengue virus", 11103)]
-        log = self._log()
-        result = _filter_species_by_include_list(species, ["Zika virus"], "Flaviviridae", log)
-        assert result == []
-        assert any("Zika virus" in w for w in log.warnings)
-
-    def test_matched_and_unmatched_mixed(self):
-        species = [
-            _make_species("Dengue virus", 11103),
-            _make_species("Zika virus", 64320),
-        ]
-        log = self._log()
-        result = _filter_species_by_include_list(species, ["Dengue virus", "West Nile virus"], "F", log)
-        assert len(result) == 1
-        assert result[0]["taxid"] == 11103
-        assert any("West Nile virus" in w for w in log.warnings)
-
-    def test_name_and_taxid_both_accepted(self):
-        species = [
-            _make_species("Dengue virus", 11103),
-            _make_species("Zika virus", 64320),
-        ]
-        result = _filter_species_by_include_list(
-            species, ["Dengue virus", "64320"], "Flaviviridae", self._log()
+        resolver = _resolver_from({"Dengue virus": {11103}})
+        result = _filter_species_by_lineages(
+            species, ["Dengue virus"], "Flaviviridae", self._log(),
+            taxid_resolver=resolver,
         )
-        assert len(result) == 2
+        assert [sp["taxid"] for sp in result] == [11103]
+
+    def test_genus_entry_pulls_in_all_species_under_genus(self):
+        species = [
+            _make_species("Dengue virus", 11103),
+            _make_species("Zika virus", 64320),
+            _make_species("Hantaan orthohantavirus", 11595),
+        ]
+        # "Flavivirus" genus subtree contains Dengue and Zika; not Hantaan.
+        resolver = _resolver_from({"Flavivirus": {11103, 64320, 99999}})
+        result = _filter_species_by_lineages(
+            species, ["Flavivirus"], "Flaviviridae", self._log(),
+            taxid_resolver=resolver,
+        )
         assert {sp["taxid"] for sp in result} == {11103, 64320}
 
-    def test_duplicate_taxid_via_name_and_taxid_deduped(self):
+    def test_taxid_digit_string_entry_accepted(self):
         species = [_make_species("Dengue virus", 11103)]
-        result = _filter_species_by_include_list(
-            species, ["Dengue virus", "11103"], "Flaviviridae", self._log()
+        resolver = _resolver_from({"11103": {11103}})
+        result = _filter_species_by_lineages(
+            species, ["11103"], "Flaviviridae", self._log(),
+            taxid_resolver=resolver,
         )
         assert len(result) == 1
 
-    def test_order_follows_include_list_not_species_list(self):
+    def test_unresolved_entry_produces_warning(self):
+        species = [_make_species("Dengue virus", 11103)]
+        log = self._log()
+        resolver = _resolver_from({})  # "Typo virus" resolves to empty
+        result = _filter_species_by_lineages(
+            species, ["Typo virus"], "Flaviviridae", log,
+            taxid_resolver=resolver,
+        )
+        assert result == []
+        assert any("Typo virus" in w for w in log.warnings)
+
+    def test_entry_outside_family_produces_warning(self):
+        species = [_make_species("Dengue virus", 11103)]
+        log = self._log()
+        # "Mammalia" resolves to many species, none in Flaviviridae.
+        resolver = _resolver_from({"Mammalia": {9606, 10090, 9913}})
+        result = _filter_species_by_lineages(
+            species, ["Mammalia"], "Flaviviridae", log,
+            taxid_resolver=resolver,
+        )
+        assert result == []
+        assert any("Mammalia" in w for w in log.warnings)
+
+    def test_matched_and_unmatched_mixed(self):
+        species = [_make_species("Dengue virus", 11103)]
+        log = self._log()
+        resolver = _resolver_from({
+            "Dengue virus": {11103},
+            "Mammalia": {9606, 10090},
+        })
+        result = _filter_species_by_lineages(
+            species, ["Dengue virus", "Mammalia"], "Flaviviridae", log,
+            taxid_resolver=resolver,
+        )
+        assert [sp["taxid"] for sp in result] == [11103]
+        assert any("Mammalia" in w for w in log.warnings)
+
+    def test_overlapping_lineages_deduplicate(self):
+        species = [
+            _make_species("Dengue virus", 11103),
+            _make_species("Zika virus", 64320),
+        ]
+        resolver = _resolver_from({
+            "Flavivirus": {11103, 64320},
+            "Dengue virus": {11103},  # subset of Flavivirus
+        })
+        result = _filter_species_by_lineages(
+            species, ["Flavivirus", "Dengue virus"], "Flaviviridae", self._log(),
+            taxid_resolver=resolver,
+        )
+        assert {sp["taxid"] for sp in result} == {11103, 64320}
+
+    def test_result_preserves_species_list_order(self):
         species = [
             _make_species("Alpha virus", 1),
             _make_species("Beta virus", 2),
             _make_species("Gamma virus", 3),
         ]
-        result = _filter_species_by_include_list(
-            species, ["Gamma virus", "Alpha virus"], "F", self._log()
+        resolver = _resolver_from({"Gamma virus": {3}, "Alpha virus": {1}})
+        result = _filter_species_by_lineages(
+            species, ["Gamma virus", "Alpha virus"], "F", self._log(),
+            taxid_resolver=resolver,
         )
-        assert [sp["name"] for sp in result] == ["Gamma virus", "Alpha virus"]
+        # Discovered-list order, not user-list order.
+        assert [sp["name"] for sp in result] == ["Alpha virus", "Gamma virus"]
 
-    def test_empty_include_list_returns_empty(self):
+    def test_empty_lineages_list_returns_empty(self):
         species = [_make_species("Dengue virus", 11103)]
-        result = _filter_species_by_include_list(species, [], "Flaviviridae", self._log())
+        resolver = _resolver_from({})
+        result = _filter_species_by_lineages(
+            species, [], "Flaviviridae", self._log(),
+            taxid_resolver=resolver,
+        )
         assert result == []
 
     def test_empty_species_list_all_unmatched_warns(self):
         log = self._log()
-        result = _filter_species_by_include_list([], ["Dengue virus"], "Flaviviridae", log)
+        resolver = _resolver_from({"Dengue virus": {11103}})
+        result = _filter_species_by_lineages(
+            [], ["Dengue virus"], "Flaviviridae", log,
+            taxid_resolver=resolver,
+        )
         assert result == []
         assert log.warnings
 

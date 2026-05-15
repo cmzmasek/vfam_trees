@@ -704,10 +704,12 @@ DEFAULT_FAMILY_CONFIG: dict = {
         #          just the header itself.  Subject to the same collision
         #          rules and concat-mode restriction as include_seq.
         # exclude: dropped immediately after fetch, before QC.
-        # include_species: restrict the pipeline to a subset of species.  Each
-        #          entry is either a species name (matched case-insensitively)
-        #          or a numeric NCBI taxid (integer or digit string).  Species
-        #          not in this list are skipped entirely — no download, no QC.
+        # limit_lineages: restrict the pipeline to species under one or more
+        #          taxonomic lineages.  Each entry is a taxon at any rank
+        #          (species, genus, subfamily, ...) given as a scientific name
+        #          (matched against NCBI taxonomy) or a numeric taxid.  Only
+        #          species whose taxid is a descendant of at least one listed
+        #          taxon proceed to download; others are skipped entirely.
         #          When empty or absent the full discovered species list is used.
         # name: override the display name used in PDF/PNG titles and the PhyloXML
         #          <name> element.  When empty the biological family name is used.
@@ -716,7 +718,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "include_seq": [],
         "include_fasta_files": [],
         "exclude": [],
-        "include_species": [],
+        "limit_lineages": [],
         "name": "",
     },
 }
@@ -841,6 +843,14 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
             "%s: manual.include_fasta is renamed to manual.include_seq — "
             "please rename the key in your config.",
             family,
+        )
+
+    if "include_species" in block:
+        raise ValueError(
+            f"{family}: manual.include_species has been renamed to "
+            f"manual.limit_lineages and now matches at any taxonomic rank "
+            f"(species, genus, subfamily, ...).  Rename the key in your "
+            f"per-family config."
         )
 
     for key in ("include", "exclude"):
@@ -969,35 +979,35 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
     block["include_seq"] = cleaned_fasta
     block["include_fasta_files"] = cleaned_files
 
-    species_raw = block.get("include_species") or []
-    if not isinstance(species_raw, list):
+    lineages_raw = block.get("limit_lineages") or []
+    if not isinstance(lineages_raw, list):
         raise ValueError(
-            f"{family}: manual.include_species must be a list of species names "
-            f"or taxids (got {type(species_raw).__name__})."
+            f"{family}: manual.limit_lineages must be a list of taxon names "
+            f"or taxids (got {type(lineages_raw).__name__})."
         )
-    cleaned_species: list[str] = []
-    seen_species: set[str] = set()
-    for i, entry in enumerate(species_raw):
+    cleaned_lineages: list[str] = []
+    seen_lineages: set[str] = set()
+    for i, entry in enumerate(lineages_raw):
         if isinstance(entry, int):
             val = str(entry)
         elif isinstance(entry, str):
             val = entry.strip()
             if not val:
                 raise ValueError(
-                    f"{family}: manual.include_species[{i}] is empty — "
+                    f"{family}: manual.limit_lineages[{i}] is empty — "
                     "remove the entry or fill it in."
                 )
         else:
             raise ValueError(
-                f"{family}: manual.include_species[{i}] must be a species name "
+                f"{family}: manual.limit_lineages[{i}] must be a taxon name "
                 f"(string) or a taxid (integer), got {type(entry).__name__}."
             )
-        if val in seen_species:
-            log.warning("%s: duplicate entry %r in manual.include_species — deduped.", family, val)
+        if val in seen_lineages:
+            log.warning("%s: duplicate entry %r in manual.limit_lineages — deduped.", family, val)
             continue
-        seen_species.add(val)
-        cleaned_species.append(val)
-    block["include_species"] = cleaned_species
+        seen_lineages.add(val)
+        cleaned_lineages.append(val)
+    block["limit_lineages"] = cleaned_lineages
 
     name_raw = block.get("name")
     if name_raw is None:

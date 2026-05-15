@@ -52,38 +52,43 @@ from .logger import setup_logger, get_logger
 log = get_logger(__name__)
 
 
-def _filter_species_by_include_list(
+def _filter_species_by_lineages(
     species_list: list[dict],
-    include_species: list[str],
+    limit_lineages: list[str],
     family: str,
     log,
+    taxid_resolver=None,
 ) -> list[dict]:
-    """Return only the species whose name or taxid appears in *include_species*.
+    """Return only the species whose taxid falls under one of *limit_lineages*.
 
-    Each entry in *include_species* is matched as a taxid when it is a string
-    of digits, or as a case-insensitive species name otherwise.  Unmatched
-    entries produce a WARNING; duplicate hits (same taxid matched twice) are
-    deduplicated.
+    Each entry in *limit_lineages* is a taxon at any rank (species, genus,
+    subfamily, ...) given as a scientific name or a taxid digit-string.
+    For each entry, the set of species-rank descendant taxids is fetched
+    from NCBI taxonomy (or via the injected *taxid_resolver* in tests);
+    species in *species_list* whose taxid is in any such subtree are kept.
+    Entries whose subtree does not overlap the discovered family species
+    produce a WARNING.
     """
-    matched: list[dict] = []
-    seen_taxids: set[int] = set()
-    for entry in include_species:
-        if entry.isdigit():
-            taxid = int(entry)
-            hits = [sp for sp in species_list if sp["taxid"] == taxid]
-        else:
-            hits = [sp for sp in species_list if sp["name"].lower() == entry.lower()]
+    if taxid_resolver is None:
+        from .fetch import fetch_species_taxids_under_lineages
+        taxid_resolver = fetch_species_taxids_under_lineages
+
+    subtrees = taxid_resolver(limit_lineages)
+    discovered_taxids = {sp["taxid"] for sp in species_list}
+
+    union: set[int] = set()
+    for entry, taxids in subtrees.items():
+        hits = taxids & discovered_taxids
         if not hits:
             log.warning(
-                "manual.include_species: %r did not match any species discovered for %s",
+                "manual.limit_lineages: %r did not match any species discovered for %s",
                 entry, family,
             )
-        for sp in hits:
-            if sp["taxid"] not in seen_taxids:
-                seen_taxids.add(sp["taxid"])
-                matched.append(sp)
+        union |= hits
+
+    matched = [sp for sp in species_list if sp["taxid"] in union]
     log.info(
-        "manual.include_species: restricting to %d / %d species for %s",
+        "manual.limit_lineages: restricting to %d / %d species for %s",
         len(matched), len(species_list), family,
     )
     return matched
@@ -325,7 +330,7 @@ def run_family(
     manual_cfg = family_cfg.get("manual") or {}
     manual_include_ids: set[str] = set(manual_cfg.get("include") or [])
     manual_exclude_ids: set[str] = set(manual_cfg.get("exclude") or [])
-    manual_include_species: list[str] = manual_cfg.get("include_species") or []
+    manual_limit_lineages: list[str] = manual_cfg.get("limit_lineages") or []
     display_name: str = manual_cfg.get("name") or family
     if manual_include_ids:
         log.info("manual.include: %d accession(s) will bypass QC", len(manual_include_ids))
@@ -378,21 +383,21 @@ def run_family(
             json.dump(species_list, f, indent=2)
         log.info("Discovered %d species in %s", len(species_list), family)
 
-    if manual_include_species:
+    if manual_limit_lineages:
         log.info(
-            "manual.include_species: %d species requested — filtering discovered list",
-            len(manual_include_species),
+            "manual.limit_lineages: %d lineage(s) requested — filtering discovered species list",
+            len(manual_limit_lineages),
         )
-        species_list = _filter_species_by_include_list(
-            species_list, manual_include_species, family, log,
+        species_list = _filter_species_by_lineages(
+            species_list, manual_limit_lineages, family, log,
         )
         if not species_list:
             log.warning(
-                "manual.include_species: no matching species found for %s — skipping.", family,
+                "manual.limit_lineages: no matching species found for %s — skipping.", family,
             )
             _mark_skipped(
                 family_dir, family, output_dir,
-                "manual.include_species matched no discovered species",
+                "manual.limit_lineages matched no discovered species",
             )
             return
 

@@ -552,7 +552,7 @@ class TestManualBlock:
     def test_missing_block_treated_as_empty(self):
         cfg = {}
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"] == {"include": [], "exclude": [], "include_seq": [], "include_fasta_files": [], "include_species": [], "name": ""}
+        assert cfg["manual"] == {"include": [], "exclude": [], "include_seq": [], "include_fasta_files": [], "limit_lineages": [], "name": ""}
 
     def test_name_string_is_accepted(self):
         cfg = {"manual": {"name": "  Hantaviridae 2026  "}}
@@ -842,78 +842,78 @@ class TestManualIncludeFastaFiles:
 
 
 # ---------------------------------------------------------------------------
-# manual.include_species validation
+# manual.limit_lineages validation
 # ---------------------------------------------------------------------------
 
-class TestManualIncludeSpecies:
-    def _base_cfg(self, species=None):
+class TestManualLimitLineages:
+    def _base_cfg(self, lineages=None):
         cfg = {
             "sequence": {"type": "nucleotide", "region": "whole_genome"},
             "manual": {"include": [], "exclude": [], "include_seq": []},
         }
-        if species is not None:
-            cfg["manual"]["include_species"] = species
+        if lineages is not None:
+            cfg["manual"]["limit_lineages"] = lineages
         return cfg
 
-    def test_default_has_empty_include_species(self):
+    def test_default_has_empty_limit_lineages(self):
         cfg = self._base_cfg()
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["include_species"] == []
+        assert cfg["manual"]["limit_lineages"] == []
 
     def test_empty_list_passes(self):
-        cfg = self._base_cfg(species=[])
+        cfg = self._base_cfg(lineages=[])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["include_species"] == []
+        assert cfg["manual"]["limit_lineages"] == []
 
     def test_valid_name_string_accepted(self):
-        cfg = self._base_cfg(species=["Dengue virus"])
+        cfg = self._base_cfg(lineages=["Orthohantavirus"])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["include_species"] == ["Dengue virus"]
+        assert cfg["manual"]["limit_lineages"] == ["Orthohantavirus"]
 
     def test_valid_taxid_integer_converted_to_string(self):
-        cfg = self._base_cfg(species=[11103])
+        cfg = self._base_cfg(lineages=[11103])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["include_species"] == ["11103"]
+        assert cfg["manual"]["limit_lineages"] == ["11103"]
 
     def test_valid_taxid_digit_string_accepted(self):
-        cfg = self._base_cfg(species=["11103"])
+        cfg = self._base_cfg(lineages=["11103"])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["include_species"] == ["11103"]
+        assert cfg["manual"]["limit_lineages"] == ["11103"]
 
     def test_non_list_rejected(self):
-        cfg = self._base_cfg(species="Dengue virus")
+        cfg = self._base_cfg(lineages="Orthohantavirus")
         with pytest.raises(ValueError, match="must be a list"):
             _validate_manual_block(cfg, "Test")
 
     def test_empty_string_entry_rejected(self):
-        cfg = self._base_cfg(species=[""])
+        cfg = self._base_cfg(lineages=[""])
         with pytest.raises(ValueError, match="is empty"):
             _validate_manual_block(cfg, "Test")
 
     def test_whitespace_only_string_rejected(self):
-        cfg = self._base_cfg(species=["   "])
+        cfg = self._base_cfg(lineages=["   "])
         with pytest.raises(ValueError, match="is empty"):
             _validate_manual_block(cfg, "Test")
 
     def test_wrong_type_float_rejected(self):
-        cfg = self._base_cfg(species=[3.14])
-        with pytest.raises(ValueError, match="must be a species name"):
+        cfg = self._base_cfg(lineages=[3.14])
+        with pytest.raises(ValueError, match="must be a taxon name"):
             _validate_manual_block(cfg, "Test")
 
     def test_duplicate_entries_deduped_with_warning(self, caplog):
         import logging
-        cfg = self._base_cfg(species=["Dengue virus", "Dengue virus"])
+        cfg = self._base_cfg(lineages=["Orthohantavirus", "Orthohantavirus"])
         with caplog.at_level(logging.WARNING):
-            _validate_manual_block(cfg, "Flaviviridae")
-        assert cfg["manual"]["include_species"] == ["Dengue virus"]
+            _validate_manual_block(cfg, "Hantaviridae")
+        assert cfg["manual"]["limit_lineages"] == ["Orthohantavirus"]
         assert "duplicate" in caplog.text.lower()
 
     def test_mixed_names_and_taxids_all_accepted(self):
-        cfg = self._base_cfg(species=["Dengue virus", 11103, "1234567"])
+        cfg = self._base_cfg(lineages=["Orthohantavirus", 11103, "1234567"])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["include_species"] == ["Dengue virus", "11103", "1234567"]
+        assert cfg["manual"]["limit_lineages"] == ["Orthohantavirus", "11103", "1234567"]
 
-    def test_loaded_stale_config_gets_empty_include_species(self, tmp_path):
+    def test_loaded_stale_config_gets_empty_limit_lineages(self, tmp_path):
         cfg_dir = tmp_path / "configs"
         cfg_dir.mkdir()
         (cfg_dir / "Flaviviridae.yaml").write_text(yaml.dump({
@@ -921,7 +921,18 @@ class TestManualIncludeSpecies:
             "manual": {"include": [], "exclude": []},
         }))
         cfg, _ = load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
-        assert cfg["manual"]["include_species"] == []
+        assert cfg["manual"]["limit_lineages"] == []
+
+    def test_legacy_include_species_key_is_hard_error(self):
+        cfg = {
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "manual": {
+                "include": [], "exclude": [], "include_seq": [],
+                "include_species": ["Dengue virus"],
+            },
+        }
+        with pytest.raises(ValueError, match="include_species has been renamed"):
+            _validate_manual_block(cfg, "Flaviviridae")
 
 
 # ---------------------------------------------------------------------------
