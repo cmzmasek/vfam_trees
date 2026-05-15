@@ -311,6 +311,9 @@ manual:                         # curator overrides on per-family record selecti
                                 # species names (case-insensitive) or NCBI taxids (integer or
                                 # digit string); species not listed are skipped before download;
                                 # empty or absent means use the full discovered species list
+  name: ""                      # override the display name in PDF/PNG titles and the PhyloXML
+                                # <name> element; e.g. "Hantaviridae 2026"; does not affect
+                                # output file names; empty (default) uses the family name
 ```
 
 The `coloring` and `taxonomy` keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.

@@ -543,6 +543,7 @@ class TestManualBlock:
         assert "manual" in DEFAULT_FAMILY_CONFIG
         assert DEFAULT_FAMILY_CONFIG["manual"]["include"] == []
         assert DEFAULT_FAMILY_CONFIG["manual"]["exclude"] == []
+        assert DEFAULT_FAMILY_CONFIG["manual"]["name"] == ""
 
     def test_empty_lists_pass(self):
         cfg = {"manual": {"include": [], "exclude": []}}
@@ -551,7 +552,22 @@ class TestManualBlock:
     def test_missing_block_treated_as_empty(self):
         cfg = {}
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"] == {"include": [], "exclude": [], "include_seq": [], "include_fasta_files": [], "include_species": []}
+        assert cfg["manual"] == {"include": [], "exclude": [], "include_seq": [], "include_fasta_files": [], "include_species": [], "name": ""}
+
+    def test_name_string_is_accepted(self):
+        cfg = {"manual": {"name": "  Hantaviridae 2026  "}}
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["name"] == "Hantaviridae 2026"
+
+    def test_name_empty_string_is_accepted(self):
+        cfg = {"manual": {"name": ""}}
+        _validate_manual_block(cfg, "Test")
+        assert cfg["manual"]["name"] == ""
+
+    def test_name_non_string_rejected(self):
+        cfg = {"manual": {"name": 42}}
+        with pytest.raises(ValueError, match="manual.name must be a string"):
+            _validate_manual_block(cfg, "Test")
 
     def test_include_and_exclude_overlap_rejected(self):
         cfg = {"manual": {"include": ["NC_001.1"], "exclude": ["NC_001.1"]}}

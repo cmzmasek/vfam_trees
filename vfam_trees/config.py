@@ -709,11 +709,15 @@ DEFAULT_FAMILY_CONFIG: dict = {
         #          or a numeric NCBI taxid (integer or digit string).  Species
         #          not in this list are skipped entirely — no download, no QC.
         #          When empty or absent the full discovered species list is used.
+        # name: override the display name used in PDF/PNG titles and the PhyloXML
+        #          <name> element.  When empty the biological family name is used.
+        #          Does not affect output file names.
         "include": [],
         "include_seq": [],
         "include_fasta_files": [],
         "exclude": [],
         "include_species": [],
+        "name": "",
     },
 }
 
@@ -994,6 +998,16 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
         seen_species.add(val)
         cleaned_species.append(val)
     block["include_species"] = cleaned_species
+
+    name_raw = block.get("name")
+    if name_raw is None:
+        block["name"] = ""
+    elif not isinstance(name_raw, str):
+        raise ValueError(
+            f"{family}: manual.name must be a string (got {type(name_raw).__name__})."
+        )
+    else:
+        block["name"] = name_raw.strip()
 
     cfg["manual"] = block
 

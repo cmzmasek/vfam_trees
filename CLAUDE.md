@@ -2,7 +2,7 @@
 
 ## Project overview
 
-`vfam_trees` (v1.2.37) is a Python/Snakemake pipeline that builds maximum-likelihood phylogenetic trees for viral families using sequences downloaded from NCBI.  For each family it produces two trees: a broad **tree_500** (≤500 seqs, FastTree GTR+G or WAG+G, SH-like support) and a tighter **tree_100** (≤100 seqs, IQ-TREE `--fast`, SH-aLRT support).
+`vfam_trees` (v1.2.38) is a Python/Snakemake pipeline that builds maximum-likelihood phylogenetic trees for viral families using sequences downloaded from NCBI.  For each family it produces two trees: a broad **tree_500** (≤500 seqs, FastTree GTR+G or WAG+G, SH-like support) and a tighter **tree_100** (≤100 seqs, IQ-TREE `--fast`, SH-aLRT support).
 
 Pre-production — there is no deployed user base.  Changes that affect config schema only need to update templates (`DEFAULT_FAMILY_CONFIG` in `config.py`, `GLOBAL_CONFIG_TEMPLATE` in `cli.py`).  Do **not** add migration/backfill logic to load paths.
 
@@ -78,6 +78,9 @@ Iterative post-tree removal: threshold = `median + factor × MAD`.  Controlled b
 
 ### Inline sequence injection (`include_seq` / `include_fasta_files`)
 `manual.include_seq` accepts inline `{id, organism, sequence}` mappings. `manual.include_fasta_files` accepts paths to FASTA files; `rec.id` (BioPython first token) is the sequence id, `rec.description[len(id):].strip()` is the organism. A single-token header yields an empty organism (the id is *not* reused — doing so duplicated it in the leaf label); such entries are bucketed by id. Both bypass QC and receive downstream protection identical to `manual.include`. Collision detection covers NCBI-fetched accessions and cross-source duplicates. Not supported in concat mode. Config validation checks path strings are non-empty; file I/O happens at pipeline runtime. Stale configs with `include_fasta` key emit a WARNING and are otherwise ignored. Single source of truth for injection: `pipeline._inject_pasted_sequences`; file loading: `pipeline._load_fasta_file_entries`.
+
+### Display name override (`manual.name`)
+`manual.name` (default `""`) overrides the family name shown in all graphical output titles (PDF/PNG tree images, report pages) and the PhyloXML `<phylogeny><name>` element. The overview grid PNG thumbnail also uses it via a `{family}_display_name.txt` sidecar written alongside `{family}_colors_100.json`. Output file names are always the biological family name. Both single-protein and concat pipelines support it.
 
 ### Leaf labeling (v1.2.34+)
 `labeling.format` is a Python format string with placeholders `{species}`, `{id}`, `{host}`, `{strain}`, `{location}`, `{year}`, `{genus}`.  Default: `{species}|{id}|{host}`.  `replace_whitespace` (default `true`) and `keep_separator_on_empty` (default `false`) are companion options.

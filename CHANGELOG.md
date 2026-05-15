@@ -10,6 +10,14 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.38] — 2026-05-14
+
+### Added
+- **`manual.name`** — new per-family config key (default `""`) that overrides
+  the display name used in all PDF/PNG titles, the PhyloXML `<name>` element,
+  and the overview grid thumbnail.  When empty, the biological family name is
+  used as before.  Output file names are unaffected.
+
 ## [1.2.37] — 2026-05-13
 
 ### Fixed

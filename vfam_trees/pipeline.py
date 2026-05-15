@@ -326,6 +326,7 @@ def run_family(
     manual_include_ids: set[str] = set(manual_cfg.get("include") or [])
     manual_exclude_ids: set[str] = set(manual_cfg.get("exclude") or [])
     manual_include_species: list[str] = manual_cfg.get("include_species") or []
+    display_name: str = manual_cfg.get("name") or family
     if manual_include_ids:
         log.info("manual.include: %d accession(s) will bypass QC", len(manual_include_ids))
     if manual_exclude_ids:
@@ -584,7 +585,7 @@ def run_family(
 
     # Sequence length violin plot (per species, after ambiguity filter, before length filter)
     if species_pre_length_lengths:
-        save_sequence_length_plot(family, family_dir, species_pre_length_lengths)
+        save_sequence_length_plot(family, family_dir, species_pre_length_lengths, display_name=display_name)
 
     # Active fetch for manual.include accessions not found in the per-species download.
     # Typical case: a nuccore accession on a protein-mode run (different NCBI database),
@@ -907,6 +908,7 @@ def run_family(
         bio_trees=bio_trees,
         tree_leaf_colors=tree_leaf_colors,
         branch_linewidth=branch_linewidth,
+        display_name=display_name,
     )
 
     # Standalone tree images (PDF + PNG)
@@ -917,14 +919,16 @@ def run_family(
         tree_leaf_colors=tree_leaf_colors,
         branch_linewidth=branch_linewidth,
         summary_row=summary_row,
+        display_name=display_name,
     )
 
-    # Persist tree_100 leaf colors so generate_overview_png can read them back
+    # Persist tree_100 leaf colors and display name so generate_overview_png can read them back
     colors_100 = tree_leaf_colors.get("100", {}).get("display_to_color")
     if colors_100:
         colors_path = family_dir / f"{family}_colors_100.json"
         with open(colors_path, "w") as _f:
             json.dump(colors_100, _f)
+    (family_dir / f"{family}_display_name.txt").write_text(display_name)
 
     # Icon PNG (tree_100 topology only, square, no labels)
     save_tree_icon(
@@ -1391,6 +1395,7 @@ def _run_target(
     log.info("Writing PhyloXML for tree_%s ...", label)
     phylogeny_name, phylogeny_detail = _build_phylogeny_name(
         family=family,
+        display_name=display_name,
         seq_type=seq_type,
         region=family_cfg["sequence"]["region"],
         segment=family_cfg["sequence"].get("segment") or None,
@@ -1438,6 +1443,7 @@ from .branch_outliers import find_branch_length_outliers as _find_branch_length_
 
 def _build_phylogeny_name(
     family: str,
+    display_name: str,
     seq_type: str,
     region: str,
     segment: str | None,
@@ -1463,7 +1469,7 @@ def _build_phylogeny_name(
 
     tree_name = tree_tool.upper().replace("FASTTREE", "FastTree").replace("IQTREE2", "IQ-TREE").replace("IQTREE", "IQ-TREE")
 
-    short_name = f"{family} [{mol}|{region_str}|{msa_tool.upper()}|{tree_name} {tree_model}]"
+    short_name = f"{display_name} [{mol}|{region_str}|{msa_tool.upper()}|{tree_name} {tree_model}]"
 
     msa_detail = f"{msa_tool.upper()} {msa_version} {msa_options}".strip()
     tree_detail = f"{tree_name} {tree_version} {tree_model}"

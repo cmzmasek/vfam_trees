@@ -195,6 +195,7 @@ def run_family_concat(
     manual_cfg         = family_cfg.get("manual") or {}
     manual_include_ids: set[str] = set(manual_cfg.get("include") or [])
     manual_exclude_ids: set[str] = set(manual_cfg.get("exclude") or [])
+    display_name: str = manual_cfg.get("name") or family
     if manual_include_ids:
         log.info("manual.include: %d accession(s) will be protected through clustering",
                  len(manual_include_ids))
@@ -437,12 +438,14 @@ def run_family_concat(
             tree_leaf_colors=tree_leaf_colors,
             branch_linewidth=branch_linewidth,
             summary_row=summary_row_for_report,
+            display_name=display_name,
         )
-        # Persist tree_100 leaf colors so generate_overview_png can read them back
+        # Persist tree_100 leaf colors and display name so generate_overview_png can read them back
         colors_100 = tree_leaf_colors.get("100", {}).get("display_to_color")
         if colors_100:
             with open(family_dir / f"{family}_colors_100.json", "w") as f:
                 json.dump(colors_100, f)
+        (family_dir / f"{family}_display_name.txt").write_text(display_name)
         save_tree_icon(
             family=family,
             output_dir=family_dir,
@@ -483,6 +486,7 @@ def run_family_concat(
             branch_linewidth=branch_linewidth,
             marker_coverage=marker_coverage_for_report,
             concat_min_fraction=float(family_cfg["concatenation"].get("min_fraction", 0.7)),
+            display_name=display_name,
         )
     except Exception as e:
         log.warning("Per-family report PDF skipped: %s", e)
@@ -930,7 +934,7 @@ def _run_target_concat(
         leaf_metadata=leaf_metadata,
         family=family,
         tree=bio_tree,
-        phylogeny_name=f"{family} [concatenated|{len(markers_used)} markers]",
+        phylogeny_name=f"{display_name} [concatenated|{len(markers_used)} markers]",
         phylogeny_detail=(
             f"concatenated {len(markers_used)}-marker phylogeny "
             f"[{', '.join(markers_used)}] (target_{label}, partitioned)"

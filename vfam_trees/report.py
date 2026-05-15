@@ -24,17 +24,20 @@ def generate_family_report(
     branch_linewidth: float = 0.5,
     marker_coverage: dict[str, dict[str, int]] | None = None,
     concat_min_fraction: float | None = None,
+    display_name: str | None = None,
 ) -> None:
     """Generate a per-family PDF report with stats and plots.
 
     Args:
-        family: viral family name
+        family: viral family name (used for file paths and descriptions)
         output_pdf: path for the output PDF
         summary_row: dict from build_summary_row (for the stats table)
         seq_lengths: list of sequence lengths passing QC
         tree_support: {"500": [sh_values], "100": [sh_values]}
         bio_trees: {"500": BioPython tree, "100": BioPython tree}
+        display_name: override for titles/labels (defaults to family)
     """
+    _dn = display_name or family
     if tree_seq_lengths is None:
         tree_seq_lengths = {}
     if tree_support is None:
@@ -65,7 +68,7 @@ def generate_family_report(
         fig, ax = plt.subplots(figsize=(11, 8.5))
         ax.axis("off")
 
-        title = f"vfam_trees v{__version__}  —  {family}"
+        title = f"vfam_trees v{__version__}  —  {_dn}"
         fig.suptitle(title, fontsize=14, fontweight="bold", y=0.97)
         ax.text(0.5, 0.96, f"Generated {timestamp}", ha="center", va="top",
                 transform=ax.transAxes, fontsize=9, color="gray")
@@ -141,7 +144,7 @@ def generate_family_report(
             ax.hist(seq_lengths, bins=40, color="#3c6e9f", edgecolor="white", linewidth=0.5)
             ax.set_xlabel("Sequence length (bp/aa)", fontsize=11)
             ax.set_ylabel("Count", fontsize=11)
-            ax.set_title(f"{family} — sequence length distribution (n={len(seq_lengths)})",
+            ax.set_title(f"{_dn} — sequence length distribution (n={len(seq_lengths)})",
                          fontsize=12)
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
@@ -160,7 +163,7 @@ def generate_family_report(
                 ax.set_xlabel("Sequence length (bp/aa)", fontsize=11)
                 ax.set_ylabel("Count", fontsize=11)
                 ax.set_title(
-                    f"{family} tree_{label} — sequence length distribution (n={len(lengths)})",
+                    f"{_dn} tree_{label} — sequence length distribution (n={len(lengths)})",
                     fontsize=12,
                 )
                 ax.spines["top"].set_visible(False)
@@ -198,13 +201,13 @@ def generate_family_report(
                 ax.set_ylabel("Number of internal nodes", fontsize=11)
                 tool = tool_labels[key] or ("FastTree" if key == "500" else "IQ-TREE")
                 sup  = sup_labels[key]  or ("SH-like" if key == "500" else "SH-aLRT")
-                ax.set_title(f"{family} tree_{key}\n{sup} ({tool}) (n={len(vals)})",
+                ax.set_title(f"{_dn} tree_{key}\n{sup} ({tool}) (n={len(vals)})",
                              fontsize=11)
                 ax.set_xlim(0, 100)
                 ax.spines["top"].set_visible(False)
                 ax.spines["right"].set_visible(False)
                 panel += 1
-            fig.suptitle(f"{family} — branch support distributions", fontsize=12,
+            fig.suptitle(f"{_dn} — branch support distributions", fontsize=12,
                          fontweight="bold")
             plt.tight_layout()
             pdf.savefig(fig, bbox_inches="tight")
@@ -217,7 +220,7 @@ def generate_family_report(
         if tree_100 is not None:
             colors_100 = tree_leaf_colors.get("100", {})
             fig = _draw_tree_fig(
-                tree_100, family, "100",
+                tree_100, _dn, "100",
                 label_colors=colors_100.get("display_to_color"),
                 genus_to_color=colors_100.get("genus_to_color"),
                 subfamily_to_genera=colors_100.get("subfamily_to_genera"),
@@ -261,7 +264,7 @@ def generate_family_report(
                     ax.set_xticklabels(markers, rotation=30, ha="right", fontsize=8)
                     ax.set_ylabel("Genomes with marker", fontsize=10)
                     ax.set_title(
-                        f"{family} tree_{label} — per-marker coverage "
+                        f"{_dn} tree_{label} — per-marker coverage "
                         f"(max n={n_genomes})",
                         fontsize=11,
                     )
@@ -273,7 +276,7 @@ def generate_family_report(
 
         # PDF metadata
         d = pdf.infodict()
-        d["Title"] = f"vfam_trees report — {family}"
+        d["Title"] = f"vfam_trees report — {_dn}"
         d["Author"] = f"vfam_trees v{__version__}"
         d["CreationDate"] = datetime.now(timezone.utc)
 
@@ -287,6 +290,7 @@ def save_tree_images(
     tree_leaf_colors: dict[str, dict] | None = None,
     branch_linewidth: float = 0.5,
     summary_row: dict | None = None,
+    display_name: str | None = None,
 ) -> None:
     """Save standalone PDF and PNG images of the tree_100 and tree_500 visualizations."""
     try:
@@ -300,6 +304,7 @@ def save_tree_images(
     if tree_leaf_colors is None:
         tree_leaf_colors = {}
 
+    _dn = display_name or family
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for label in ("100", "500"):
@@ -313,7 +318,7 @@ def save_tree_images(
 
         # Rooted rectangular tree
         fig = _draw_tree_fig(
-            tree, family, label,
+            tree, _dn, label,
             label_colors=display_to_color,
             genus_to_color=genus_to_color,
             subfamily_to_genera=subfamily_to_genera,
@@ -335,7 +340,7 @@ def save_tree_images(
 
         # Unrooted radial tree
         fig_ur = _draw_unrooted_tree_fig(
-            tree, family, label,
+            tree, _dn, label,
             label_colors=display_to_color,
             genus_to_color=genus_to_color,
             subfamily_to_genera=subfamily_to_genera,
@@ -988,6 +993,7 @@ def save_sequence_length_plot(
     family: str,
     output_dir: Path,
     species_lengths: dict[str, list[int]],
+    display_name: str | None = None,
 ) -> None:
     """Save a per-species sequence-length box+dot plot PDF for a family.
 
@@ -1048,7 +1054,7 @@ def save_sequence_length_plot(
     ax.set_xticklabels(species_sorted, rotation=45, ha="right", fontsize=label_fontsize)
     ax.set_ylabel("Sequence length (bp/aa)", fontsize=11)
     ax.set_title(
-        f"{family} — sequence length per species\n"
+        f"{display_name or family} — sequence length per species\n"
         "(after ambiguity filter, before length filter)",
         fontsize=11, fontweight="bold",
     )
@@ -1088,9 +1094,11 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
 
     lineage_map = _read_summary_lineages(output_dir)
 
-    entries: list[tuple[str, object, dict]] = []
+    entries: list[tuple[str, str, object, dict]] = []
     for nwk_path in nwk_files:
         family = nwk_path.stem.replace("_tree_100", "")
+        dn_path = nwk_path.parent / f"{family}_display_name.txt"
+        display_name = dn_path.read_text().strip() if dn_path.exists() else family
         colors: dict[str, str] = {}
         colors_path = nwk_path.parent / f"{family}_colors_100.json"
         if colors_path.exists():
@@ -1102,7 +1110,7 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
                 pass
         try:
             tree = next(iter(Phylo.parse(str(nwk_path), "newick")))
-            entries.append((family, tree, colors))
+            entries.append((family, display_name, tree, colors))
         except Exception as e:
             log.warning("Could not parse %s for overview: %s", nwk_path, e)
 
@@ -1136,7 +1144,7 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
 
     from Bio.Phylo.BaseTree import BranchColor
 
-    for idx, (family, tree, family_colors) in enumerate(entries):
+    for idx, (family, display_name, tree, family_colors) in enumerate(entries):
         ax = ax_flat[idx]
         lineage = lineage_map.get(family, "")
         bg_color, group_label = _match_realm(lineage)
@@ -1169,9 +1177,9 @@ def generate_overview_png(output_dir: Path, output_path: Path) -> None:
             _draw_gradient_bg(ax, bg_color)
             ax.set_facecolor("none")
             _strip_axis_decor(ax)
-            ax.set_title(family, fontsize=6, pad=3, fontweight="bold")
+            ax.set_title(display_name, fontsize=6, pad=3, fontweight="bold")
         except Exception as e:
-            ax.set_title(family, fontsize=6)
+            ax.set_title(display_name, fontsize=6)
             log.warning("Could not draw overview thumbnail for %s: %s", family, e)
 
     # Hide unused axes completely (no background needed)
