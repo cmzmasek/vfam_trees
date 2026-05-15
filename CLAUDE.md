@@ -2,7 +2,7 @@
 
 ## Project overview
 
-`vfam_trees` (v1.2.39) is a Python/Snakemake pipeline that builds maximum-likelihood phylogenetic trees for viral families using sequences downloaded from NCBI.  For each family it produces two trees: a broad **tree_500** (≤500 seqs, FastTree GTR+G or WAG+G, SH-like support) and a tighter **tree_100** (≤100 seqs, IQ-TREE `--fast`, SH-aLRT support).
+`vfam_trees` (v1.2.40) is a Python/Snakemake pipeline that builds maximum-likelihood phylogenetic trees for viral families using sequences downloaded from NCBI.  For each family it produces two trees: a broad **tree_500** (≤500 seqs, FastTree GTR+G or WAG+G, SH-like support) and a tighter **tree_100** (≤100 seqs, IQ-TREE `--fast`, SH-aLRT support).
 
 Pre-production — there is no deployed user base.  Changes that affect config schema only need to update templates (`DEFAULT_FAMILY_CONFIG` in `config.py`, `GLOBAL_CONFIG_TEMPLATE` in `cli.py`).  Do **not** add migration/backfill logic to load paths.
 

@@ -10,6 +10,17 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.40] — 2026-05-15
+
+### Changed
+- **`manual.limit_lineages` renamed to `manual.restrict_to_lineages`** — the
+  previous name suggested the wrong polarity (it sounded like the listed
+  lineages would be *limited / removed*, when in fact the analysis is
+  *restricted to* those lineages and everything else is dropped).  Behaviour
+  is unchanged; only the key name moves.  The old `limit_lineages` key is now
+  a **hard error** — configs must be renamed.  Pre-production, no migration
+  path.
+
 ## [1.2.39] — 2026-05-15
 
 ### Changed

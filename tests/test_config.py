@@ -552,7 +552,7 @@ class TestManualBlock:
     def test_missing_block_treated_as_empty(self):
         cfg = {}
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"] == {"include": [], "exclude": [], "include_seq": [], "include_fasta_files": [], "limit_lineages": [], "name": ""}
+        assert cfg["manual"] == {"include": [], "exclude": [], "include_seq": [], "include_fasta_files": [], "restrict_to_lineages": [], "name": ""}
 
     def test_name_string_is_accepted(self):
         cfg = {"manual": {"name": "  Hantaviridae 2026  "}}
@@ -842,43 +842,43 @@ class TestManualIncludeFastaFiles:
 
 
 # ---------------------------------------------------------------------------
-# manual.limit_lineages validation
+# manual.restrict_to_lineages validation
 # ---------------------------------------------------------------------------
 
-class TestManualLimitLineages:
+class TestManualRestrictToLineages:
     def _base_cfg(self, lineages=None):
         cfg = {
             "sequence": {"type": "nucleotide", "region": "whole_genome"},
             "manual": {"include": [], "exclude": [], "include_seq": []},
         }
         if lineages is not None:
-            cfg["manual"]["limit_lineages"] = lineages
+            cfg["manual"]["restrict_to_lineages"] = lineages
         return cfg
 
-    def test_default_has_empty_limit_lineages(self):
+    def test_default_has_empty_restrict_to_lineages(self):
         cfg = self._base_cfg()
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["limit_lineages"] == []
+        assert cfg["manual"]["restrict_to_lineages"] == []
 
     def test_empty_list_passes(self):
         cfg = self._base_cfg(lineages=[])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["limit_lineages"] == []
+        assert cfg["manual"]["restrict_to_lineages"] == []
 
     def test_valid_name_string_accepted(self):
         cfg = self._base_cfg(lineages=["Orthohantavirus"])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["limit_lineages"] == ["Orthohantavirus"]
+        assert cfg["manual"]["restrict_to_lineages"] == ["Orthohantavirus"]
 
     def test_valid_taxid_integer_converted_to_string(self):
         cfg = self._base_cfg(lineages=[11103])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["limit_lineages"] == ["11103"]
+        assert cfg["manual"]["restrict_to_lineages"] == ["11103"]
 
     def test_valid_taxid_digit_string_accepted(self):
         cfg = self._base_cfg(lineages=["11103"])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["limit_lineages"] == ["11103"]
+        assert cfg["manual"]["restrict_to_lineages"] == ["11103"]
 
     def test_non_list_rejected(self):
         cfg = self._base_cfg(lineages="Orthohantavirus")
@@ -905,15 +905,15 @@ class TestManualLimitLineages:
         cfg = self._base_cfg(lineages=["Orthohantavirus", "Orthohantavirus"])
         with caplog.at_level(logging.WARNING):
             _validate_manual_block(cfg, "Hantaviridae")
-        assert cfg["manual"]["limit_lineages"] == ["Orthohantavirus"]
+        assert cfg["manual"]["restrict_to_lineages"] == ["Orthohantavirus"]
         assert "duplicate" in caplog.text.lower()
 
     def test_mixed_names_and_taxids_all_accepted(self):
         cfg = self._base_cfg(lineages=["Orthohantavirus", 11103, "1234567"])
         _validate_manual_block(cfg, "Test")
-        assert cfg["manual"]["limit_lineages"] == ["Orthohantavirus", "11103", "1234567"]
+        assert cfg["manual"]["restrict_to_lineages"] == ["Orthohantavirus", "11103", "1234567"]
 
-    def test_loaded_stale_config_gets_empty_limit_lineages(self, tmp_path):
+    def test_loaded_stale_config_gets_empty_restrict_to_lineages(self, tmp_path):
         cfg_dir = tmp_path / "configs"
         cfg_dir.mkdir()
         (cfg_dir / "Flaviviridae.yaml").write_text(yaml.dump({
@@ -921,7 +921,7 @@ class TestManualLimitLineages:
             "manual": {"include": [], "exclude": []},
         }))
         cfg, _ = load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
-        assert cfg["manual"]["limit_lineages"] == []
+        assert cfg["manual"]["restrict_to_lineages"] == []
 
     def test_legacy_include_species_key_is_hard_error(self):
         cfg = {
@@ -933,6 +933,17 @@ class TestManualLimitLineages:
         }
         with pytest.raises(ValueError, match="include_species has been renamed"):
             _validate_manual_block(cfg, "Flaviviridae")
+
+    def test_legacy_limit_lineages_key_is_hard_error(self):
+        cfg = {
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "manual": {
+                "include": [], "exclude": [], "include_seq": [],
+                "limit_lineages": ["Orthohantavirus"],
+            },
+        }
+        with pytest.raises(ValueError, match="limit_lineages has been renamed"):
+            _validate_manual_block(cfg, "Hantaviridae")
 
 
 # ---------------------------------------------------------------------------

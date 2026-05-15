@@ -704,7 +704,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
         #          just the header itself.  Subject to the same collision
         #          rules and concat-mode restriction as include_seq.
         # exclude: dropped immediately after fetch, before QC.
-        # limit_lineages: restrict the pipeline to species under one or more
+        # restrict_to_lineages: restrict the pipeline to species under one or more
         #          taxonomic lineages.  Each entry is a taxon at any rank
         #          (species, genus, subfamily, ...) given as a scientific name
         #          (matched against NCBI taxonomy) or a numeric taxid.  Only
@@ -718,7 +718,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "include_seq": [],
         "include_fasta_files": [],
         "exclude": [],
-        "limit_lineages": [],
+        "restrict_to_lineages": [],
         "name": "",
     },
 }
@@ -848,9 +848,16 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
     if "include_species" in block:
         raise ValueError(
             f"{family}: manual.include_species has been renamed to "
-            f"manual.limit_lineages and now matches at any taxonomic rank "
-            f"(species, genus, subfamily, ...).  Rename the key in your "
+            f"manual.restrict_to_lineages and now matches at any taxonomic "
+            f"rank (species, genus, subfamily, ...).  Rename the key in your "
             f"per-family config."
+        )
+
+    if "limit_lineages" in block:
+        raise ValueError(
+            f"{family}: manual.limit_lineages has been renamed to "
+            f"manual.restrict_to_lineages (the previous name implied the "
+            f"wrong polarity).  Rename the key in your per-family config."
         )
 
     for key in ("include", "exclude"):
@@ -979,11 +986,11 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
     block["include_seq"] = cleaned_fasta
     block["include_fasta_files"] = cleaned_files
 
-    lineages_raw = block.get("limit_lineages") or []
+    lineages_raw = block.get("restrict_to_lineages") or []
     if not isinstance(lineages_raw, list):
         raise ValueError(
-            f"{family}: manual.limit_lineages must be a list of taxon names "
-            f"or taxids (got {type(lineages_raw).__name__})."
+            f"{family}: manual.restrict_to_lineages must be a list of taxon "
+            f"names or taxids (got {type(lineages_raw).__name__})."
         )
     cleaned_lineages: list[str] = []
     seen_lineages: set[str] = set()
@@ -994,20 +1001,24 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
             val = entry.strip()
             if not val:
                 raise ValueError(
-                    f"{family}: manual.limit_lineages[{i}] is empty — "
+                    f"{family}: manual.restrict_to_lineages[{i}] is empty — "
                     "remove the entry or fill it in."
                 )
         else:
             raise ValueError(
-                f"{family}: manual.limit_lineages[{i}] must be a taxon name "
-                f"(string) or a taxid (integer), got {type(entry).__name__}."
+                f"{family}: manual.restrict_to_lineages[{i}] must be a taxon "
+                f"name (string) or a taxid (integer), got "
+                f"{type(entry).__name__}."
             )
         if val in seen_lineages:
-            log.warning("%s: duplicate entry %r in manual.limit_lineages — deduped.", family, val)
+            log.warning(
+                "%s: duplicate entry %r in manual.restrict_to_lineages — deduped.",
+                family, val,
+            )
             continue
         seen_lineages.add(val)
         cleaned_lineages.append(val)
-    block["limit_lineages"] = cleaned_lineages
+    block["restrict_to_lineages"] = cleaned_lineages
 
     name_raw = block.get("name")
     if name_raw is None:
