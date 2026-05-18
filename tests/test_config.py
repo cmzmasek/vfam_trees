@@ -16,6 +16,7 @@ from vfam_trees.config import (
     _merge_with_defaults,
     _validate_concatenation_block,
     _validate_manual_block,
+    _validate_numeric_fields,
     _warn_smart_default_conflicts,
     load_family_config,
     make_minimal_global_cfg,
@@ -1235,3 +1236,93 @@ class TestFileConfigOverridesAllDefaults:
         assert cfg["taxonomy"]["lca_min_rank"] == "genus"
         assert cfg["refseq_absorption"]["enabled"] is False
         assert cfg["refseq_absorption"]["threshold"] == 0.95
+
+
+# ---------------------------------------------------------------------------
+# _validate_numeric_fields — catch YAML-typo'd numbers at load time
+# ---------------------------------------------------------------------------
+
+class TestValidateNumericFields:
+    def test_default_config_passes(self):
+        cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+        _validate_numeric_fields(cfg, "Test")
+
+    def test_empty_cfg_passes(self):
+        _validate_numeric_fields({}, "Test")
+
+    def test_string_with_embedded_spaces_rejected(self):
+        # The original bug: `max_100: 4  00` in YAML parses as the string "4  00".
+        cfg = {"targets": {"max_100": "4  00"}}
+        with pytest.raises(ValueError, match=r"targets\.max_100.*integer.*str.*'4  00'"):
+            _validate_numeric_fields(cfg, "Filoviridae")
+
+    def test_string_with_digits_includes_typo_hint(self):
+        cfg = {"targets": {"max_500": "1 000"}}
+        with pytest.raises(ValueError, match="YAML typo"):
+            _validate_numeric_fields(cfg, "Test")
+
+    def test_float_rejected_for_int_field(self):
+        cfg = {"targets": {"max_500": 500.5}}
+        with pytest.raises(ValueError, match=r"targets\.max_500.*integer.*float"):
+            _validate_numeric_fields(cfg, "Test")
+
+    def test_bool_rejected_for_int_field(self):
+        cfg = {"targets": {"max_500": True}}
+        with pytest.raises(ValueError, match="must be a int"):
+            _validate_numeric_fields(cfg, "Test")
+
+    def test_negative_int_rejected(self):
+        cfg = {"targets": {"max_500": -1}}
+        with pytest.raises(ValueError, match=r"targets\.max_500=-1.*must be >= 1"):
+            _validate_numeric_fields(cfg, "Test")
+
+    def test_zero_rejected_for_positive_field(self):
+        cfg = {"targets": {"max_100": 0}}
+        with pytest.raises(ValueError, match=r"max_100=0.*must be >= 1"):
+            _validate_numeric_fields(cfg, "Test")
+
+    def test_fraction_out_of_range_high(self):
+        cfg = {"quality": {"max_ambiguous": 1.5}}
+        with pytest.raises(ValueError, match=r"max_ambiguous=1.5.*must be <= 1"):
+            _validate_numeric_fields(cfg, "Test")
+
+    def test_clustering_threshold_strictly_positive(self):
+        cfg = {"clustering": {"threshold_min": 0.0}}
+        with pytest.raises(ValueError, match=r"threshold_min=0.*must be > 0"):
+            _validate_numeric_fields(cfg, "Test")
+
+    def test_float_accepted_for_number_field(self):
+        cfg = {"length_outlier": {"k": 4.5}}
+        _validate_numeric_fields(cfg, "Test")
+
+    def test_int_accepted_for_number_field(self):
+        cfg = {"length_outlier": {"k": 5}}
+        _validate_numeric_fields(cfg, "Test")
+
+    def test_quality_min_length_none_accepted(self):
+        cfg = {"quality": {"min_length": None}}
+        _validate_numeric_fields(cfg, "Test")
+
+    def test_quality_min_length_string_rejected(self):
+        cfg = {"quality": {"min_length": "8 00"}}
+        with pytest.raises(ValueError, match=r"quality\.min_length.*integer.*str"):
+            _validate_numeric_fields(cfg, "Test")
+
+    def test_load_family_config_aborts_on_typo(self, tmp_path):
+        cfg_dir = tmp_path / "configs"
+        cfg_dir.mkdir()
+        (cfg_dir / "Filoviridae.yaml").write_text(yaml.dump({
+            "sequence": {"type": "nucleotide", "region": "whole_genome"},
+            "targets": {"max_500": 2000, "max_100": "4  00"},
+        }))
+        with pytest.raises(ValueError, match=r"targets\.max_100"):
+            load_family_config("Filoviridae", cfg_dir, MINIMAL_GLOBAL)
+
+    def test_auto_generated_config_passes_validation(self, tmp_path):
+        # The auto-generation path also runs validation — make sure the
+        # defaults plus smart-default overlays never trip it.
+        cfg_dir = tmp_path / "configs"
+        cfg_dir.mkdir()
+        load_family_config("Hantaviridae", cfg_dir, MINIMAL_GLOBAL)
+        load_family_config("Adenoviridae", cfg_dir, MINIMAL_GLOBAL)
+        load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)

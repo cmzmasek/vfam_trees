@@ -10,6 +10,19 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.42] — 2026-05-18
+
+### Added
+- **Numeric-field validation on family config load.**  Catches typos like
+  `max_100: 4  00` (which YAML parses as the string `"4  00"`) at config-load
+  time instead of letting them propagate into a downstream `%d` log format or
+  arithmetic op many minutes into a run.  Validated fields cover `download`,
+  `quality`, `clustering`, `targets`, `length_outlier`, `outlier_removal`, and
+  `refseq_absorption` blocks; rejects non-numeric, out-of-range, and (where
+  applicable) zero/negative values.  Error messages include the family name,
+  the dotted field path, the offending value, and a hint when the value looks
+  like a YAML typo.
+
 ## [1.2.41] — 2026-05-15
 
 ### Fixed

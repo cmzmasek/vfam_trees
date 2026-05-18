@@ -820,6 +820,119 @@ def _validate_concatenation_block(cfg: dict, family: str) -> None:
         )
 
 
+# Declarative spec of numeric config fields and their permitted ranges.
+# Each entry: (("section", "key"), kind, low, high, low_inclusive, high_inclusive)
+# kind ∈ {"int", "number"}; low/high may be None for one-sided bounds.
+# Catches typos like ``max_100: 4  00`` (YAML parses as the string "4  00")
+# before they detonate inside a downstream ``%d`` log format or arithmetic op.
+_NUMERIC_FIELD_SPECS: tuple = (
+    (("download", "max_per_species"),         "int",    1,    None, True,  True),
+    (("quality",  "max_ambiguous"),           "number", 0.0,  1.0,  True,  True),
+    (("clustering", "threshold_min"),         "number", 0.0,  1.0,  False, True),
+    (("clustering", "threshold_max"),         "number", 0.0,  1.0,  False, True),
+    (("clustering", "max_reps_500"),          "int",    1,    None, True,  True),
+    (("clustering", "max_reps_100"),          "int",    1,    None, True,  True),
+    (("targets",    "max_500"),               "int",    1,    None, True,  True),
+    (("targets",    "max_100"),               "int",    1,    None, True,  True),
+    (("length_outlier", "k"),                 "number", 0.0,  None, True,  True),
+    (("length_outlier", "min_lo_mult"),       "number", 0.0,  None, True,  True),
+    (("length_outlier", "max_hi_mult"),       "number", 0.0,  None, True,  True),
+    (("outlier_removal", "factor"),           "number", 0.0,  None, True,  True),
+    (("outlier_removal", "max_iterations"),   "int",    0,    None, True,  True),
+    (("outlier_removal", "min_seqs"),         "int",    1,    None, True,  True),
+    (("refseq_absorption", "threshold"),      "number", 0.0,  1.0,  False, True),
+)
+
+# quality.min_length / quality.max_length are allowed to be None (= no bound).
+_NULLABLE_NUMERIC_FIELDS: tuple = (
+    (("quality", "min_length"), "int",    1,    None, True, True),
+    (("quality", "max_length"), "int",    1,    None, True, True),
+)
+
+
+def _validate_numeric_fields(cfg: dict, family: str) -> None:
+    """Validate that numeric config fields are actually numeric and in range.
+
+    A common failure mode is a YAML typo like ``max_100: 4  00`` (two spaces),
+    which PyYAML parses as the string ``"4  00"`` and then silently propagates
+    until it crashes inside a downstream ``%d`` log format or arithmetic
+    operation, often after a long fetch+MSA+tree-inference run.
+
+    Raises ``ValueError`` with a precise location so the run aborts immediately
+    at load time instead.
+    """
+    for (section, key), kind, lo, hi, lo_inc, hi_inc in _NUMERIC_FIELD_SPECS:
+        if section not in cfg or key not in (cfg.get(section) or {}):
+            continue
+        val = cfg[section][key]
+        _check_numeric(val, section, key, kind, lo, hi, lo_inc, hi_inc, family, allow_none=False)
+
+    for (section, key), kind, lo, hi, lo_inc, hi_inc in _NULLABLE_NUMERIC_FIELDS:
+        if section not in cfg or key not in (cfg.get(section) or {}):
+            continue
+        val = cfg[section][key]
+        if val is None:
+            continue
+        _check_numeric(val, section, key, kind, lo, hi, lo_inc, hi_inc, family, allow_none=True)
+
+
+def _check_numeric(
+    val,
+    section: str,
+    key: str,
+    kind: str,
+    lo,
+    hi,
+    lo_inc: bool,
+    hi_inc: bool,
+    family: str,
+    allow_none: bool,
+) -> None:
+    # bool is a subclass of int; reject it explicitly so True/False can't
+    # masquerade as a numeric setting.
+    if isinstance(val, bool):
+        raise ValueError(
+            f"{family}: {section}.{key} must be a {kind}, got bool {val!r}."
+        )
+    if kind == "int":
+        if not isinstance(val, int):
+            hint = _typo_hint(val)
+            none_hint = " (use null or omit the key for no limit)" if allow_none else ""
+            raise ValueError(
+                f"{family}: {section}.{key} must be an integer, got "
+                f"{type(val).__name__} {val!r}.{hint}{none_hint}"
+            )
+    else:  # "number"
+        if not isinstance(val, (int, float)):
+            hint = _typo_hint(val)
+            raise ValueError(
+                f"{family}: {section}.{key} must be a number, got "
+                f"{type(val).__name__} {val!r}.{hint}"
+            )
+    if lo is not None:
+        if (val < lo) if lo_inc else (val <= lo):
+            op = ">=" if lo_inc else ">"
+            raise ValueError(
+                f"{family}: {section}.{key}={val!r} must be {op} {lo}."
+            )
+    if hi is not None:
+        if (val > hi) if hi_inc else (val >= hi):
+            op = "<=" if hi_inc else "<"
+            raise ValueError(
+                f"{family}: {section}.{key}={val!r} must be {op} {hi}."
+            )
+
+
+def _typo_hint(val) -> str:
+    """Return a hint string when *val* looks like a YAML-typo'd number."""
+    if isinstance(val, str) and any(c.isdigit() for c in val):
+        return (
+            f"  (this looks like a YAML typo — check for stray spaces or "
+            f"non-digit characters in {val!r})"
+        )
+    return ""
+
+
 def _validate_manual_block(cfg: dict, family: str) -> None:
     """Validate the optional manual.{include,include_seq,include_fasta_files,exclude} entries.
 
@@ -1061,11 +1174,13 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
         _warn_unknown_keys(file_cfg, config_path)
         _warn_smart_default_conflicts(family, file_cfg, config_path)
         cfg = _merge_with_defaults(file_cfg, global_cfg, family)
+        _validate_numeric_fields(cfg, family)
         _validate_concatenation_block(cfg, family)
         _validate_manual_block(cfg, family)
         return cfg, False
     else:
         cfg = _generate_default_family_config(family, global_cfg)
+        _validate_numeric_fields(cfg, family)
         _validate_concatenation_block(cfg, family)
         _validate_manual_block(cfg, family)
         _write_family_config(cfg, config_path)
