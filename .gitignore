@@ -30,3 +30,6 @@ configs/*.yaml
 *~
 .idea/
 .vscode/
+
+# Local Claude instructions (kept out of the published repo)
+CLAUDE.md
