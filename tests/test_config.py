@@ -20,6 +20,7 @@ from vfam_trees.config import (
     _warn_smart_default_conflicts,
     load_family_config,
     make_minimal_global_cfg,
+    sanitize_output_prefix,
 )
 
 
@@ -1326,3 +1327,38 @@ class TestValidateNumericFields:
         load_family_config("Hantaviridae", cfg_dir, MINIMAL_GLOBAL)
         load_family_config("Adenoviridae", cfg_dir, MINIMAL_GLOBAL)
         load_family_config("Flaviviridae", cfg_dir, MINIMAL_GLOBAL)
+
+
+class TestSanitizeOutputPrefix:
+    def test_clean_family_name_unchanged(self):
+        # Families without manual.name must keep their exact output names.
+        assert sanitize_output_prefix("Filoviridae") == "Filoviridae"
+        assert sanitize_output_prefix("Picornaviridae") == "Picornaviridae"
+
+    def test_spaces_become_underscores(self):
+        assert sanitize_output_prefix("Ebola virus disease") == "Ebola_virus_disease"
+
+    def test_path_separators_stripped(self):
+        assert "/" not in sanitize_output_prefix("a/b/c")
+        assert sanitize_output_prefix("a/b") == "a_b"
+
+    def test_pipe_and_brackets_collapsed(self):
+        assert sanitize_output_prefix("Ebola [concatenated|3 markers]") == "Ebola_concatenated_3_markers"
+
+    def test_runs_collapse_to_single_underscore(self):
+        assert sanitize_output_prefix("a   b") == "a_b"
+        assert sanitize_output_prefix("a___b") == "a_b"
+
+    def test_leading_trailing_separators_stripped(self):
+        assert sanitize_output_prefix("  Ebola  ") == "Ebola"
+        assert sanitize_output_prefix("__Ebola__") == "Ebola"
+        assert sanitize_output_prefix("...Ebola...") == "Ebola"
+
+    def test_hyphen_dot_underscore_preserved(self):
+        assert sanitize_output_prefix("SARS-CoV-2_v1.2") == "SARS-CoV-2_v1.2"
+
+    def test_empty_or_garbage_falls_back(self):
+        assert sanitize_output_prefix("") == "family"
+        assert sanitize_output_prefix("   ") == "family"
+        assert sanitize_output_prefix("///") == "family"
+        assert sanitize_output_prefix(None) == "family"

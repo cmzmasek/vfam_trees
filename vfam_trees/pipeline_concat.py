@@ -28,6 +28,7 @@ from Bio.SeqRecord import SeqRecord
 
 from .branch_outliers import branch_length_stats, find_branch_length_outliers
 from .cache import SequenceCache, marker_set_hash
+from .config import sanitize_output_prefix
 from .colors import assign_leaf_colors
 from .concat import (
     _safe_charset_name,
@@ -197,6 +198,7 @@ def run_family_concat(
     manual_include_ids: set[str] = set(manual_cfg.get("include") or [])
     manual_exclude_ids: set[str] = set(manual_cfg.get("exclude") or [])
     display_name: str = manual_cfg.get("name") or family
+    out_prefix: str = sanitize_output_prefix(display_name)
     if manual_include_ids:
         log.info("manual.include: %d accession(s) will be protected through clustering",
                  len(manual_include_ids))
@@ -434,7 +436,7 @@ def run_family_concat(
 
     if bio_trees:
         save_tree_images(
-            family=family,
+            family=out_prefix,
             output_dir=family_dir,
             bio_trees=bio_trees,
             tree_leaf_colors=tree_leaf_colors,
@@ -445,11 +447,11 @@ def run_family_concat(
         # Persist tree_100 leaf colors and display name so generate_overview_png can read them back
         colors_100 = tree_leaf_colors.get("100", {}).get("display_to_color")
         if colors_100:
-            with open(family_dir / f"{family}_colors_100.json", "w") as f:
+            with open(family_dir / f"{out_prefix}_colors_100.json", "w") as f:
                 json.dump(colors_100, f)
-        (family_dir / f"{family}_display_name.txt").write_text(display_name)
+        (family_dir / f"{out_prefix}_display_name.txt").write_text(display_name)
         save_tree_icon(
-            family=family,
+            family=out_prefix,
             output_dir=family_dir,
             bio_trees=bio_trees,
             icon_size=icon_size,
@@ -478,7 +480,7 @@ def run_family_concat(
     try:
         generate_family_report(
             family=family,
-            output_pdf=family_dir / f"{family}_report.pdf",
+            output_pdf=family_dir / f"{out_prefix}_report.pdf",
             summary_row=summary_row_for_report,
             seq_lengths=seq_lengths_all,
             tree_seq_lengths=tree_seq_lengths,
@@ -557,6 +559,8 @@ def _run_target_concat(
     family_cfg: dict,
     extra_protected_ids: set[str] | None = None,
 ) -> dict:
+    # Output file prefix: manual.name (sanitized) when set, else the family name.
+    out_prefix = sanitize_output_prefix(display_name)
     target_work = work_dir / f"target_{label}"
     target_work.mkdir(parents=True, exist_ok=True)
 
@@ -813,11 +817,11 @@ def _run_target_concat(
         species_lineages=species_lineages,
     )
     _write_concat_id_map(
-        family_dir / f"{family}_id_map_{label}.tsv",
+        family_dir / f"{out_prefix}_id_map_{label}.tsv",
         short_to_display,
     )
     _write_concat_metadata_tsv(
-        family_dir / f"{family}_metadata_{label}.tsv",
+        family_dir / f"{out_prefix}_metadata_{label}.tsv",
         selected_genomes=selected_genomes,
         leaf_metadata=leaf_metadata,
         short_to_display=short_to_display,
@@ -826,7 +830,7 @@ def _run_target_concat(
     # Final concat MSA (post-trim, post-outlier-removal) with display names
     restore_fasta_names(
         concat_fasta,
-        family_dir / f"{family}_alignment_{label}.fasta",
+        family_dir / f"{out_prefix}_alignment_{label}.fasta",
         short_to_display,
     )
     # NEXUS partition file — always emitted in concat mode; used by IQ-TREE
@@ -834,12 +838,12 @@ def _run_target_concat(
     if partition_path.exists():
         shutil.copy2(
             partition_path,
-            family_dir / f"{family}_partitions_{label}.nex",
+            family_dir / f"{out_prefix}_partitions_{label}.nex",
         )
     # Per-marker raw + final aligned FASTAs (display names).  Files reflect
     # the FINAL outlier-removal iteration since align_and_trim_markers
     # overwrites its outputs in-place.
-    markers_dir = family_dir / f"{family}_markers_{label}"
+    markers_dir = family_dir / f"{out_prefix}_markers_{label}"
     markers_dir.mkdir(parents=True, exist_ok=True)
     msa_root = target_work / "msa"
     aln_basename = "aln.trim.fasta" if trim_enabled else "aln.fasta"
@@ -887,7 +891,7 @@ def _run_target_concat(
 
     # 8. Final Newick: deep copy bio_tree, rename terminals to display names,
     #    drop internal labels (matches single-protein convention).
-    output_nwk = family_dir / f"{family}_tree_{label}.nwk"
+    output_nwk = family_dir / f"{out_prefix}_tree_{label}.nwk"
     if bio_tree is not None:
         nwk_tree = copy.deepcopy(bio_tree)
         for clade in nwk_tree.find_clades():
@@ -929,7 +933,7 @@ def _run_target_concat(
         m for m in marker_order
         if any(m in selected_genomes[gid] for gid in selected_genomes)
     ]
-    xml_path = family_dir / f"{family}_tree_{label}.xml"
+    xml_path = family_dir / f"{out_prefix}_tree_{label}.xml"
     write_phyloxml(
         newick_path=annotated_nwk,
         output_xml=xml_path,
@@ -954,7 +958,7 @@ def _run_target_concat(
     # Auspice v2 JSON (Nextstrain interactive tree) — divergence tree only.
     if family_cfg.get("output", {}).get("auspice_json", True):
         write_auspice_json(
-            output_json=family_dir / f"{family}_tree_{label}_auspice.json",
+            output_json=family_dir / f"{out_prefix}_tree_{label}_auspice.json",
             id_map=short_to_display,
             leaf_metadata=leaf_metadata,
             family=family,

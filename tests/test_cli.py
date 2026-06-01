@@ -5,6 +5,7 @@ so Snakemake does not silently clamp the per-rule `threads:` declaration
 down to `--cores` (which previously made `-j 1 -t 8` run single-threaded).
 """
 import csv
+import json
 from pathlib import Path
 
 import pytest
@@ -179,3 +180,59 @@ class TestFilterTsvRows:
             with open(out / name, newline="") as f:
                 kept = [row["family"] for row in csv.DictReader(f, delimiter="\t")]
             assert kept == ["Filoviridae"], name
+
+
+class TestFindFamilyDir:
+    """Directory discovery via the .family ownership marker."""
+
+    def _make_dir(self, output_dir, name, owner=None, status=None):
+        d = output_dir / name
+        d.mkdir(parents=True)
+        if owner is not None:
+            (d / ".family").write_text(owner)
+        if status is not None:
+            (d / ".status.json").write_text(json.dumps({"family": owner, "status": status}))
+        return d
+
+    def test_finds_taxid_suffixed_dir_via_marker(self, tmp_path):
+        d = self._make_dir(tmp_path, "Filoviridae_11266", owner="Filoviridae")
+        assert cli_mod._find_family_dir("Filoviridae", tmp_path) == d
+
+    def test_finds_renamed_dir_via_marker(self, tmp_path):
+        # Directory named after manual.name, not the biological family.
+        d = self._make_dir(tmp_path, "Ebola_3052317", owner="Orthoebolavirus")
+        assert cli_mod._find_family_dir("Orthoebolavirus", tmp_path) == d
+
+    def test_glob_fallback_for_markerless_legacy_dir(self, tmp_path):
+        d = self._make_dir(tmp_path, "Filoviridae_11266", owner=None)
+        assert cli_mod._find_family_dir("Filoviridae", tmp_path) == d
+
+    def test_plain_name_fallback(self, tmp_path):
+        d = self._make_dir(tmp_path, "Filoviridae", owner=None)
+        assert cli_mod._find_family_dir("Filoviridae", tmp_path) == d
+
+    def test_returns_none_when_absent(self, tmp_path):
+        assert cli_mod._find_family_dir("Nope", tmp_path) is None
+
+    def test_marker_takes_priority_and_prefers_newest(self, tmp_path):
+        import os, time
+        old = self._make_dir(tmp_path, "OldName_99", owner="Hantaviridae")
+        new = self._make_dir(tmp_path, "NewName_99", owner="Hantaviridae")
+        # Make `new` clearly more recent.
+        t = time.time()
+        os.utime(old, (t - 100, t - 100))
+        os.utime(new, (t, t))
+        assert cli_mod._find_family_dir("Hantaviridae", tmp_path) == new
+
+    def test_owner_family_reads_marker(self, tmp_path):
+        d = self._make_dir(tmp_path, "X_1", owner="RealFamily")
+        assert cli_mod._owner_family(d) == "RealFamily"
+        assert cli_mod._owner_family(tmp_path / "missing") is None
+
+    def test_find_status_file_via_marker(self, tmp_path):
+        d = self._make_dir(tmp_path, "Ebola_3052317", owner="Orthoebolavirus", status="done")
+        assert cli_mod._find_status_file("Orthoebolavirus", tmp_path) == d / ".status.json"
+
+    def test_find_status_file_none_when_no_status(self, tmp_path):
+        self._make_dir(tmp_path, "Ebola_3052317", owner="Orthoebolavirus")
+        assert cli_mod._find_status_file("Orthoebolavirus", tmp_path) is None

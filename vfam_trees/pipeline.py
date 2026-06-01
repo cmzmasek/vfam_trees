@@ -14,7 +14,7 @@ from Bio import Phylo, SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from .config import load_family_config, load_global_config
+from .config import load_family_config, load_global_config, sanitize_output_prefix
 from .fetch import (
     configure_entrez, discover_species, get_family_taxid,
     fetch_species_sequences, fetch_accessions_directly,
@@ -272,11 +272,21 @@ def run_family(
     else:
         family_lineage = []
 
-    dir_name = f"{family}_{family_taxid}" if family_taxid is not None else family
+    # Config is loaded before the output directory is built so manual.name can
+    # determine the output prefix (and hence the directory name).
+    family_cfg, auto_generated = load_family_config(family, configs_dir, global_cfg)
+    display_name = (family_cfg.get("manual") or {}).get("name") or family
+    out_prefix = sanitize_output_prefix(display_name)
+
+    # Output prefix (manual.name when set, else the family name) drives every
+    # output file name and the directory; the taxid suffix is retained for
+    # traceability and to keep distinct families in distinct directories.
+    dir_name = f"{out_prefix}_{family_taxid}" if family_taxid is not None else out_prefix
     family_dir = output_dir / dir_name
     family_dir.mkdir(parents=True, exist_ok=True)
+    _claim_family_dir(family_dir, family)
 
-    log_file = family_dir / f"{family}.log"
+    log_file = family_dir / f"{out_prefix}.log"
     # Configure handlers on the vfam_trees parent logger so every child —
     # the family-named logger AND module-level loggers (vfam_trees.fetch,
     # vfam_trees.concat, vfam_trees.pipeline_concat, …) — propagates here
@@ -286,10 +296,14 @@ def run_family(
 
     log.info("=" * 60)
     log.info("Starting pipeline for %s", family)
+    if out_prefix != family:
+        log.info("Output prefix (manual.name): %s", out_prefix)
     log.info("=" * 60)
 
     if family_taxid is None:
         log.warning("Could not resolve NCBI taxid for family %s", family)
+    if auto_generated:
+        log.warning("Using auto-generated config for %s — consider reviewing it.", family)
 
     # Global sequence cache (optional — only active when cache.dir is set in global.yaml)
     cache_cfg  = global_cfg.get("cache") or {}
@@ -304,11 +318,7 @@ def run_family(
             seq_cache.cache_dir, cs["entries"], cs["size_mb"],
         )
 
-    family_cfg, auto_generated = load_family_config(family, configs_dir, global_cfg)
-    if auto_generated:
-        log.warning("Using auto-generated config for %s — consider reviewing it.", family)
-
-    _save_config_copy(family_cfg, family_dir / f"{family}.yaml")
+    _save_config_copy(family_cfg, family_dir / f"{out_prefix}.yaml")
 
     work_dir = family_dir / "_work"
     work_dir.mkdir(exist_ok=True)
@@ -332,7 +342,7 @@ def run_family(
     manual_include_ids: set[str] = set(manual_cfg.get("include") or [])
     manual_exclude_ids: set[str] = set(manual_cfg.get("exclude") or [])
     manual_restrict_to_lineages: list[str] = manual_cfg.get("restrict_to_lineages") or []
-    display_name: str = manual_cfg.get("name") or family
+    # display_name / out_prefix were computed above (before the output dir was built)
     if manual_include_ids:
         log.info("manual.include: %d accession(s) will bypass QC", len(manual_include_ids))
     if manual_exclude_ids:
@@ -591,7 +601,7 @@ def run_family(
 
     # Sequence length violin plot (per species, after ambiguity filter, before length filter)
     if species_pre_length_lengths:
-        save_sequence_length_plot(family, family_dir, species_pre_length_lengths, display_name=display_name)
+        save_sequence_length_plot(out_prefix, family_dir, species_pre_length_lengths, display_name=display_name)
 
     # Active fetch for manual.include accessions not found in the per-species download.
     # Typical case: a nuccore accession on a protein-mode run (different NCBI database),
@@ -757,7 +767,7 @@ def run_family(
     label_format            = labeling_cfg.get("format", DEFAULT_LABEL_FORMAT)
     replace_whitespace      = labeling_cfg.get("replace_whitespace", True)
     keep_separator_on_empty = labeling_cfg.get("keep_separator_on_empty", False)
-    id_map_path = family_dir / f"{family}_id_map.tsv"
+    id_map_path = family_dir / f"{out_prefix}_id_map.tsv"
     renamed_records, short_to_display = assign_short_ids(
         all_records, all_metadata, family, id_map_path,
         label_format=label_format,
@@ -907,7 +917,7 @@ def run_family(
     # PDF report
     generate_family_report(
         family=family,
-        output_pdf=family_dir / f"{family}_report.pdf",
+        output_pdf=family_dir / f"{out_prefix}_report.pdf",
         summary_row=summary_row,
         seq_lengths=seq_lengths_all,
         tree_seq_lengths=tree_seq_lengths,
@@ -920,7 +930,7 @@ def run_family(
 
     # Standalone tree images (PDF + PNG)
     save_tree_images(
-        family=family,
+        family=out_prefix,
         output_dir=family_dir,
         bio_trees=bio_trees,
         tree_leaf_colors=tree_leaf_colors,
@@ -932,14 +942,14 @@ def run_family(
     # Persist tree_100 leaf colors and display name so generate_overview_png can read them back
     colors_100 = tree_leaf_colors.get("100", {}).get("display_to_color")
     if colors_100:
-        colors_path = family_dir / f"{family}_colors_100.json"
+        colors_path = family_dir / f"{out_prefix}_colors_100.json"
         with open(colors_path, "w") as _f:
             json.dump(colors_100, _f)
-    (family_dir / f"{family}_display_name.txt").write_text(display_name)
+    (family_dir / f"{out_prefix}_display_name.txt").write_text(display_name)
 
     # Icon PNG (tree_100 topology only, square, no labels)
     save_tree_icon(
-        family=family,
+        family=out_prefix,
         output_dir=family_dir,
         bio_trees=bio_trees,
         icon_size=icon_size,
@@ -974,6 +984,8 @@ def _run_target(
 
     Returns (target_stats, support_values, bio_tree).
     """
+    # Output file prefix: manual.name (sanitized) when set, else the family name.
+    out_prefix = sanitize_output_prefix(display_name)
     target_work = work_dir / label
     target_work.mkdir(exist_ok=True)
 
@@ -1090,10 +1102,10 @@ def _run_target(
     # Write raw quality-controlled FASTA (short IDs → restored names)
     raw_short_fasta = target_work / f"sequences_raw_{label}_short.fasta"
     write_fasta(sel_records, raw_short_fasta)
-    restore_fasta_names(raw_short_fasta, family_dir / f"{family}_sequences_raw_{label}.fasta", id_map)
+    restore_fasta_names(raw_short_fasta, family_dir / f"{out_prefix}_sequences_raw_{label}.fasta", id_map)
 
     # Metadata TSV
-    _write_metadata_tsv(sel_metadata, short_to_display, family_dir / f"{family}_metadata_{label}.tsv")
+    _write_metadata_tsv(sel_metadata, short_to_display, family_dir / f"{out_prefix}_metadata_{label}.tsv")
 
     msa_cfg = family_cfg[f"msa_{label}"]
     msa_options = (
@@ -1302,7 +1314,7 @@ def _run_target(
         sel_metadata = [short_id_to_meta.get(r.id, {}) for r in sel_records]
         id_map = {r.id: short_to_display.get(r.id, r.id) for r in sel_records}
 
-    restore_fasta_names(tree_input_fasta, family_dir / f"{family}_alignment_{label}.fasta", id_map)
+    restore_fasta_names(tree_input_fasta, family_dir / f"{out_prefix}_alignment_{label}.fasta", id_map)
 
     # Taxonomy annotation + rooting
     log.info("Inferring internal node taxonomy and rooting tree_%s ...", label)
@@ -1322,7 +1334,7 @@ def _run_target(
     # If bio_tree is None the annotation step already failed; skip writing the
     # final Newick rather than emit a string-substituted Newick that may be
     # malformed when display names contain Newick metacharacters.
-    output_nwk = family_dir / f"{family}_tree_{label}.nwk"
+    output_nwk = family_dir / f"{out_prefix}_tree_{label}.nwk"
     if bio_tree is not None:
         nwk_tree = copy.deepcopy(bio_tree)
         for clade in nwk_tree.find_clades():
@@ -1425,7 +1437,7 @@ def _run_target(
         aligned_seqs = {r.id: str(r.seq) for r in SeqIO.parse(tree_input_fasta, "fasta")}
     write_phyloxml(
         newick_path=annotated_nwk,
-        output_xml=family_dir / f"{family}_tree_{label}.xml",
+        output_xml=family_dir / f"{out_prefix}_tree_{label}.xml",
         id_map=short_to_display,
         leaf_metadata={r.id: short_id_to_meta.get(r.id, {}) for r in sel_records},
         family=family,
@@ -1442,7 +1454,7 @@ def _run_target(
     if family_cfg.get("output", {}).get("auspice_json", True):
         log.info("Writing Auspice JSON for tree_%s ...", label)
         write_auspice_json(
-            output_json=family_dir / f"{family}_tree_{label}_auspice.json",
+            output_json=family_dir / f"{out_prefix}_tree_{label}_auspice.json",
             id_map=short_to_display,
             leaf_metadata={r.id: short_id_to_meta.get(r.id, {}) for r in sel_records},
             family=family,
@@ -1524,6 +1536,30 @@ def _write_metadata_tsv(
             row = dict(meta)
             row["display_name"] = short_to_display.get(row.get("short_id", ""), "")
             writer.writerow(row)
+
+
+def _claim_family_dir(family_dir: Path, family: str) -> None:
+    """Record which biological family owns this output directory.
+
+    Writes a ``.family`` marker holding the biological family name.  Because the
+    directory may be named after ``manual.name`` rather than the family, this
+    marker is what lets the CLI (``status`` etc.) map a directory back to its
+    family without loading any config.  It also guards against collisions: if
+    the directory already belongs to a *different* family (only possible when
+    two families share a sanitized name AND the taxid could not be resolved),
+    the run aborts rather than clobbering the other family's outputs.
+    """
+    marker = family_dir / ".family"
+    if marker.is_file():
+        owner = marker.read_text().strip()
+        if owner and owner != family:
+            raise RuntimeError(
+                f"Output directory {family_dir} already belongs to family "
+                f"'{owner}', but family '{family}' resolves to the same "
+                f"directory (identical manual.name with no distinguishing "
+                f"taxid). Set a unique manual.name for one of them."
+            )
+    marker.write_text(family)
 
 
 def _save_config_copy(cfg: dict, path: Path) -> None:

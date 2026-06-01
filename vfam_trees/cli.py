@@ -889,13 +889,15 @@ def _read_family_list(path: Path) -> list[str]:
 
 
 def _find_status_file(family: str, output_dir: Path) -> Path | None:
-    """Return the .status.json path for a family, searching both the plain
-    name and the taxid-suffixed name (e.g. Asfarviridae_137992)."""
-    plain = output_dir / family / ".status.json"
-    if plain.exists():
-        return plain
-    for candidate in sorted(output_dir.glob(f"{family}_*/.status.json")):
-        return candidate
+    """Return the .status.json path for a family, or None.
+
+    Resolves the family's directory via _find_family_dir (which honours the
+    .family marker, so manual.name-renamed directories are found too)."""
+    family_dir = _find_family_dir(family, output_dir)
+    if family_dir is not None:
+        status = family_dir / ".status.json"
+        if status.exists():
+            return status
     return None
 
 
@@ -950,13 +952,40 @@ def _filter_tsv_rows(path: Path, families_to_drop: set[str]) -> int:
 
 
 def _find_family_dir(family: str, output_dir: Path) -> Path | None:
-    """Return the output directory for a family (taxid-suffixed or plain), or None."""
+    """Return the output directory for a family, or None.
+
+    When ``manual.name`` is set the directory is named after the (sanitized)
+    display name, so it cannot be located by the family name alone.  Each
+    directory carries a ``.family`` marker recording the biological family that
+    owns it; that is matched first.  If several match (e.g. a renamed re-run
+    left a stale directory) the most recently modified one wins.  The name-glob
+    fallbacks keep older result sets (written before the marker existed)
+    discoverable.
+    """
+    if output_dir.is_dir():
+        owned = [
+            d for d in output_dir.iterdir()
+            if d.is_dir() and _owner_family(d) == family
+        ]
+        if owned:
+            return max(owned, key=lambda d: d.stat().st_mtime)
     plain = output_dir / family
     if plain.is_dir():
         return plain
     for d in sorted(output_dir.glob(f"{family}_*")):
         if d.is_dir():
             return d
+    return None
+
+
+def _owner_family(family_dir: Path) -> str | None:
+    """Return the biological family recorded in the directory's .family marker."""
+    marker = family_dir / ".family"
+    if marker.is_file():
+        try:
+            return marker.read_text().strip() or None
+        except OSError:
+            return None
     return None
 
 

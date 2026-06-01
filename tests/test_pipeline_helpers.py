@@ -10,7 +10,7 @@ from Bio.Seq import Seq
 from vfam_trees.pipeline import (
     _mark_done, _mark_skipped,
     _inject_pasted_sequences, _load_fasta_file_entries,
-    _filter_species_by_lineages,
+    _filter_species_by_lineages, _claim_family_dir,
 )
 
 
@@ -526,3 +526,25 @@ def test_protein_named_region_no_warning(tmp_path, caplog, monkeypatch):
 
     warning_texts = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
     assert not any("niche configuration" in m for m in warning_texts)
+
+
+class TestClaimFamilyDir:
+    def test_writes_marker(self, tmp_path):
+        d = tmp_path / "Ebola_3052317"
+        d.mkdir()
+        _claim_family_dir(d, "Orthoebolavirus")
+        assert (d / ".family").read_text() == "Orthoebolavirus"
+
+    def test_reclaim_same_family_ok(self, tmp_path):
+        d = tmp_path / "Ebola_3052317"
+        d.mkdir()
+        _claim_family_dir(d, "Orthoebolavirus")
+        _claim_family_dir(d, "Orthoebolavirus")  # rerun — must not raise
+        assert (d / ".family").read_text() == "Orthoebolavirus"
+
+    def test_collision_with_different_family_raises(self, tmp_path):
+        d = tmp_path / "Ebola"
+        d.mkdir()
+        _claim_family_dir(d, "Orthoebolavirus")
+        with pytest.raises(RuntimeError, match="already belongs to family"):
+            _claim_family_dir(d, "SomeOtherFamily")

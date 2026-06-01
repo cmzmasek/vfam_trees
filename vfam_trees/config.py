@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from datetime import date
 from pathlib import Path
 
@@ -10,6 +11,25 @@ import yaml
 from .logger import get_logger
 
 log = get_logger(__name__)
+
+
+_PREFIX_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def sanitize_output_prefix(name: str) -> str:
+    """Return a filesystem-safe prefix for output files and directories.
+
+    ``manual.name`` is free-text (it can contain spaces, ``|``, ``/``, ``[``,
+    ``]`` — concat titles use ``[concatenated|N markers]`` style), so it must be
+    sanitized before it is used in a path: runs of any character outside
+    ``[A-Za-z0-9._-]`` collapse to a single underscore, and leading/trailing
+    separators are stripped.  Clean inputs (e.g. ``Filoviridae``) are returned
+    unchanged, so families without ``manual.name`` keep their current output
+    names exactly.
+    """
+    s = _PREFIX_UNSAFE_RE.sub("_", (name or "").strip())
+    s = re.sub(r"_+", "_", s).strip("_.")
+    return s or "family"
 
 
 # Segmented families and their default phylogenetic segment.
@@ -720,7 +740,12 @@ DEFAULT_FAMILY_CONFIG: dict = {
         #          When empty or absent the full discovered species list is used.
         # name: override the display name used in PDF/PNG titles and the PhyloXML
         #          <name> element.  When empty the biological family name is used.
-        #          Does not affect output file names.
+        #          Also drives the output prefix: when set, every output file and
+        #          the output directory are named from a filesystem-sanitized form
+        #          of this value (e.g. results/Ebola_3052317/Ebola_tree_100.nwk)
+        #          rather than the family name; the taxid suffix on the directory
+        #          is retained.  NCBI queries, taxonomy, caching, and the
+        #          summary.tsv 'family' column still use the biological family.
         "include": [],
         "include_seq": [],
         "include_fasta_files": [],

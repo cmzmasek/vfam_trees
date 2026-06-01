@@ -10,6 +10,27 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.44] — 2026-06-01
+
+### Changed
+- **`manual.name` now drives the output prefix and directory name.**  When set,
+  every output file and the output directory are named from a filesystem-safe
+  form of `manual.name` instead of the biological family name — e.g.
+  `results/Ebola_3052317/Ebola_tree_100.nwk` instead of
+  `results/Orthoebolavirus_3052317/Orthoebolavirus_tree_100.nwk`.  The taxid
+  suffix on the directory is retained.  Families **without** `manual.name` are
+  completely unaffected (the sanitized prefix equals the family name, so output
+  paths are byte-identical to before).  NCBI queries, taxonomy resolution,
+  sequence caching, the `.done_<family>` sentinel, and the `summary.tsv`
+  `family` column continue to use the biological family name.
+
+### Added
+- Each output directory now carries a `.family` marker recording the biological
+  family that owns it.  This lets `status` (and other CLI subcommands) locate a
+  `manual.name`-renamed directory without loading config, and guards against two
+  families resolving to the same directory: such a collision (only possible when
+  names match *and* the taxid is unresolved) aborts the run with a clear error.
+
 ## [1.2.43] — 2026-06-01
 
 ### Added
