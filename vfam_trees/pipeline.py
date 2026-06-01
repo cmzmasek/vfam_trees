@@ -43,6 +43,7 @@ from .tree import (
 )
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
+from .auspice_writer import write_auspice_json
 from .report import generate_family_report, save_tree_images, save_tree_icon, save_sequence_length_plot
 from .colors import assign_leaf_colors
 from .concat import is_refseq_genome
@@ -1436,6 +1437,21 @@ def _run_target(
         aligned_seqs=aligned_seqs,
         seq_type=seq_type,
     )
+
+    # Auspice v2 JSON (Nextstrain interactive tree) — divergence tree only.
+    if family_cfg.get("output", {}).get("auspice_json", True):
+        log.info("Writing Auspice JSON for tree_%s ...", label)
+        write_auspice_json(
+            output_json=family_dir / f"{family}_tree_{label}_auspice.json",
+            id_map=short_to_display,
+            leaf_metadata={r.id: short_id_to_meta.get(r.id, {}) for r in sel_records},
+            family=family,
+            tree=bio_tree,
+            title=phylogeny_name,
+            genus_to_color=genus_to_color,
+            confidence_type=confidence_type,
+            seq_type=seq_type,
+        )
 
     return target_stats, support_vals, bio_tree
 

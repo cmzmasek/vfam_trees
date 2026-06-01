@@ -49,6 +49,7 @@ from .fetch import (
 )
 from .logger import get_logger
 from .phyloxml_writer import write_phyloxml
+from .auspice_writer import write_auspice_json
 from .rename import (
     DEFAULT_LABEL_FORMAT, _normalize_field, _YEAR_RE,
     format_leaf_label, restore_fasta_names,
@@ -949,6 +950,20 @@ def _run_target_concat(
         aligned_seqs={gid: str(rec.seq) for gid, rec in concat.items()},
         seq_type="protein",
     )
+
+    # Auspice v2 JSON (Nextstrain interactive tree) — divergence tree only.
+    if family_cfg.get("output", {}).get("auspice_json", True):
+        write_auspice_json(
+            output_json=family_dir / f"{family}_tree_{label}_auspice.json",
+            id_map=short_to_display,
+            leaf_metadata=leaf_metadata,
+            family=family,
+            tree=bio_tree,
+            title=f"{display_name} [concatenated|{len(markers_used)} markers]",
+            genus_to_color=genus_to_color,
+            confidence_type=support_type,
+            seq_type="protein",
+        )
 
     # 8. Concat-specific stats: marker coverage, concat length, partition models
     n_markers_target = len(marker_set)

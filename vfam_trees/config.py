@@ -680,6 +680,13 @@ DEFAULT_FAMILY_CONFIG: dict = {
         # Typical values: "genus", "species", "subfamily".
         "lca_min_rank": "species",
     },
+    "output": {
+        # Emit an Auspice v2 JSON (Nextstrain interactive tree) alongside each
+        # PhyloXML.  Divergence tree only — branch lengths are substitutions
+        # per site, not time, so the tree is not time-resolved.  The "color by
+        # genus" view reuses the same palette as the PDF/PNG/PhyloXML output.
+        "auspice_json": True,
+    },
     "manual": {
         # Curator overrides on per-family record selection.  include/exclude
         # hold exact accessions with version (e.g. "NC_002617.1").

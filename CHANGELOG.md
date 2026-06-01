@@ -10,7 +10,20 @@ user-visible surface area.
 
 ## [Unreleased]
 
-## [1.2.42] — 2026-05-18
+## [1.2.43] — 2026-06-01
+
+### Added
+- **Auspice v2 JSON export (Nextstrain interactive trees).**  Each family now
+  emits `{Family}_tree_{500,100}_auspice.json` alongside the PhyloXML, loadable
+  directly in [auspice.us](https://auspice.us) or a local `auspice view`.
+  Divergence trees only — branch lengths are substitutions per site, so the
+  tree is not time-resolved (no temporal layout).  The "color by genus" view
+  reuses the same palette as the PDF/PNG/PhyloXML output (emitted as an explicit
+  coloring `scale`), and genus/subfamily/species/host/location/year are
+  available as colorings and filters.  Branch support is shown as a toggleable
+  branch label; internal-node LCA names appear as `clade` branch labels.
+  Controlled by the new `output.auspice_json` family-config flag (default
+  `true`); supported in both the single-protein and concatenated-marker paths.
 
 ### Added
 - **Numeric-field validation on family config load.**  Catches typos like
