@@ -1,6 +1,6 @@
 # vfam_trees
 
-**vfam_trees** is a bioinformatics pipeline for building maximum-likelihood phylogenetic trees for viral families. For each family it discovers species via NCBI Taxonomy, downloads sequences from GenBank, applies quality filtering, clusters per species, aligns with MAFFT, infers trees with FastTree and IQ-TREE, annotates internal nodes with LCA-based taxonomy, roots taxonomy-aware, and writes Newick and PhyloXML output along with PDF/PNG figures and per-run TSV summaries.
+**vfam_trees** is a bioinformatics pipeline for building maximum-likelihood phylogenetic trees for viral families. For each family it discovers species via NCBI Taxonomy, downloads sequences from GenBank, applies quality filtering, clusters per species, aligns with MAFFT, infers trees with FastTree and IQ-TREE, annotates internal nodes with LCA-based taxonomy, roots taxonomy-aware, and writes Newick, PhyloXML, and Auspice v2 (Nextstrain) JSON output along with PDF/PNG figures and per-run TSV summaries.
 
 Two trees are produced per family:
 
@@ -56,14 +56,16 @@ Each species' sequences are filtered in this order:
 
 ### 7. Output
 
-Per-family: Newick, PhyloXML (with `<taxonomy>`, `<sequence>`, `vipr:` metadata, and rank properties), rooted-rectangular and unrooted-radial PDF + PNG tree images, a topology-only icon PNG, sequence and metadata FASTAs/TSVs, a per-family PDF report, and a per-family log.
+Per-family: Newick, PhyloXML (with `<taxonomy>`, `<sequence>`, `vipr:` metadata, and rank properties), an Auspice v2 (Nextstrain) JSON for interactive exploration, rooted-rectangular and unrooted-radial PDF + PNG tree images, a topology-only icon PNG, sequence and metadata FASTAs/TSVs, a per-family PDF report, and a per-family log.
 
 Cross-family: a row-per-family `summary.tsv` with full statistics, a lightweight `status.tsv` (success/skip), and an `overview_tree_100.png` thumbnail grid shaded by viral realm. See [Output](#output) for the full file inventory.
 
-Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`). Failures and skips at any stage produce a row in `status.tsv` with the skip reason; the per-family work directory is preserved for inspection.
+Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`) — or, when `manual.name` is set, `<manual.name>_<taxid>` (e.g. `Orthoebolavirus_11266`), with every output file prefixed by the same display name (see [Output prefix and directory naming](#output-prefix-and-directory-naming)). Failures and skips at any stage produce a row in `status.tsv` with the skip reason; the per-family work directory is preserved for inspection.
 
 ## Other capabilities
 
+- **Interactive trees (Auspice / Nextstrain)** — every family also emits an Auspice v2 JSON per tree (`<prefix>_tree_{500,100}_auspice.json`) loadable directly in [auspice.us](https://auspice.us) (drag-and-drop) or a local `auspice view`. These are *divergence* trees (branch lengths are substitutions per site, not time-resolved); the "color by genus" view reuses the same palette as the PDF/PhyloXML output, and genus / subfamily / species / host / location / year are available as colorings and filters. Toggle with the `output.auspice_json` per-family flag (default on).
+- **Custom output naming** — set `manual.name` to rename a family's outputs (e.g. run *Filoviridae* restricted to the *Orthoebolavirus* genus and label everything `Orthoebolavirus`); the directory and all files take the sanitized display name while NCBI/taxonomy/cache lookups keep using the biological family. See [Output prefix and directory naming](#output-prefix-and-directory-naming).
 - **Pre-configured family presets** — 28 segmented RNA virus families (segment keywords) and 26 DNA virus families (sequence type, region/marker, and concat marker sets for the 16 families that use concatenation) ship with curated defaults.
 - **Checkpointing** — MSA and tree steps store a content-hashed sidecar of inputs + tool / model / options, so any change auto-invalidates the cache. Each iterative outlier-removal pass gets its own hash; partially-completed runs resume in the right place.
 - **Family-annotation TSV** (optional) — joins extra per-family columns (e.g. `baltimore_class`) into `summary.tsv` and `status.tsv`. Missing file or family is silent.
@@ -293,6 +295,12 @@ taxonomy:
                                 #   lineage does not reach this rank, so shallow lineages cannot
                                 #   drag ancestor labels back toward the root
 
+output:
+  auspice_json: true            # also emit an Auspice v2 (Nextstrain) JSON per tree
+                                # (<prefix>_tree_{500,100}_auspice.json) for interactive
+                                # viewing at auspice.us; divergence tree only (branch lengths
+                                # are substitutions/site, so it is not time-resolved)
+
 manual:                         # curator overrides on per-family record selection
   include: []                   # exact accessions (with version, e.g. "NC_002617.1") that
                                 # bypass all QC (length, ambiguity, organism exclusion) and
@@ -314,11 +322,35 @@ manual:                         # curator overrides on per-family record selecti
                                 # lineage proceed to download; empty or absent means use the
                                 # full discovered species list
   name: ""                      # override the display name in PDF/PNG titles and the PhyloXML
-                                # <name> element; e.g. "Hantaviridae 2026"; does not affect
-                                # output file names; empty (default) uses the family name
+                                # <name> element; e.g. "Hantaviridae 2026". When set it ALSO
+                                # becomes the output prefix: every output file and the output
+                                # directory are renamed to a filesystem-safe form of it (the
+                                # directory keeps its _<taxid> suffix). NCBI queries, taxonomy,
+                                # caching, and the summary.tsv 'family' column still use the
+                                # biological family. Empty (default) uses the family name.
+                                # See "Output prefix and directory naming" below.
 ```
 
-The `coloring` and `taxonomy` keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.
+The `coloring`, `taxonomy`, and `output` keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.
+
+#### Output prefix and directory naming
+
+By default a family's outputs live in `results/<Family>_<taxid>/` with every file prefixed `<Family>_…`. Setting `manual.name` overrides this prefix: the value is sanitized to a filesystem-safe form (runs of any character outside `[A-Za-z0-9._-]` collapse to `_`) and used for both the directory and every output file. The directory keeps its `_<taxid>` suffix for traceability.
+
+For example, running `Filoviridae` restricted to the *Orthoebolavirus* genus with `manual.name: Orthoebolavirus`:
+
+```
+results/Orthoebolavirus_11266/
+  Orthoebolavirus_tree_100.nwk
+  Orthoebolavirus_tree_100.xml
+  Orthoebolavirus_tree_100_auspice.json
+  Orthoebolavirus_report.pdf
+  ...
+```
+
+The biological family name is still used everywhere identity matters — NCBI species discovery and downloads, taxonomy resolution, the sequence cache, the `summary.tsv` / `status.tsv` `family` column, and `vfam_trees status` reporting. Each output directory carries a hidden `.family` marker recording the biological family, so `status` (and the other CLI subcommands) locate a renamed directory without re-reading config. If two families would resolve to the same directory (only possible when their `manual.name` values are identical *and* the NCBI taxid cannot be resolved), the run aborts with a clear error rather than overwriting the other family's outputs.
+
+Families **without** `manual.name` are completely unaffected: the sanitized prefix equals the family name, so output paths are identical to earlier versions.
 
 Example — adding a pasted reference and forcing a curator-picked accession in:
 
@@ -473,12 +505,15 @@ Filoviridae
 
 ### Per-family files (`results/<Family>_<taxid>/`)
 
+> When `manual.name` is set, `<Family>` in the directory name and in every filename below is replaced by the sanitized display name (the directory still keeps its `_<taxid>` suffix). See [Output prefix and directory naming](#output-prefix-and-directory-naming).
+
 **Trees**
 
 | File | Description |
 |------|-------------|
 | `<Family>_tree_{500,100}.nwk` | Newick tree |
 | `<Family>_tree_{500,100}.xml` | PhyloXML tree (rooted, non-rerootable; `<taxonomy>`, `<sequence>`, `vipr:` metadata, rank properties, `style:font_color`) |
+| `<Family>_tree_{500,100}_auspice.json` | Auspice v2 (Nextstrain) JSON — interactive divergence tree (load at [auspice.us](https://auspice.us)); genus / subfamily / species / host / location / year colorings and filters, genus palette matching the other outputs, branch support as toggleable branch labels. Emitted unless `output.auspice_json: false` |
 
 **Tree images** — each tree is exported in two layouts at PDF and 150 dpi PNG:
 

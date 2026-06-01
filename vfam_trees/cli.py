@@ -10,6 +10,8 @@ from pathlib import Path
 import click
 import yaml
 
+from . import __version__
+
 WORKFLOW_DIR = Path(__file__).parent.parent / "workflow"
 DEFAULT_GLOBAL_CFG = Path("config/global.yaml")
 DEFAULT_CONFIGS_DIR = Path("configs")
@@ -17,7 +19,7 @@ DEFAULT_OUTPUT_DIR = Path("results")
 
 
 @click.group()
-@click.version_option()
+@click.version_option(version=__version__, prog_name="vfam_trees")
 def main():
     """vfam_trees — phylogenetic trees for viral families.
 
@@ -141,7 +143,7 @@ def run(
     infer trees (FastTree for tree_500 / IQ-TREE for tree_100) →
     iterative post-tree branch-length outlier removal (re-align + re-tree) →
     annotate internal nodes (LCA taxonomy) → write Newick, PhyloXML,
-    PDF/PNG tree images, and per-family report.
+    Auspice v2 JSON, PDF/PNG tree images, and per-family report.
 
     MSA and tree-inference steps are content-hash-checkpointed, so reruns
     skip stages whose inputs and config are unchanged. A cross-family

@@ -10,6 +10,20 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.45] — 2026-06-01
+
+### Fixed
+- **`vfam_trees --version` now reports the actual package version.**  The
+  version option read installed distribution metadata, so it showed whatever
+  version was current at the last `pip install -e .` (e.g. `1.2.42`) rather
+  than the running code.  It is now wired directly to
+  `vfam_trees.__version__`.
+
+### Changed
+- Documentation: README now covers the Auspice v2 JSON export and the
+  `manual.name`-driven output prefix / directory naming; the `run` command
+  help text lists Auspice JSON among the per-family outputs.
+
 ## [1.2.44] — 2026-06-01
 
 ### Changed
