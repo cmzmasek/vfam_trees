@@ -8,6 +8,11 @@ from pathlib import Path
 
 import yaml
 
+from .datasources import (
+    DEFAULT_MAX_SEQS as _ADS_DEFAULT_MAX_SEQS,
+    KNOWN_PATHOPLEXUS_ORGANISMS,
+    SOURCE_FETCHERS,
+)
 from .logger import get_logger
 
 log = get_logger(__name__)
@@ -753,6 +758,26 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "restrict_to_lineages": [],
         "name": "",
     },
+    # Supplement the tree with forced-include sequences fetched from an external
+    # pathogen database (currently only Pathoplexus, via its GenSpectrum LAPIS
+    # API).  Typical use: add the latest outbreak genomes to a family tree.
+    # Like manual.include, these BYPASS QC + clustering/subsampling and are
+    # protected from outlier removal; unlike pasted sequences they carry real
+    # host/location/date/taxon metadata, so they colour by genus.
+    # Nucleotide-only; not supported when sequence.region is 'concatenated'.
+    # Each list entry is a mapping:
+    #   source:        required; one of the supported sources ("pathoplexus").
+    #   organism:      required; the source's organism slug (e.g. "ebola-zaire").
+    #                  Pathoplexus is keyed by curated organism, not taxid, so a
+    #                  genus tree lists several entries (ebola-zaire/sudan/bdbv).
+    #   country:       optional, exact match (LAPIS geoLocCountry).
+    #   host:          optional, exact match (LAPIS hostNameScientific).
+    #   date_from:     optional ISO 'YYYY-MM-DD' (collection date lower bound).
+    #   date_to:       optional ISO 'YYYY-MM-DD' (collection date upper bound).
+    #   max_seqs:      optional cap (default 200); these skip subsampling.
+    #   dedup_vs_ncbi: optional bool (default true); drop records whose INSDC
+    #                  accession is already present in the NCBI download.
+    "additional_data_sources": [],
 }
 
 
@@ -1178,6 +1203,114 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
     cfg["manual"] = block
 
 
+def _validate_additional_data_sources(cfg: dict, family: str) -> None:
+    """Validate and normalise the optional ``additional_data_sources`` block.
+
+    Each entry must name a supported ``source`` and a valid ``organism`` slug;
+    optional ``country``/``host`` are strings, ``date_from``/``date_to`` ISO
+    dates, ``max_seqs`` a positive int, ``dedup_vs_ncbi`` a bool.  Defaults are
+    filled in so the pipeline reads a fully-populated, typed entry.  No network
+    I/O happens here.  Not supported when ``sequence.region`` is
+    ``'concatenated'`` (mirrors the manual.include_seq restriction).
+    """
+    raw = cfg.get("additional_data_sources")
+    if raw is None:
+        cfg["additional_data_sources"] = []
+        return
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"{family}: additional_data_sources must be a list of mappings "
+            f"(got {type(raw).__name__})."
+        )
+
+    cleaned: list[dict] = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{family}: additional_data_sources[{i}] must be a mapping "
+                f"(got {type(entry).__name__})."
+            )
+        source = entry.get("source")
+        if not isinstance(source, str) or source not in SOURCE_FETCHERS:
+            raise ValueError(
+                f"{family}: additional_data_sources[{i}].source must be one of "
+                f"{sorted(SOURCE_FETCHERS)} (got {source!r})."
+            )
+        organism = entry.get("organism")
+        if not isinstance(organism, str) or not organism.strip():
+            raise ValueError(
+                f"{family}: additional_data_sources[{i}].organism must be a "
+                "non-empty string (the source's organism slug)."
+            )
+        organism = organism.strip()
+        if source == "pathoplexus" and organism not in KNOWN_PATHOPLEXUS_ORGANISMS:
+            raise ValueError(
+                f"{family}: additional_data_sources[{i}].organism {organism!r} "
+                f"is not a known Pathoplexus organism. Valid organisms: "
+                f"{sorted(KNOWN_PATHOPLEXUS_ORGANISMS)}."
+            )
+
+        for dkey in ("date_from", "date_to"):
+            dval = entry.get(dkey)
+            if dval is None:
+                continue
+            if not isinstance(dval, str):
+                raise ValueError(
+                    f"{family}: additional_data_sources[{i}].{dkey} must be an "
+                    f"ISO date string 'YYYY-MM-DD' (got {type(dval).__name__})."
+                )
+            try:
+                date.fromisoformat(dval.strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"{family}: additional_data_sources[{i}].{dkey} must be an "
+                    f"ISO date 'YYYY-MM-DD' (got {dval!r})."
+                ) from exc
+
+        for skey in ("country", "host"):
+            sval = entry.get(skey)
+            if sval is not None and not isinstance(sval, str):
+                raise ValueError(
+                    f"{family}: additional_data_sources[{i}].{skey} must be a "
+                    f"string (got {type(sval).__name__})."
+                )
+
+        max_seqs = entry.get("max_seqs", _ADS_DEFAULT_MAX_SEQS)
+        if not isinstance(max_seqs, int) or isinstance(max_seqs, bool) or max_seqs <= 0:
+            raise ValueError(
+                f"{family}: additional_data_sources[{i}].max_seqs must be a "
+                f"positive integer (got {max_seqs!r})."
+            )
+        dedup = entry.get("dedup_vs_ncbi", True)
+        if not isinstance(dedup, bool):
+            raise ValueError(
+                f"{family}: additional_data_sources[{i}].dedup_vs_ncbi must be a "
+                f"boolean (got {type(dedup).__name__})."
+            )
+
+        cleaned.append({
+            "source": source,
+            "organism": organism,
+            "country": (entry.get("country") or "").strip() or None,
+            "host": (entry.get("host") or "").strip() or None,
+            "date_from": (entry.get("date_from") or "").strip() or None,
+            "date_to": (entry.get("date_to") or "").strip() or None,
+            "max_seqs": max_seqs,
+            "dedup_vs_ncbi": dedup,
+        })
+
+    if cleaned:
+        region = (cfg.get("sequence") or {}).get("region", "")
+        if region == "concatenated":
+            raise ValueError(
+                f"{family}: additional_data_sources are not supported when "
+                "sequence.region is 'concatenated' — outbreak nucleotide "
+                "sequences cannot be split into the configured marker proteins.  "
+                "Remove the additional_data_sources entries or switch the region."
+            )
+    cfg["additional_data_sources"] = cleaned
+
+
 def _warn_unknown_keys(cfg: dict, path: Path) -> None:
     """Warn about top-level keys in a user config that are not recognised."""
     unknown = [
@@ -1209,12 +1342,14 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
         _validate_numeric_fields(cfg, family)
         _validate_concatenation_block(cfg, family)
         _validate_manual_block(cfg, family)
+        _validate_additional_data_sources(cfg, family)
         return cfg, False
     else:
         cfg = _generate_default_family_config(family, global_cfg)
         _validate_numeric_fields(cfg, family)
         _validate_concatenation_block(cfg, family)
         _validate_manual_block(cfg, family)
+        _validate_additional_data_sources(cfg, family)
         _write_family_config(cfg, config_path)
         log.warning(
             "No config found for %s — auto-generated default at %s. "

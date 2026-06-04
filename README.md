@@ -66,6 +66,7 @@ Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 
 - **Interactive trees (Auspice / Nextstrain)** — every family also emits an Auspice v2 JSON per tree (`<prefix>_tree_{500,100}_auspice.json`) loadable directly in [auspice.us](https://auspice.us) (drag-and-drop) or a local `auspice view`. These are *divergence* trees (branch lengths are substitutions per site, not time-resolved); the "color by genus" view reuses the same palette as the PDF/PhyloXML output, and genus / subfamily / species / host / location / year are available as colorings and filters. Toggle with the `output.auspice_json` per-family flag (default on).
 - **Custom output naming** — set `manual.name` to rename a family's outputs (e.g. run *Filoviridae* restricted to the *Orthoebolavirus* genus and label everything `Orthoebolavirus`); the directory and all files take the sanitized display name while NCBI/taxonomy/cache lookups keep using the biological family. See [Output prefix and directory naming](#output-prefix-and-directory-naming).
+- **Additional data sources (outbreak sequences)** — supplement a family tree with forced-include sequences from [Pathoplexus](https://pathoplexus.org) via the `additional_data_sources` config block. These bypass QC and clustering (like `manual.include`) but carry real host/location/date/taxon metadata, so they are coloured by genus. Useful for grafting the latest outbreak genomes onto an existing tree. See [Additional data sources (Pathoplexus)](#additional-data-sources-pathoplexus).
 - **Pre-configured family presets** — 28 segmented RNA virus families (segment keywords) and 26 DNA virus families (sequence type, region/marker, and concat marker sets for the 16 families that use concatenation) ship with curated defaults.
 - **Checkpointing** — MSA and tree steps store a content-hashed sidecar of inputs + tool / model / options, so any change auto-invalidates the cache. Each iterative outlier-removal pass gets its own hash; partially-completed runs resume in the right place.
 - **Family-annotation TSV** (optional) — joins extra per-family columns (e.g. `baltimore_class`) into `summary.tsv` and `status.tsv`. Missing file or family is silent.
@@ -329,6 +330,12 @@ manual:                         # curator overrides on per-family record selecti
                                 # caching, and the summary.tsv 'family' column still use the
                                 # biological family. Empty (default) uses the family name.
                                 # See "Output prefix and directory naming" below.
+
+additional_data_sources: []     # supplement the tree with forced-include sequences from an
+                                # external database (currently Pathoplexus). Each entry is a
+                                # mapping; see "Additional data sources (Pathoplexus)" below.
+                                # Bypass QC + clustering like manual.include; nucleotide-only;
+                                # not supported in concat mode.
 ```
 
 The `coloring`, `taxonomy`, and `output` keys can also be set globally in the `defaults:` section of `global.yaml` — per-family configs inherit them automatically.
@@ -381,6 +388,36 @@ Notes on `include_seq` and `include_fasta_files`:
 - For `include_seq`, the sequence may be wrapped across lines — whitespace is stripped and the sequence is uppercased.
 - Injected leaves render gray (no genus) and do not participate in LCA voting, since only id and organism are required.
 - Not supported when `sequence.region == "concatenated"` — injected sequences cannot be split into per-marker proteins.
+
+#### Additional data sources (Pathoplexus)
+
+`additional_data_sources` pulls *forced-include* sequences from an external pathogen database and injects them into the tree exactly like `manual.include` records — they **bypass QC and clustering/subsampling and are protected** from length-/branch-outlier removal. The typical use is adding the latest **outbreak** genomes to an existing family tree. Unlike pasted sequences, these carry real host / location / collection-date / taxon metadata, so they are labelled and **coloured by genus** like fetched records.
+
+Currently the only `source` is **Pathoplexus** ([pathoplexus.org](https://pathoplexus.org)), queried through its GenSpectrum LAPIS API. Pathoplexus organises data into a fixed set of curated *organisms* addressed by slug (not by taxid), so a genus-level tree lists one entry per organism — e.g. the *Orthoebolavirus* genus spans `ebola-zaire`, `ebola-sudan`, and `ebola-bdbv`:
+
+```yaml
+additional_data_sources:
+  - source: pathoplexus
+    organism: ebola-zaire         # Pathoplexus organism slug (required)
+    country: Uganda               # optional, exact (LAPIS geoLocCountry)
+    host: Homo sapiens            # optional, exact (LAPIS hostNameScientific)
+    date_from: "2022-01-01"       # optional ISO date (collection-date lower bound)
+    date_to: "2022-12-31"         # optional ISO date (collection-date upper bound)
+    max_seqs: 200                 # optional cap (default 200) — these skip subsampling
+    dedup_vs_ncbi: true           # optional (default true) — drop records already pulled
+                                  #   from NCBI (matched by INSDC accession)
+  - source: pathoplexus
+    organism: ebola-sudan
+```
+
+Valid organism slugs: `andv`, `cchf`, `dengue`, `ebola-bdbv`, `ebola-sudan`, `ebola-zaire`, `hmpv`, `marburg`, `measles`, `mpox`, `rsv-a`, `rsv-b`, `west-nile`, `yellow-fever`.
+
+Notes:
+
+- **Nucleotide-only**, and the family's tree must be nucleotide (e.g. `sequence.region: whole_genome`). Not supported when `sequence.region == "concatenated"`.
+- Only the **latest version** of each Pathoplexus accession is fetched; revoked records are excluded.
+- The Pathoplexus accession (e.g. `PP_000PHDC.3`) is used as the sequence id and must not collide with a fetched NCBI accession.
+- The fetch happens at pipeline runtime; the config is validated at load (known source, valid organism slug, ISO dates, positive `max_seqs`). A network failure aborts that family with a clear error rather than silently dropping the requested sequences.
 
 Example — restricting a family run to specific lineages (mixing ranks, names, and taxids):
 

@@ -14,6 +14,7 @@ from vfam_trees.config import (
     _apply_smart_defaults,
     _deep_update,
     _merge_with_defaults,
+    _validate_additional_data_sources,
     _validate_concatenation_block,
     _validate_manual_block,
     _validate_numeric_fields,
@@ -1361,4 +1362,102 @@ class TestSanitizeOutputPrefix:
         assert sanitize_output_prefix("") == "family"
         assert sanitize_output_prefix("   ") == "family"
         assert sanitize_output_prefix("///") == "family"
+
+
+# ---------------------------------------------------------------------------
+# _validate_additional_data_sources
+# ---------------------------------------------------------------------------
+
+class TestValidateAdditionalDataSources:
+    def _cfg(self, entries, region="whole_genome"):
+        return {"sequence": {"region": region}, "additional_data_sources": entries}
+
+    def test_default_in_template(self):
+        assert DEFAULT_FAMILY_CONFIG["additional_data_sources"] == []
+
+    def test_none_normalises_to_empty_list(self):
+        cfg = {"sequence": {}}
+        _validate_additional_data_sources(cfg, "Fam")
+        assert cfg["additional_data_sources"] == []
+
+    def test_happy_path_fills_defaults_and_types(self):
+        cfg = self._cfg([
+            {"source": "pathoplexus", "organism": "ebola-zaire",
+             "country": "Uganda", "date_from": "2024-01-01", "max_seqs": 10}
+        ])
+        _validate_additional_data_sources(cfg, "Fam")
+        entry = cfg["additional_data_sources"][0]
+        assert entry == {
+            "source": "pathoplexus", "organism": "ebola-zaire",
+            "country": "Uganda", "host": None,
+            "date_from": "2024-01-01", "date_to": None,
+            "max_seqs": 10, "dedup_vs_ncbi": True,
+        }
+
+    def test_not_a_list_rejected(self):
+        with pytest.raises(ValueError, match="must be a list"):
+            _validate_additional_data_sources(
+                {"sequence": {}, "additional_data_sources": {"source": "pathoplexus"}},
+                "Fam",
+            )
+
+    def test_unknown_source_rejected(self):
+        with pytest.raises(ValueError, match="source must be one of"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "genbank", "organism": "ebola-zaire"}]), "Fam"
+            )
+
+    def test_unknown_organism_rejected(self):
+        with pytest.raises(ValueError, match="not a known Pathoplexus organism"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "pathoplexus", "organism": "ebolx"}]), "Fam"
+            )
+
+    def test_missing_organism_rejected(self):
+        with pytest.raises(ValueError, match="organism must be a non-empty"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "pathoplexus"}]), "Fam"
+            )
+
+    def test_bad_date_rejected(self):
+        with pytest.raises(ValueError, match="ISO date"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "pathoplexus", "organism": "ebola-zaire",
+                            "date_to": "2024-13-40"}]), "Fam"
+            )
+
+    def test_non_positive_max_seqs_rejected(self):
+        with pytest.raises(ValueError, match="positive integer"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "pathoplexus", "organism": "ebola-zaire",
+                            "max_seqs": 0}]), "Fam"
+            )
+
+    def test_bool_max_seqs_rejected(self):
+        with pytest.raises(ValueError, match="positive integer"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "pathoplexus", "organism": "ebola-zaire",
+                            "max_seqs": True}]), "Fam"
+            )
+
+    def test_non_bool_dedup_rejected(self):
+        with pytest.raises(ValueError, match="must be a boolean"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "pathoplexus", "organism": "ebola-zaire",
+                            "dedup_vs_ncbi": "yes"}]), "Fam"
+            )
+
+    def test_concat_region_rejected(self):
+        with pytest.raises(ValueError, match="not supported when"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "pathoplexus", "organism": "ebola-zaire"}],
+                          region="concatenated"),
+                "Fam",
+            )
+
+    def test_empty_list_allowed_in_concat(self):
+        # the concat guard only triggers when there are entries
+        cfg = self._cfg([], region="concatenated")
+        _validate_additional_data_sources(cfg, "Fam")
+        assert cfg["additional_data_sources"] == []
         assert sanitize_output_prefix(None) == "family"

@@ -10,6 +10,7 @@ from Bio.Seq import Seq
 from vfam_trees.pipeline import (
     _mark_done, _mark_skipped,
     _inject_pasted_sequences, _load_fasta_file_entries,
+    _inject_external_sequences,
     _filter_species_by_lineages, _claim_family_dir,
 )
 
@@ -548,3 +549,93 @@ class TestClaimFamilyDir:
         _claim_family_dir(d, "Orthoebolavirus")
         with pytest.raises(RuntimeError, match="already belongs to family"):
             _claim_family_dir(d, "SomeOtherFamily")
+
+
+# ---------------------------------------------------------------------------
+# _inject_external_sequences — additional_data_sources injection
+# ---------------------------------------------------------------------------
+
+def _ext_entry(seq_id, **over):
+    """Build a fetcher-shaped external entry (as datasources.fetch_* returns)."""
+    entry = {
+        "id": seq_id,
+        "sequence": "ACGTACGT",
+        "species": "Orthoebolavirus zairense",
+        "host": "Homo sapiens",
+        "location": "Uganda",
+        "collection_date": "2024-03-15",
+        "strain": "",
+        "taxon_id": "186538",
+        "source": "pathoplexus",
+    }
+    entry.update(over)
+    return entry
+
+
+class TestInjectExternalSequences:
+    def test_empty_entries_is_noop(self):
+        species_data = {"Foo virus": _make_fetched_species("Foo virus", "NC_001.1")}
+        n = _inject_external_sequences(species_data, set(), [], "Test")
+        assert n == 0
+        assert list(species_data.keys()) == ["Foo virus"]
+
+    def test_injects_real_metadata_and_protects(self):
+        species_data: dict = {}
+        protected: set = set()
+        n = _inject_external_sequences(
+            species_data, protected, [_ext_entry("PP_000LAAX.1")], "Filoviridae",
+        )
+        assert n == 1
+        bucket = species_data["Orthoebolavirus zairense"]
+        meta = bucket["metadata"][0]
+        # real metadata carried through (not "unknown")
+        assert meta["host"] == "Homo sapiens"
+        assert meta["location"] == "Uganda"
+        assert meta["collection_date"] == "2024-03-15"
+        assert meta["taxon_id"] == "186538"  # drives genus colouring downstream
+        assert meta["source"] == "pathoplexus"
+        assert meta["accession"] == "PP_000LAAX.1"
+        # added to the protected set
+        assert "PP_000LAAX.1" in protected
+
+    def test_missing_fields_fall_back_to_unknown(self):
+        species_data: dict = {}
+        n = _inject_external_sequences(
+            species_data, set(),
+            [_ext_entry("PP_1", host="", location="", collection_date="")],
+            "Filoviridae",
+        )
+        assert n == 1
+        meta = species_data["Orthoebolavirus zairense"]["metadata"][0]
+        assert meta["host"] == "unknown"
+        assert meta["location"] == "unknown"
+        assert meta["collection_date"] == "unknown"
+
+    def test_joins_existing_species_bucket(self):
+        species_data = {
+            "Orthoebolavirus zairense": _make_fetched_species(
+                "Orthoebolavirus zairense", "NC_002549.1"
+            )
+        }
+        _inject_external_sequences(
+            species_data, set(), [_ext_entry("PP_1")], "Filoviridae",
+        )
+        bucket = species_data["Orthoebolavirus zairense"]
+        assert len(bucket["records"]) == 2
+        assert list(species_data.keys()) == ["Orthoebolavirus zairense"]
+
+    def test_duplicate_id_across_entries_kept_once(self):
+        species_data: dict = {}
+        n = _inject_external_sequences(
+            species_data, set(),
+            [_ext_entry("PP_1"), _ext_entry("PP_1")],
+            "Filoviridae",
+        )
+        assert n == 1
+
+    def test_id_collision_with_fetched_accession_raises(self):
+        species_data = {"Foo virus": _make_fetched_species("Foo virus", "NC_001.1")}
+        with pytest.raises(ValueError, match=r"collides with an accession"):
+            _inject_external_sequences(
+                species_data, set(), [_ext_entry("NC_001.1")], "Filoviridae",
+            )

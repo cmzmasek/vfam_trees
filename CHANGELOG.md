@@ -10,6 +10,27 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.46] — 2026-06-04
+
+### Added
+- **Pathoplexus as an additional sequence source (`additional_data_sources:`).**
+  A new per-family config block pulls *forced-include* sequences from
+  [Pathoplexus](https://pathoplexus.org) (via its GenSpectrum LAPIS API) and
+  injects them into the tree like `manual.include` records: they bypass QC and
+  clustering/subsampling and are protected from length-/branch-outlier removal.
+  The typical use is adding the latest **outbreak** genomes to an existing
+  family tree.  Unlike pasted sequences, these carry real host / location /
+  collection-date / taxon metadata, so they are labelled and coloured by genus.
+
+  Each entry names a `source` (currently only `pathoplexus`) and an `organism`
+  slug (Pathoplexus is keyed by curated organism, not taxid, so a genus tree
+  lists several entries — e.g. `ebola-zaire`, `ebola-sudan`, `ebola-bdbv`), with
+  optional `country`, `host`, `date_from`, `date_to`, `max_seqs` (default 200),
+  and `dedup_vs_ncbi` (default true) limiters.  Only the latest version of each
+  accession is fetched, and records already present in the NCBI download (by
+  INSDC accession) are dropped.  **Nucleotide-only**; not supported in concat
+  mode.  Single source of truth: `vfam_trees/datasources.py`.
+
 ## [1.2.45] — 2026-06-01
 
 ### Fixed

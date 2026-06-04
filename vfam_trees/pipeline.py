@@ -15,6 +15,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from .config import load_family_config, load_global_config, sanitize_output_prefix
+from .datasources import SOURCE_FETCHERS
 from .fetch import (
     configure_entrez, discover_species, get_family_taxid,
     fetch_species_sequences, fetch_accessions_directly,
@@ -233,6 +234,71 @@ def _inject_pasted_sequences(
         manual_include_ids.add(entry_id)
 
     return len(fasta_entries)
+
+
+def _inject_external_sequences(
+    species_data: dict[str, dict],
+    manual_include_ids: set[str],
+    entries: list[dict],
+    family: str,
+) -> int:
+    """Inject ``additional_data_sources`` sequences (e.g. Pathoplexus) into
+    *species_data*.
+
+    Like :func:`_inject_pasted_sequences`, each entry bypasses QC and is added
+    to *manual_include_ids* for downstream protection (clustering, length- and
+    branch-outlier removal).  Unlike pasted sequences, these carry *real*
+    host/location/date/taxon metadata, so they get a populated leaf label — and
+    because ``taxon_id`` is set, the ranked-taxonomy step colours them by genus.
+    **Must be called before that taxonomy enrichment** so the taxids are
+    resolved.  Raises ValueError on id collision with an already-present
+    accession.  Returns the number of sequences injected.
+    """
+    if not entries:
+        return 0
+
+    existing_accessions = {
+        m["accession"]
+        for d in species_data.values()
+        for m in d["metadata"]
+    }
+    injected = 0
+    seen: set[str] = set()
+    for entry in entries:
+        entry_id = entry["id"]
+        if entry_id in seen:
+            continue  # same record returned by two source entries — keep one
+        seen.add(entry_id)
+        if entry_id in existing_accessions:
+            raise ValueError(
+                f"{family}: additional_data_sources id {entry_id!r} collides "
+                "with an accession already fetched for this family."
+            )
+        seq_str = entry["sequence"]
+        species = entry.get("species") or ""
+        rec = SeqRecord(Seq(seq_str), id=entry_id, description=species)
+        meta = {
+            "accession": entry_id,
+            "seq_name": species or entry_id,
+            "species": species,
+            "strain": entry.get("strain") or "unknown",
+            "host": entry.get("host") or "unknown",
+            "collection_date": entry.get("collection_date") or "unknown",
+            "location": entry.get("location") or "unknown",
+            "taxon_id": entry.get("taxon_id") or "",
+            "length": len(seq_str),
+            "lineage": [],
+            "source": entry.get("source") or "",
+        }
+        bucket = species_data.setdefault(
+            species or entry_id, {"records": [], "metadata": []}
+        )
+        bucket["records"].append(rec)
+        bucket["metadata"].append(meta)
+        manual_include_ids.add(entry_id)
+        injected += 1
+
+    return injected
 
 
 def run_family(
@@ -635,6 +701,32 @@ def run_family(
                 "manual.include: could not fetch %d accession(s) for %s "
                 "(not found in either NCBI database): %s",
                 len(still_missing), family, sorted(still_missing),
+            )
+
+    # Inject outbreak / supplemental sequences from external data sources
+    # (e.g. Pathoplexus).  Done here — before the taxonomy fetch — so the
+    # injected records' taxon IDs are resolved to ranked lineages (genus
+    # colour).  Like manual.include, they bypass QC + clustering and are added
+    # to the protected set; the dedup pass drops records already pulled from NCBI.
+    ext_sources = family_cfg.get("additional_data_sources") or []
+    if ext_sources:
+        ncbi_accessions = {
+            m["accession"]
+            for d in species_data.values()
+            for m in d["metadata"]
+        }
+        ext_entries: list[dict] = []
+        for src in ext_sources:
+            fetcher = SOURCE_FETCHERS[src["source"]]
+            ext_entries.extend(fetcher(src, ncbi_accessions=ncbi_accessions))
+        n_ext = _inject_external_sequences(
+            species_data, manual_include_ids, ext_entries, family,
+        )
+        if n_ext:
+            log.info(
+                "additional_data_sources: injected %d sequence(s) — bypassed QC, "
+                "added to protected set",
+                n_ext,
             )
 
     # Fetch ranked taxonomy lineages from NCBI (cached per family)
