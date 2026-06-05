@@ -10,6 +10,20 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.47] — 2026-06-04
+
+### Changed
+- **Pathoplexus injection: outbreak tips now get a species label and genus
+  colour even when the record has no NCBI taxon.**  Fresh outbreak genomes
+  submitted directly to Pathoplexus often lack `ncbiVirusName` / `ncbiVirusTaxId`
+  (NCBI hasn't catalogued them yet) — exactly the records this feature targets —
+  so they previously rendered gray and unlabelled.  Each of the 14 Pathoplexus
+  organisms now maps to its virus taxon (`PATHOPLEXUS_ORGANISM_TAXON` in
+  `datasources.py`, e.g. `ebola-bdbv → Bundibugyo ebolavirus / taxid 565995`);
+  when a record lacks an NCBI taxid, the organism's name and taxid are used so
+  the tip is labelled and resolves to a genus colour.  Records that *do* carry
+  NCBI metadata are unaffected.
+
 ## [1.2.46] — 2026-06-04
 
 ### Added

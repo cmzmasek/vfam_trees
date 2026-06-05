@@ -184,6 +184,27 @@ class TestFetchPathoplexus:
         ds.fetch_pathoplexus({"organism": "ebola-zaire"}, ncbi_accessions=set())
         assert all("versionStatus=LATEST_VERSION" in u for u in calls)
 
+    def test_missing_taxid_uses_organism_fallback(self, monkeypatch):
+        # Fresh outbreak records lack ncbiVirusName/ncbiVirusTaxId.
+        _wire_responses(
+            monkeypatch, count=1,
+            details=[_rec("PP_1", taxid="", name="")], fasta=">PP_1\nACGT\n",
+        )
+        out = ds.fetch_pathoplexus({"organism": "ebola-bdbv"}, ncbi_accessions=set())
+        assert out[0]["taxon_id"] == "565995"              # Bundibugyo fallback
+        assert out[0]["species"] == "Bundibugyo ebolavirus"
+
+    def test_present_taxid_not_overridden_by_fallback(self, monkeypatch):
+        _wire_responses(
+            monkeypatch, count=1,
+            details=[_rec("PP_1", taxid="186538", name="Zaire ebolavirus")],
+            fasta=">PP_1\nACGT\n",
+        )
+        out = ds.fetch_pathoplexus({"organism": "ebola-bdbv"}, ncbi_accessions=set())
+        # the record's own NCBI taxid/name win over the organism fallback
+        assert out[0]["taxon_id"] == "186538"
+        assert out[0]["species"] == "Zaire ebolavirus"
+
 
 class TestRegistry:
     def test_pathoplexus_registered(self):
@@ -192,6 +213,12 @@ class TestRegistry:
     def test_known_organisms_count(self):
         assert len(ds.KNOWN_PATHOPLEXUS_ORGANISMS) == 14
         assert "ebola-zaire" in ds.KNOWN_PATHOPLEXUS_ORGANISMS
+
+    def test_taxon_map_covers_all_organisms(self):
+        # KNOWN_PATHOPLEXUS_ORGANISMS is derived from the taxon map's keys
+        assert set(ds.PATHOPLEXUS_ORGANISM_TAXON) == set(ds.KNOWN_PATHOPLEXUS_ORGANISMS)
+        for name, taxid in ds.PATHOPLEXUS_ORGANISM_TAXON.values():
+            assert name and taxid.isdigit()
 
 
 class TestHttpGet:

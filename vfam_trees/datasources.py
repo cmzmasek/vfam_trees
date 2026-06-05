@@ -27,13 +27,33 @@ log = get_logger(__name__)
 
 PATHOPLEXUS_BASE = "https://lapis.pathoplexus.org"
 
+# Each curated Pathoplexus organism maps to one virus taxon (scientific name +
+# NCBI taxid).  Harvested from Pathoplexus's own records that carry NCBI metadata,
+# and every taxid verified to resolve to a genus via NCBI taxonomy.  Used as a
+# fallback when a record lacks ncbiVirusName / ncbiVirusTaxId — common for fresh
+# outbreak genomes submitted directly to Pathoplexus and not yet catalogued by
+# NCBI — so injected tips still get a species label and a genus colour rather
+# than rendering gray and unlabelled.
+PATHOPLEXUS_ORGANISM_TAXON: dict[str, tuple[str, str]] = {
+    "andv":         ("Orthohantavirus andesense",     "1980456"),
+    "cchf":         ("Orthonairovirus haemorrhagiae",  "3052518"),
+    "dengue":       ("Dengue virus",                  "12637"),
+    "ebola-bdbv":   ("Bundibugyo ebolavirus",         "565995"),
+    "ebola-sudan":  ("Sudan ebolavirus",              "186540"),
+    "ebola-zaire":  ("Zaire ebolavirus",              "186538"),
+    "hmpv":         ("Human metapneumovirus",         "162145"),
+    "marburg":      ("Orthomarburgvirus marburgense",  "3052505"),
+    "measles":      ("Measles morbillivirus",         "11234"),
+    "mpox":         ("Monkeypox virus",               "10244"),
+    "rsv-a":        ("Human orthopneumovirus",        "11250"),
+    "rsv-b":        ("Human orthopneumovirus",        "11250"),
+    "west-nile":    ("West Nile virus",               "11082"),
+    "yellow-fever": ("Yellow fever virus",            "11089"),
+}
+
 # The curated organism slugs Pathoplexus exposes (verified against the live
-# instance).  Used for config validation and the per-organism LAPIS base URL.
-KNOWN_PATHOPLEXUS_ORGANISMS = frozenset({
-    "andv", "cchf", "dengue", "ebola-bdbv", "ebola-sudan", "ebola-zaire",
-    "hmpv", "marburg", "measles", "mpox", "rsv-a", "rsv-b", "west-nile",
-    "yellow-fever",
-})
+# instance).  Single source of truth: the keys of PATHOPLEXUS_ORGANISM_TAXON.
+KNOWN_PATHOPLEXUS_ORGANISMS = frozenset(PATHOPLEXUS_ORGANISM_TAXON)
 
 # Safety cap: these sequences bypass subsampling, so an unbounded outbreak
 # query could dominate a tree.  Per-entry ``max_seqs`` overrides this.
@@ -157,9 +177,13 @@ def fetch_pathoplexus(entry: dict, *, ncbi_accessions: set[str]) -> list[dict]:
                f"{urllib.parse.urlencode({**common, 'dataFormat': 'fasta'})}")
     seqs = _parse_fasta(_http_get(seq_url).decode("utf-8"))
 
+    # Fresh outbreak genomes often lack an NCBI virus name/taxid; fall back to
+    # the organism's known taxon so the tip is still labelled and genus-coloured.
+    fallback_name, fallback_taxid = PATHOPLEXUS_ORGANISM_TAXON.get(organism, ("", ""))
     norm_ncbi = {a.split(".")[0] for a in ncbi_accessions}
     out: list[dict] = []
     n_dedup = 0
+    n_fallback = 0
     for acc, seq in seqs.items():
         rec = meta_by_id.get(acc)
         if rec is None or not seq:
@@ -170,20 +194,30 @@ def fetch_pathoplexus(entry: dict, *, ncbi_accessions: set[str]) -> list[dict]:
             continue
         date = (rec.get("sampleCollectionDate")
                 or rec.get("sampleCollectionDateRangeUpper") or "")
+        species = (rec.get("ncbiVirusName") or "").strip()
+        taxon_id = str(rec.get("ncbiVirusTaxId") or "").strip()
+        if not taxon_id:
+            species = species or fallback_name
+            taxon_id = fallback_taxid
+            n_fallback += 1
         out.append({
             "id": acc,
             "sequence": seq.upper(),
-            "species": (rec.get("ncbiVirusName") or "").strip(),
+            "species": species,
             "host": (rec.get("hostNameScientific") or "").strip(),
             "location": (rec.get("geoLocCountry") or "").strip(),
             "collection_date": str(date).strip(),
             "strain": "",
-            "taxon_id": str(rec.get("ncbiVirusTaxId") or "").strip(),
+            "taxon_id": taxon_id,
             "source": "pathoplexus",
         })
     if n_dedup:
         log.info("Pathoplexus[%s]: skipped %d record(s) already present via NCBI "
                  "(insdcAccessionBase match)", organism, n_dedup)
+    if n_fallback:
+        log.info("Pathoplexus[%s]: %d record(s) lacked an NCBI taxid — labelled "
+                 "as %r (taxid %s) for species/genus colouring",
+                 organism, n_fallback, fallback_name, fallback_taxid)
     log.info("Pathoplexus[%s]: returning %d sequence(s)", organism, len(out))
     return out
 
