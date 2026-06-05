@@ -406,6 +406,8 @@ additional_data_sources:
     max_seqs: 200                 # optional cap (default 200) — these skip subsampling
     dedup_vs_ncbi: true           # optional (default true) — drop records already pulled
                                   #   from NCBI (matched by INSDC accession)
+    name_prefix: "PATHOPLEXUS_"   # optional — prepended verbatim to each leaf label
+    outbreak_name: "Bdbv-2026"    # optional — tags tips (vipr:outbreak + Auspice trait)
   - source: pathoplexus
     organism: ebola-sudan
 ```
@@ -415,6 +417,8 @@ Valid organism slugs: `andv`, `cchf`, `dengue`, `ebola-bdbv`, `ebola-sudan`, `eb
 Notes:
 
 - **Nucleotide-only**, and the family's tree must be nucleotide (e.g. `sequence.region: whole_genome`). Not supported when `sequence.region == "concatenated"`.
+- `name_prefix` is prepended **verbatim** to every leaf label from that source (supply your own trailing separator, e.g. `PATHOPLEXUS_`), so external tips are easy to spot in the tree, FASTA, `*_id_map.tsv`, PhyloXML, and Auspice.
+- `outbreak_name` tags each injected tip with the given label, emitted as a PhyloXML `vipr:outbreak` property and an **Outbreak** colouring + filter in the Auspice JSON — handy for isolating the outbreak clade in Nextstrain. Both fields appear only when set, so ordinary trees are unaffected.
 - Only the **latest version** of each Pathoplexus accession is fetched; revoked records are excluded.
 - The Pathoplexus accession (e.g. `PP_000PHDC.3`) is used as the sequence id and must not collide with a fetched NCBI accession.
 - The fetch happens at pipeline runtime; the config is validated at load (known source, valid organism slug, ISO dates, positive `max_seqs`). A network failure aborts that family with a clear error rather than silently dropping the requested sequences.

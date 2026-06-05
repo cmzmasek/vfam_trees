@@ -220,6 +220,31 @@ def test_absent_trait_has_no_coloring(tmp_path):
     assert "strain" not in keys
 
 
+def test_outbreak_absent_has_no_coloring_or_filter(tmp_path):
+    # Default _META has no outbreak tag on any leaf.
+    meta = _load(tmp_path)["meta"]
+    assert "outbreak" not in {c["key"] for c in meta["colorings"]}
+    assert "outbreak" not in meta["filters"]
+
+
+def test_outbreak_surfaced_as_coloring_filter_and_node_attr(tmp_path):
+    meta = {k: dict(v) for k, v in _META.items()}
+    meta["A"]["outbreak"] = "Bdbv-2026"
+    out = tmp_path / "outbreak_auspice.json"
+    write_auspice_json(
+        output_json=out, id_map=_ID_MAP, leaf_metadata=meta,
+        family="Filoviridae", tree=_build_tree(), genus_to_color=_GENUS_COLORS,
+    )
+    doc = json.loads(out.read_text())
+    assert "outbreak" in {c["key"] for c in doc["meta"]["colorings"]}
+    assert "outbreak" in doc["meta"]["filters"]
+    leaf_a = next(n for n in _leaves(doc["tree"]) if n["name"] == "A")
+    assert leaf_a["node_attrs"]["outbreak"] == {"value": "Bdbv-2026"}
+    # untagged leaves carry no outbreak attr
+    leaf_c = next(n for n in _leaves(doc["tree"]) if n["name"] == "C")
+    assert "outbreak" not in leaf_c["node_attrs"]
+
+
 def test_display_defaults(tmp_path):
     dd = _load(tmp_path)["meta"]["display_defaults"]
     assert dd["color_by"] == "genus"

@@ -167,6 +167,9 @@ def assign_short_ids(
                 replace_whitespace=replace_whitespace,
                 keep_separator_on_empty=keep_separator_on_empty,
             )
+            # Verbatim prefix for externally-sourced records (e.g. "PATHOPLEXUS_");
+            # empty for everything else. Set by _inject_external_sequences.
+            display_name = (meta.get("name_prefix") or "") + display_name
             short_to_display[short_id] = display_name
 
             writer.writerow([short_id, rec.id, display_name])

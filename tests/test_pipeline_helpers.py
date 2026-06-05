@@ -639,3 +639,23 @@ class TestInjectExternalSequences:
             _inject_external_sequences(
                 species_data, set(), [_ext_entry("NC_001.1")], "Filoviridae",
             )
+
+    def test_presentation_fields_written_to_meta(self):
+        species_data: dict = {}
+        _inject_external_sequences(
+            species_data, set(),
+            [_ext_entry("PP_1", name_prefix="PATHOPLEXUS_", outbreak_name="Bdbv-2026")],
+            "Filoviridae",
+        )
+        meta = species_data["Orthoebolavirus zairense"]["metadata"][0]
+        assert meta["name_prefix"] == "PATHOPLEXUS_"
+        assert meta["outbreak"] == "Bdbv-2026"
+
+    def test_presentation_fields_default_empty(self):
+        species_data: dict = {}
+        _inject_external_sequences(
+            species_data, set(), [_ext_entry("PP_1")], "Filoviridae",
+        )
+        meta = species_data["Orthoebolavirus zairense"]["metadata"][0]
+        assert meta["name_prefix"] == ""
+        assert meta["outbreak"] == ""

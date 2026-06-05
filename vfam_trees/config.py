@@ -777,6 +777,11 @@ DEFAULT_FAMILY_CONFIG: dict = {
     #   max_seqs:      optional cap (default 200); these skip subsampling.
     #   dedup_vs_ncbi: optional bool (default true); drop records whose INSDC
     #                  accession is already present in the NCBI download.
+    #   name_prefix:   optional; prepended verbatim to each injected leaf label
+    #                  (e.g. "PATHOPLEXUS_") so external tips stand out.
+    #   outbreak_name: optional; tags each injected tip with this label as the
+    #                  PhyloXML 'vipr:outbreak' property and an Auspice trait
+    #                  (e.g. "Bdbv-2026") for colouring / filtering.
     "additional_data_sources": [],
 }
 
@@ -1207,8 +1212,9 @@ def _validate_additional_data_sources(cfg: dict, family: str) -> None:
     """Validate and normalise the optional ``additional_data_sources`` block.
 
     Each entry must name a supported ``source`` and a valid ``organism`` slug;
-    optional ``country``/``host`` are strings, ``date_from``/``date_to`` ISO
-    dates, ``max_seqs`` a positive int, ``dedup_vs_ncbi`` a bool.  Defaults are
+    optional ``country``/``host``/``name_prefix``/``outbreak_name`` are strings,
+    ``date_from``/``date_to`` ISO dates, ``max_seqs`` a positive int,
+    ``dedup_vs_ncbi`` a bool.  Defaults are
     filled in so the pipeline reads a fully-populated, typed entry.  No network
     I/O happens here.  Not supported when ``sequence.region`` is
     ``'concatenated'`` (mirrors the manual.include_seq restriction).
@@ -1267,7 +1273,7 @@ def _validate_additional_data_sources(cfg: dict, family: str) -> None:
                     f"ISO date 'YYYY-MM-DD' (got {dval!r})."
                 ) from exc
 
-        for skey in ("country", "host"):
+        for skey in ("country", "host", "name_prefix", "outbreak_name"):
             sval = entry.get(skey)
             if sval is not None and not isinstance(sval, str):
                 raise ValueError(
@@ -1297,6 +1303,10 @@ def _validate_additional_data_sources(cfg: dict, family: str) -> None:
             "date_to": (entry.get("date_to") or "").strip() or None,
             "max_seqs": max_seqs,
             "dedup_vs_ncbi": dedup,
+            # Presentation-only: prepended verbatim to each injected leaf label,
+            # and emitted as the vipr:outbreak property / Auspice trait.
+            "name_prefix": (entry.get("name_prefix") or ""),
+            "outbreak_name": (entry.get("outbreak_name") or "").strip(),
         })
 
     if cleaned:

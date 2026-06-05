@@ -41,6 +41,7 @@ _CATEGORICAL_TRAITS = [
     ("host",      "Host"),
     ("location",  "Location"),
     ("strain",    "Strain"),
+    ("outbreak",  "Outbreak"),
 ]
 
 
@@ -73,6 +74,7 @@ def _leaf_traits(meta: dict) -> dict[str, str]:
         "host":      _clean(meta.get("host", "")),
         "location":  _clean(meta.get("location", "")),
         "strain":    _clean(meta.get("strain", "")),
+        "outbreak":  _clean(meta.get("outbreak", "")),
     }
     return {k: v for k, v in traits.items() if v}
 
@@ -197,7 +199,8 @@ def write_auspice_json(
     color_by = "genus" if "genus" in present_traits else (
         colorings[0]["key"] if colorings else "div"
     )
-    filter_keys = [k for k in ("genus", "subfamily", "host", "species") if k in present_traits]
+    filter_keys = [k for k in ("genus", "subfamily", "host", "species", "outbreak")
+                   if k in present_traits]
     if has_year:
         filter_keys.append("year")
 

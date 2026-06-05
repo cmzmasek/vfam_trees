@@ -10,6 +10,23 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.48] — 2026-06-04
+
+### Added
+- **`additional_data_sources` gains two optional presentation fields.**
+  - `name_prefix:` — a string prepended *verbatim* to every leaf label produced
+    from that source (e.g. `name_prefix: PATHOPLEXUS_`), so externally-sourced
+    tips stand out at a glance. The prefix flows into the leaf label, the Newick,
+    the `*_id_map.tsv` display column, the PhyloXML `<name>`, and the Auspice
+    `display_name`. You supply your own trailing separator.
+  - `outbreak_name:` — a string (e.g. `outbreak_name: Bdbv-2026`) that tags each
+    injected tip. It is emitted in PhyloXML as a `vipr:outbreak` property and, in
+    the Auspice JSON, as an **Outbreak** colouring + filter — so the outbreak
+    clade can be isolated or coloured in Nextstrain. Both are surfaced only when
+    at least one tip carries the value, so ordinary trees are unchanged.
+
+  Both default to empty (off) and apply only to `additional_data_sources` records.
+
 ## [1.2.47] — 2026-06-04
 
 ### Changed

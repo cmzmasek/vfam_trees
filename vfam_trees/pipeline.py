@@ -289,6 +289,9 @@ def _inject_external_sequences(
             "length": len(seq_str),
             "lineage": [],
             "source": entry.get("source") or "",
+            # Presentation extras (see _validate_additional_data_sources):
+            "name_prefix": entry.get("name_prefix") or "",
+            "outbreak": entry.get("outbreak_name") or "",
         }
         bucket = species_data.setdefault(
             species or entry_id, {"records": [], "metadata": []}
@@ -718,7 +721,15 @@ def run_family(
         ext_entries: list[dict] = []
         for src in ext_sources:
             fetcher = SOURCE_FETCHERS[src["source"]]
-            ext_entries.extend(fetcher(src, ncbi_accessions=ncbi_accessions))
+            fetched = fetcher(src, ncbi_accessions=ncbi_accessions)
+            # Stamp source-agnostic presentation fields from the config entry onto
+            # each record (the fetcher stays purely about sequences + metadata):
+            #   name_prefix   -> prepended to the leaf label
+            #   outbreak_name -> vipr:outbreak property + Auspice trait
+            for rec in fetched:
+                rec.setdefault("name_prefix", src.get("name_prefix", ""))
+                rec.setdefault("outbreak_name", src.get("outbreak_name", ""))
+            ext_entries.extend(fetched)
         n_ext = _inject_external_sequences(
             species_data, manual_include_ids, ext_entries, family,
         )

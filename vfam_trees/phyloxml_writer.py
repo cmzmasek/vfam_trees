@@ -39,6 +39,9 @@ METADATA_FIELDS = [
     ("collection_date", "xsd:string", "Collection_Date"),
     ("location",        "xsd:string", "Location"),
     ("strain",          "xsd:string", "Strain"),
+    # outbreak tag for externally-sourced tips (additional_data_sources); absent
+    # on ordinary records, so the empty-value guard below skips it for them.
+    ("outbreak",        "xsd:string", "outbreak"),
 ]
 
 

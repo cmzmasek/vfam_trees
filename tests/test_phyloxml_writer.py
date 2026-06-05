@@ -261,6 +261,26 @@ class TestWritePhyloxml:
         subgen = tree.getroot().findall(f".//{NS}property[@ref='vipr:Subgenus']")
         assert len(subgen) == 0
 
+    def test_vipr_outbreak_property_emitted_only_for_tagged_leaf(self, tmp_path):
+        # Only s1 carries an outbreak tag; s2/s3 must not get the property.
+        meta = _make_meta()
+        meta["s1"]["outbreak"] = "Bdbv-2026"
+        out = tmp_path / "outbreak.xml"
+        write_phyloxml(
+            newick_path=tmp_path / "unused.nwk",
+            output_xml=out,
+            id_map={"s1": "x", "s2": "y", "s3": "z"},
+            leaf_metadata=meta,
+            family="Flaviviridae",
+            tree=_make_mini_tree(),
+        )
+        props = ET.parse(out).getroot().findall(
+            f".//{NS}property[@ref='vipr:outbreak']"
+        )
+        assert len(props) == 1
+        assert props[0].text == "Bdbv-2026"
+        assert props[0].attrib["datatype"] == "xsd:string"
+
     def test_internal_taxonomy_element_present(self, mini_xml):
         # Inner clade has name "Flavivirus" with rank "genus"
         tree = ET.parse(mini_xml)
@@ -398,9 +418,12 @@ class TestMolSeq:
 
 def test_metadata_fields_are_three_tuples():
     # Regression: ensure no metadata field declaration was accidentally left as 2-tuple.
+    # Ref names are capitalised (vipr:Host, vipr:Location, ...) except "outbreak",
+    # which is intentionally lowercase to mirror the additional_data_sources field.
+    _LOWERCASE_REFS = {"outbreak"}
     for entry in METADATA_FIELDS:
         assert len(entry) == 3
         field, datatype, ref = entry
         assert isinstance(field, str) and field
         assert datatype.startswith("xsd:")
-        assert ref and ref[0].isupper()
+        assert ref and (ref[0].isupper() or ref in _LOWERCASE_REFS)

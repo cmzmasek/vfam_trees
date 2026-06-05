@@ -1392,6 +1392,7 @@ class TestValidateAdditionalDataSources:
             "country": "Uganda", "host": None,
             "date_from": "2024-01-01", "date_to": None,
             "max_seqs": 10, "dedup_vs_ncbi": True,
+            "name_prefix": "", "outbreak_name": "",
         }
 
     def test_not_a_list_rejected(self):
@@ -1445,6 +1446,37 @@ class TestValidateAdditionalDataSources:
             _validate_additional_data_sources(
                 self._cfg([{"source": "pathoplexus", "organism": "ebola-zaire",
                             "dedup_vs_ncbi": "yes"}]), "Fam"
+            )
+
+    def test_name_prefix_and_outbreak_name_accepted(self):
+        cfg = self._cfg([
+            {"source": "pathoplexus", "organism": "ebola-bdbv",
+             "name_prefix": "PATHOPLEXUS_", "outbreak_name": "  Bdbv-2026  "}
+        ])
+        _validate_additional_data_sources(cfg, "Fam")
+        entry = cfg["additional_data_sources"][0]
+        assert entry["name_prefix"] == "PATHOPLEXUS_"   # verbatim, not stripped
+        assert entry["outbreak_name"] == "Bdbv-2026"     # stripped
+
+    def test_presentation_fields_default_empty(self):
+        cfg = self._cfg([{"source": "pathoplexus", "organism": "ebola-bdbv"}])
+        _validate_additional_data_sources(cfg, "Fam")
+        entry = cfg["additional_data_sources"][0]
+        assert entry["name_prefix"] == ""
+        assert entry["outbreak_name"] == ""
+
+    def test_non_string_name_prefix_rejected(self):
+        with pytest.raises(ValueError, match="name_prefix must be a string"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "pathoplexus", "organism": "ebola-zaire",
+                            "name_prefix": 123}]), "Fam"
+            )
+
+    def test_non_string_outbreak_name_rejected(self):
+        with pytest.raises(ValueError, match="outbreak_name must be a string"):
+            _validate_additional_data_sources(
+                self._cfg([{"source": "pathoplexus", "organism": "ebola-zaire",
+                            "outbreak_name": ["x"]}]), "Fam"
             )
 
     def test_concat_region_rejected(self):

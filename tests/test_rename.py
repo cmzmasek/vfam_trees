@@ -447,6 +447,24 @@ class TestAssignShortIds:
         expected = canonical_leaf_label(meta["species"], meta["accession"], meta["host"])
         assert list(s2d.values()) == [expected]
 
+    def test_name_prefix_prepended_verbatim(self, tmp_path):
+        meta = {**_meta(accession="PP_1", host=None), "name_prefix": "PATHOPLEXUS_"}
+        id_map_path = tmp_path / "id_map.tsv"
+        _, s2d = assign_short_ids(
+            [_rec("PP_1")], [meta], "Flaviviridae", id_map_path,
+            label_format="{species}|{id}",
+        )
+        assert list(s2d.values()) == ["PATHOPLEXUS_Dengue_virus|PP_1"]
+
+    def test_absent_name_prefix_leaves_label_unchanged(self, tmp_path):
+        meta = _meta(accession="NC_001477", host=None)  # no name_prefix key
+        id_map_path = tmp_path / "id_map.tsv"
+        _, s2d = assign_short_ids(
+            [_rec("NC_001477")], [meta], "Flaviviridae", id_map_path,
+            label_format="{species}|{id}",
+        )
+        assert list(s2d.values()) == ["Dengue_virus|NC_001477"]
+
     def test_empty_field_not_in_label_by_default(self, tmp_path):
         meta = {**_meta(accession="NC_001477", host=None), "strain": "unknown"}
         id_map_path = tmp_path / "id_map.tsv"
