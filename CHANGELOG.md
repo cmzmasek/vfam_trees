@@ -10,6 +10,24 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.49] — 2026-06-06
+
+### Fixed
+- **Auspice JSON now displays in Auspice / auspice.us / Nextclade.** The exported
+  `*_auspice.json` violated the Auspice v2 dataset schema in two ways, and strict
+  viewers reject the *entire* dataset on any violation (rendering nothing):
+  - `node_attrs.accession` is a *reserved* schema field that must be a plain
+    string; it was emitted as a `{"value": …}` object, which failed validation
+    for the whole tree. It is now a plain string, guarded by the schema's
+    accession pattern (a malformed value is dropped rather than sinking the file).
+  - `display_defaults.layout` was `"rectangular"`, which is not an allowed value;
+    it is now `"rect"` (one of `rect`/`radial`/`unrooted`/`clock`).
+
+  Both the single-protein and concatenated-marker pipelines share the one writer,
+  so every `*_auspice.json` is fixed. Re-run a family to regenerate valid output.
+  A new regression test validates the export against the vendored official
+  Auspice v2 schema (offline) to guard this bug class going forward.
+
 ## [1.2.48] — 2026-06-04
 
 ### Added

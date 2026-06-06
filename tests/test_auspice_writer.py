@@ -1,10 +1,19 @@
 """Tests for the Auspice v2 JSON exporter (vfam_trees.auspice_writer)."""
 import json
 from io import StringIO
+from pathlib import Path
 
 import pytest
 from Bio import Phylo
 from Bio.Phylo.BaseTree import Clade, Tree
+
+# Vendored copies of the official Auspice schemas, used by the schema-validation
+# regression test below; refresh from nextstrain/augur if they evolve.  The
+# dataset schema $refs into the config schema for colorings/display_defaults/etc,
+# so both are needed.  Validation runs fully offline (no remote $ref fetches).
+_SCHEMA_DIR = Path(__file__).parent / "data"
+_SCHEMA_PATH = _SCHEMA_DIR / "auspice_v2_schema.json"            # dataset/v2
+_CONFIG_SCHEMA_PATH = _SCHEMA_DIR / "auspice_config_v2_schema.json"  # config/v2
 
 from vfam_trees.auspice_writer import (
     write_auspice_json,
@@ -118,6 +127,35 @@ def test_valid_json_round_trips(tmp_path):
     json.loads(json.dumps(doc))
 
 
+def test_output_validates_against_auspice_v2_schema(tmp_path):
+    # The whole reason this exporter exists is to be consumed by Auspice /
+    # auspice.us / Nextclade, which validate against this schema and render
+    # nothing on any violation.  Guards the bug class wholesale, not just the
+    # fields we know about.  Skips cleanly where the deps aren't available.
+    jsonschema = pytest.importorskip("jsonschema")
+    referencing = pytest.importorskip("referencing")
+    if not (_SCHEMA_PATH.exists() and _CONFIG_SCHEMA_PATH.exists()):
+        pytest.skip("vendored Auspice schemas not present")
+
+    dataset = json.loads(_SCHEMA_PATH.read_text())
+    config = json.loads(_CONFIG_SCHEMA_PATH.read_text())
+    # Resolve $refs from the vendored copies only — a Registry with no retrieve
+    # callback raises Unresolvable (rather than fetching) on any unknown $ref,
+    # keeping the test offline and surfacing schema drift loudly.
+    registry = referencing.Registry().with_resources([
+        (dataset["$id"], referencing.Resource.from_contents(dataset)),
+        (config["$id"], referencing.Resource.from_contents(config)),
+    ])
+    validator_cls = jsonschema.validators.validator_for(dataset)
+    validator = validator_cls(dataset, registry=registry)
+
+    doc = _load(tmp_path)
+    errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
+    assert not errors, "\n".join(
+        f"{'/'.join(str(p) for p in e.absolute_path)}: {e.message}" for e in errors
+    )
+
+
 # --------------------------------------------------------------------------
 # Tree structure & divergence
 # --------------------------------------------------------------------------
@@ -198,6 +236,29 @@ def test_display_name_attr_present(tmp_path):
     assert a["node_attrs"]["display_name"]["value"] == "Zaire_ebolavirus|NC_002549.1|human"
 
 
+def test_accession_is_plain_string(tmp_path):
+    # Auspice v2 reserves node_attrs.accession as a plain string, NOT a
+    # {"value": ...} object.  Emitting the object form fails schema validation
+    # for the whole tree and the dataset renders nothing.
+    a = {n["name"]: n for n in _leaves(_load(tmp_path)["tree"])}["A"]
+    assert a["node_attrs"]["accession"] == "NC_002549.1"
+
+
+def test_malformed_accession_omitted(tmp_path):
+    # A value violating the schema pattern must be dropped, not emitted —
+    # one bad accession otherwise sinks the entire dataset.
+    meta = {k: dict(v) for k, v in _META.items()}
+    meta["A"]["accession"] = "bad accession with spaces"
+    out = tmp_path / "badacc_auspice.json"
+    write_auspice_json(
+        output_json=out, id_map=_ID_MAP, leaf_metadata=meta,
+        family="Filoviridae", tree=_build_tree(), genus_to_color=_GENUS_COLORS,
+    )
+    doc = json.loads(out.read_text())
+    leaf_a = next(n for n in _leaves(doc["tree"]) if n["name"] == "A")
+    assert "accession" not in leaf_a["node_attrs"]
+
+
 # --------------------------------------------------------------------------
 # Colorings / filters / defaults
 # --------------------------------------------------------------------------
@@ -250,6 +311,13 @@ def test_display_defaults(tmp_path):
     assert dd["color_by"] == "genus"
     assert dd["distance_measure"] == "div"
     assert dd["tip_label"] == "display_name"
+
+
+def test_layout_is_valid_auspice_value(tmp_path):
+    # Auspice v2 only accepts rect/radial/unrooted/clock; "rectangular" is
+    # rejected by the schema and the dataset fails to display.
+    dd = _load(tmp_path)["meta"]["display_defaults"]
+    assert dd["layout"] == "rect"
 
 
 def test_filters_restricted_to_present_traits(tmp_path):

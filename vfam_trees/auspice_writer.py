@@ -27,6 +27,12 @@ log = get_logger(__name__)
 
 _YEAR_RE = re.compile(r'\b(1[89]\d{2}|20\d{2})\b')
 
+# Auspice v2 reserves ``node_attrs.accession`` as a plain string (not a
+# ``{"value": ...}`` coloring object) and constrains it to this pattern.  A
+# value that violates either rule fails schema validation for the *whole* tree,
+# so we emit accession only when it matches.
+_ACCESSION_RE = re.compile(r'^[0-9A-Za-z._-]+$')
+
 # Placeholder species value emitted upstream by extract_metadata; treated as
 # "no value" here, mirroring phyloxml_writer.
 _PLACEHOLDERS = frozenset({"", "unknown", "n/a", "na", "none"})
@@ -155,8 +161,9 @@ def write_auspice_json(
                 node_attrs["year"] = {"value": int(year)}
                 has_year = True
             accession = _clean(meta.get("accession", ""))
-            if accession:
-                node_attrs["accession"] = {"value": accession}
+            if accession and _ACCESSION_RE.match(accession):
+                # Reserved Auspice field: plain string, not a value-object.
+                node_attrs["accession"] = accession
             display = id_map.get(short_id, short_id)
             if display:
                 node_attrs["display_name"] = {"value": display}
@@ -207,7 +214,7 @@ def write_auspice_json(
     display_defaults: dict = {
         "color_by": color_by,
         "distance_measure": "div",
-        "layout": "rectangular",
+        "layout": "rect",
     }
     if has_display:
         display_defaults["tip_label"] = "display_name"
