@@ -10,6 +10,16 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.51] — 2026-06-08
+
+### Changed
+- **Docs: Auspice JSON in `OUTPUT_FILES.md`.** The detailed per-family output-files
+  reference never described the `*_auspice.json` output; it now has its own entry
+  under §1 (divergence-only Auspice v2 dataset, viewable at auspice.us / Nextclade /
+  `auspice view`, colorings/filters, and the **Outbreak** trait from
+  `additional_data_sources` tips). Completes the v1.2.50 documentation pass.
+  Documentation only; no behaviour change.
+
 ## [1.2.50] — 2026-06-08
 
 ### Changed

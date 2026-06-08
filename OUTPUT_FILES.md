@@ -10,6 +10,9 @@ Plain text trees in standard Newick format. Internal nodes are annotated with th
 ### PhyloXML (`<Family>_tree_500.xml`, `<Family>_tree_100.xml`)
 Richly-annotated phylogenetic XML. **This is the canonical output format** — it carries the tree topology *plus* per-leaf metadata, taxonomy, and visual styling that a Newick file cannot. Detailed structure is given in §6 below.
 
+### Auspice JSON (`<Family>_tree_500_auspice.json`, `<Family>_tree_100_auspice.json`)
+Schema-valid **Auspice v2** dataset JSON for interactive exploration in a browser — drop the file into [auspice.us](https://auspice.us), the Nextclade "view tree" tool, or a local `auspice view`. This is a **divergence tree only**: branch lengths are substitutions/site, so there is no temporal (time-scaled) layout — the `div` node attribute holds the cumulative root→node distance. Tips carry the same per-leaf metadata as the PhyloXML, surfaced as toggleable colorings/filters (genus, subfamily, species, host, location, year — each emitted only when present on at least one leaf), with genus colors reusing the PDF/PhyloXML palette. Branch support and LCA clade names appear as toggleable branch labels. Tips grafted in via `additional_data_sources` (e.g. Pathoplexus outbreak genomes) additionally get an **Outbreak** coloring/filter. Gated by `output.auspice_json` (default `true`).
+
 ### Tree images — rooted rectangular (`*_tree_500.pdf` / `.png`, `*_tree_100.pdf` / `.png`)
 Conventional left-to-right rectangular cladograms, **rooted** by the pipeline's taxonomy-guided algorithm (with MAD and midpoint fallbacks). Support values below 50% are suppressed for visual clarity. Leaf labels are colored by genus (one hue band per subfamily; lightness varies across genera within a subfamily). A structured legend grouped by subfamily appears alongside the tree.
 
