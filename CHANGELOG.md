@@ -10,6 +10,39 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-06-08
+
+### Added
+- **HMM-based marker-protein identification.** For large DNA virus families
+  whose GenBank annotation is inconsistent, marker proteins can now be
+  identified by **HMMER profile homology** instead of protein-name queries —
+  far more robust against synonyms, gene-symbol vs descriptive names, and
+  mis-/un-annotated or divergent orthologs. Enabled per family via a new
+  top-level `hmm:` config block (`enabled`, `database`, `default_evalue`,
+  `use_ga_when_available`, `relative_length_cutoff`,
+  `multidomain_overlap_tolerance`, `threads`).
+  - Markers carry an `hmms:` token list — a single profile (`"DNA_pol_B"`) or a
+    **multidomain architecture** (`"Adeno_hexon--Adeno_hexon_C"`, HMMs in N-to-C
+    order; tokens within a marker are alternatives, OR'd). The HMM tier is
+    authoritative for markers that declare `hmms`; markers without fall back to
+    name+alias matching, so mixed sets work.
+  - Works on **both** the single-marker (`DNA_FAMILIES`) and concatenated-marker
+    (`CONCATENATION_FAMILIES`) paths via the `markers.MarkerIdentifier` swap. In
+    HMM mode the per-marker name queries are replaced by an all-proteins-per-
+    species fetch; proteins are grouped by source genome and assigned to markers
+    by HMM, with hits gated on the curated Pfam **GA** bit-score (or an E-value)
+    plus an HMM-model coverage cutoff. `max_per_species` then bounds the number
+    of genomes kept (RefSeq-first).
+  - Ships curated **Pfam-A** profile sets (CC0) under
+    `vfam_trees/data/hmms/<Family>/`: **Poxviridae** (8 markers) and
+    **Adenoviridae** (hexon, as the 2-domain `Adeno_hexon--Adeno_hexon_C`
+    architecture OR'd with a single-domain `Adeno_hexon` fallback), both
+    enabled by default in their presets. Rebuildable via `scripts/build_bundled_hmms.sh`.
+  - Requires **HMMER** (`hmmscan`/`hmmpress`) on PATH when `hmm.enabled`;
+    `vfam_trees test` now reports their availability. The database is
+    auto-`hmmpress`-ed on first use. The global sequence cache is bypassed in
+    HMM mode (its key does not encode the HMM database).
+
 ## [1.2.51] — 2026-06-08
 
 ### Changed

@@ -556,6 +556,7 @@ def init(global_config: Path, force: bool):
 
 REQUIRED_TOOLS = ["mafft", "iqtree2", "mmseqs", "FastTree", "trimal"]
 OPTIONAL_TOOLS = ["cd-hit", "cd-hit-est"]
+HMM_TOOLS = ["hmmscan", "hmmpress"]  # HMMER; needed only when hmm.enabled
 REQUIRED_PACKAGES = ["Bio", "click", "yaml", "snakemake", "requests"]
 
 
@@ -620,6 +621,17 @@ def test(global_config: Path):
             click.echo(f"  [OK]  {tool}  ({path})")
         else:
             click.echo(f"  [--]  {tool}  (not found — only needed if clustering.tool: cdhit)")
+
+    click.echo("")
+
+    # HMMER (only needed when hmm.enabled — HMM marker identification)
+    click.echo("HMMER tools (only used when hmm.enabled):")
+    for tool in HMM_TOOLS:
+        path = shutil.which(tool)
+        if path:
+            click.echo(f"  [OK]  {tool}  ({path})")
+        else:
+            click.echo(f"  [--]  {tool}  (not found — only needed if hmm.enabled)")
 
     click.echo("")
 

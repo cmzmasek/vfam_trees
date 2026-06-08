@@ -13,9 +13,11 @@ from vfam_trees.config import (
     SEGMENTED_FAMILIES,
     _apply_smart_defaults,
     _deep_update,
+    _generate_default_family_config,
     _merge_with_defaults,
     _validate_additional_data_sources,
     _validate_concatenation_block,
+    _validate_hmm_block,
     _validate_manual_block,
     _validate_numeric_fields,
     _warn_smart_default_conflicts,
@@ -1493,3 +1495,112 @@ class TestValidateAdditionalDataSources:
         _validate_additional_data_sources(cfg, "Fam")
         assert cfg["additional_data_sources"] == []
         assert sanitize_output_prefix(None) == "family"
+
+
+class TestValidateHmmBlock:
+    def _cfg(self, hmm=None, *, sequence=None, concatenation=None):
+        cfg = {"sequence": sequence if sequence is not None else {"region": "x"}}
+        if hmm is not None:
+            cfg["hmm"] = hmm
+        if concatenation is not None:
+            cfg["concatenation"] = concatenation
+        return cfg
+
+    def test_missing_block_fills_disabled_default(self):
+        cfg = self._cfg(None)
+        _validate_hmm_block(cfg, "Fam")
+        assert cfg["hmm"]["enabled"] is False
+        assert cfg["hmm"]["database"] is None
+        assert cfg["hmm"]["default_evalue"] == 1.0e-5
+        assert cfg["hmm"]["relative_length_cutoff"] == 0.5
+        assert cfg["hmm"]["multidomain_overlap_tolerance"] == 30
+
+    def test_enabled_with_database_ok(self):
+        cfg = self._cfg({"enabled": True, "database": " Poxviridae "})
+        _validate_hmm_block(cfg, "Fam")
+        assert cfg["hmm"]["enabled"] is True
+        assert cfg["hmm"]["database"] == "Poxviridae"  # stripped
+
+    def test_enabled_without_database_raises(self):
+        cfg = self._cfg({"enabled": True})
+        with pytest.raises(ValueError, match="hmm.database is not set"):
+            _validate_hmm_block(cfg, "Fam")
+
+    def test_non_bool_enabled_raises(self):
+        with pytest.raises(ValueError, match="hmm.enabled must be a boolean"):
+            _validate_hmm_block(self._cfg({"enabled": "yes"}), "Fam")
+
+    def test_non_positive_evalue_raises(self):
+        with pytest.raises(ValueError, match="default_evalue"):
+            _validate_hmm_block(self._cfg({"default_evalue": 0}), "Fam")
+
+    def test_relative_length_out_of_range_raises(self):
+        with pytest.raises(ValueError, match="relative_length_cutoff"):
+            _validate_hmm_block(self._cfg({"relative_length_cutoff": 1.5}), "Fam")
+
+    def test_negative_overlap_tolerance_raises(self):
+        with pytest.raises(ValueError, match="multidomain_overlap_tolerance"):
+            _validate_hmm_block(
+                self._cfg({"multidomain_overlap_tolerance": -1}), "Fam")
+
+    def test_bad_threads_raises(self):
+        with pytest.raises(ValueError, match="hmm.threads"):
+            _validate_hmm_block(self._cfg({"threads": 0}), "Fam")
+
+    def test_malformed_token_in_sequence_raises(self):
+        cfg = self._cfg(
+            {"enabled": False},
+            sequence={"region": "hexon", "hmms": ["A----B"]},
+        )
+        with pytest.raises(ValueError, match="sequence.hmms token"):
+            _validate_hmm_block(cfg, "Fam")
+
+    def test_malformed_token_in_concatenation_raises(self):
+        cfg = self._cfg(
+            {"enabled": False},
+            concatenation={"proteins": [{"name": "m", "hmms": [" --A"]}]},
+        )
+        with pytest.raises(ValueError, match=r"concatenation.proteins\[0\].hmms"):
+            _validate_hmm_block(cfg, "Fam")
+
+    def test_tokens_validated_even_when_disabled(self):
+        # Disabled but a typo'd token still surfaces (master switch independent).
+        cfg = self._cfg(
+            {"enabled": False},
+            sequence={"region": "x", "hmms": [123]},
+        )
+        with pytest.raises(ValueError, match="must be strings"):
+            _validate_hmm_block(cfg, "Fam")
+
+    def test_well_formed_multidomain_token_ok(self):
+        cfg = self._cfg(
+            {"enabled": True, "database": "Adenoviridae"},
+            sequence={"region": "hexon", "hmms": ["Adeno_hexon--Adeno_hexon_C"]},
+        )
+        _validate_hmm_block(cfg, "Fam")  # no raise
+
+
+class TestHmmPresets:
+    def test_adenoviridae_preset_hmm_enabled(self):
+        cfg = _generate_default_family_config("Adenoviridae", make_minimal_global_cfg())
+        _validate_hmm_block(cfg, "Adenoviridae")
+        assert cfg["hmm"]["enabled"] is True
+        assert cfg["hmm"]["database"] == "Adenoviridae"
+        # Architecture token first, single-domain fallback OR'd in.
+        assert cfg["sequence"]["hmms"] == [
+            "Adeno_hexon--Adeno_hexon_C", "Adeno_hexon",
+        ]
+
+    def test_poxviridae_preset_tokens(self):
+        cfg = _generate_default_family_config("Poxviridae", make_minimal_global_cfg())
+        _validate_hmm_block(cfg, "Poxviridae")
+        assert cfg["hmm"]["enabled"] is True
+        toks = [p.get("hmms") for p in cfg["concatenation"]["proteins"]]
+        assert ["DNA_pol_B"] in toks and ["UDG"] in toks
+        assert all(t for t in toks)  # every marker is HMM-gated
+
+    def test_non_hmm_family_defaults_off(self):
+        cfg = _generate_default_family_config("Circoviridae", make_minimal_global_cfg())
+        _validate_hmm_block(cfg, "Circoviridae")
+        assert cfg["hmm"]["enabled"] is False
+        assert cfg["hmm"]["database"] is None

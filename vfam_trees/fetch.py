@@ -261,12 +261,22 @@ def fetch_species_sequences(
     max_per_species: int = 200,
     exclude_organisms: list[str] | None = None,
     segment: str | None = None,
+    *,
+    hmm_identifier: "MarkerIdentifier | None" = None,
+    hmm_marker: dict | None = None,
+    species_lineage: list[dict] | None = None,
 ) -> int:
     """Fetch GenBank records for a single species.
 
     RefSeqs are always included in full regardless of max_per_species.
     Remaining slots (up to max_per_species) are filled with non-RefSeq entries,
     with RefSeqs ordered first.
+
+    When ``hmm_identifier`` is an HMM identifier (``.is_hmm``), the marker-name
+    query is replaced by an all-proteins-per-species fetch and the single marker
+    (``hmm_marker`` = {name, hmms, ...}) is assigned by HMM homology; only the
+    selected proteins (one per genome) are written, capped to ``max_per_species``
+    genomes RefSeq-first.
 
     Args:
         taxid: NCBI taxonomy ID for the species
@@ -279,6 +289,18 @@ def fetch_species_sequences(
     Returns:
         Number of records fetched, or 0 if none found.
     """
+    if getattr(hmm_identifier, "is_hmm", False):
+        marker = hmm_marker or {"name": region, "hmms": []}
+        return _fetch_species_marker_hmm(
+            taxid=taxid,
+            species_name=species_name,
+            marker=marker,
+            output_gb=output_gb,
+            max_per_species=max_per_species,
+            exclude_organisms=exclude_organisms,
+            identifier=hmm_identifier,
+            species_lineage=species_lineage,
+        )
     db = "nuccore" if seq_type == "nucleotide" else "protein"
 
     # Step 1: always fetch all RefSeq records (no cap)
@@ -895,12 +917,31 @@ def fetch_species_genomes(
     tiebreaker via ``identifier``, and drops genomes covering fewer than
     ``min_fraction × N`` markers.
 
+    When ``identifier`` is an HMM identifier (``identifier.is_hmm``), the
+    per-marker name queries are replaced by a single all-proteins-per-species
+    fetch and the markers are assigned by HMM homology — see
+    ``_fetch_species_genomes_hmm``.
+
     Returns:
         (genomes, stats):
             genomes: {source_nuc_accession: {marker_name: SeqRecord}}
             stats:   diagnostic counters (see group_proteins_by_genome).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+    if getattr(identifier, "is_hmm", False):
+        return _fetch_species_genomes_hmm(
+            taxid=taxid,
+            species_name=species_name,
+            species_lineage=species_lineage,
+            marker_set=marker_set,
+            output_dir=output_dir,
+            max_per_species=max_per_species,
+            min_fraction=min_fraction,
+            exclude_organisms=exclude_organisms,
+            identifier=identifier,
+            source_nuc_min_length_frac=source_nuc_min_length_frac,
+            nuc_length_lookup=nuc_length_lookup,
+        )
     proteins_by_marker: dict[str, list[SeqRecord]] = {}
     n_proteins_fetched = 0
 
@@ -954,6 +995,190 @@ def fetch_species_genomes(
         stats.get("n_dropped_short_source_nuc", 0),
     )
     return genomes, stats
+
+
+# ---------------------------------------------------------------------------
+# HMM-based fetch: one all-proteins-per-species query, then HMM marker
+# assignment (replaces the per-marker name queries when hmm.enabled).
+# ---------------------------------------------------------------------------
+
+#: Filename for the cached per-species all-proteins GenBank file (concat mode).
+ALL_PROTEINS_GB_NAME = "all_proteins.gb"
+#: Safety ceiling on the no-name protein fetch per species.  A species with
+#: more proteins than this gets a truncated tail (those genomes may be partial
+#: and are dropped by min_fraction); generous enough that typical large-DNA
+#: families never reach it.
+_HMM_MAX_PROTEINS_PER_SPECIES = 6000
+
+
+def _build_all_proteins_query(
+    taxid: int, exclude_organisms: list[str] | None, refseq_only: bool = False,
+) -> str:
+    """Entrez protein query for EVERY protein of a species (no name clause)."""
+    base = f"txid{taxid}[Organism:exp]"
+    if refseq_only:
+        base += " AND refseq[filter]"
+    base += " NOT patent[filter]"
+    for term in (exclude_organisms or []):
+        base += f' NOT "{term}"[Organism]'
+    return base
+
+
+def _fetch_all_species_proteins(
+    taxid: int,
+    output_gb: Path,
+    exclude_organisms: list[str] | None,
+    species_name: str = "",
+    max_records: int = _HMM_MAX_PROTEINS_PER_SPECIES,
+) -> list[SeqRecord]:
+    """Fetch every protein record for a species (no marker-name filter).
+
+    RefSeq matches are retrieved in full; non-RefSeq matches top up to
+    ``max_records`` (a safety ceiling on per-species volume).  Writes a GenBank
+    flat file and returns the parsed records — the candidate pool the HMM
+    identifier assigns to markers.
+    """
+    db = "protein"
+    refseq_ids = _search_ids(
+        db, _build_all_proteins_query(taxid, exclude_organisms, refseq_only=True),
+        max_records=max_records,
+    )
+    refseq_set = set(refseq_ids)
+    n_remaining = max(0, max_records - len(refseq_ids))
+    non_refseq_ids: list[str] = []
+    if n_remaining > 0:
+        all_ids = _search_ids(
+            db, _build_all_proteins_query(taxid, exclude_organisms),
+            max_records=max_records,
+        )
+        non_refseq_ids = [i for i in all_ids if i not in refseq_set][:n_remaining]
+    final_ids = refseq_ids + non_refseq_ids
+    label = species_name or f"taxid {taxid}"
+    if len(final_ids) >= max_records:
+        log.warning(
+            "%s: hit the %d-protein per-species ceiling — some genomes may be "
+            "partial (and dropped by min_fraction).", label, max_records,
+        )
+    log.info(
+        "%s: fetched %d protein records (%d RefSeq + %d other) for HMM marker "
+        "assignment", label, len(final_ids), len(refseq_ids), len(non_refseq_ids),
+    )
+    if not final_ids:
+        return []
+    output_gb.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_gb, "w") as out_f:
+        for batch in _batched(final_ids, FETCH_BATCH_SIZE):
+            out_f.write(_fetch_batch(db, batch))
+    return list(SeqIO.parse(output_gb, "genbank"))
+
+
+def _cap_genomes_refseq_first(
+    genomes: dict[str, dict], max_genomes: int,
+) -> dict[str, dict]:
+    """Keep at most ``max_genomes`` genomes, RefSeq first, then others in
+    deterministic accession order.  ``max_genomes <= 0`` means no cap."""
+    if max_genomes <= 0 or len(genomes) <= max_genomes:
+        return genomes
+    from .concat import is_refseq_genome  # local to keep fetch standalone-importable
+    refseq = [g for g in genomes if is_refseq_genome(g)]
+    other = sorted(g for g in genomes if not is_refseq_genome(g))
+    keep_set = set((refseq + other)[:max_genomes])
+    return {g: v for g, v in genomes.items() if g in keep_set}
+
+
+def _fetch_species_genomes_hmm(
+    taxid: int,
+    species_name: str,
+    species_lineage: list[dict],
+    marker_set: list[dict],
+    output_dir: Path,
+    max_per_species: int,
+    min_fraction: float,
+    exclude_organisms: list[str] | None,
+    identifier: "MarkerIdentifier",
+    source_nuc_min_length_frac: float,
+    nuc_length_lookup: Callable[[Iterable[str]], dict[str, int]] | None,
+) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
+    """Concat HMM fetch: one all-proteins fetch + batch hmmscan, then HMM marker
+    assignment via ``identifier`` (Policy-A grouping unchanged).
+    ``max_per_species`` bounds the number of GENOMES kept (RefSeq-first), applied
+    after grouping."""
+    all_proteins = _fetch_all_species_proteins(
+        taxid, output_dir / ALL_PROTEINS_GB_NAME, exclude_organisms, species_name,
+    )
+    n_proteins_fetched = len(all_proteins)
+    if all_proteins and hasattr(identifier, "prescan"):
+        identifier.prescan(all_proteins)  # one hmmscan for the whole species
+    genomes, stats = group_proteins_by_genome(
+        proteins_by_marker={"__all__": all_proteins},
+        marker_set=marker_set,
+        species_lineage=species_lineage,
+        min_fraction=min_fraction,
+        identifier=identifier,
+        source_nuc_min_length_frac=source_nuc_min_length_frac,
+        nuc_length_lookup=nuc_length_lookup,
+    )
+    n_before_cap = len(genomes)
+    genomes = _cap_genomes_refseq_first(genomes, max_per_species)
+    from .concat import is_refseq_genome
+    stats["n_proteins_fetched"] = n_proteins_fetched
+    stats["n_dropped_genome_cap"] = n_before_cap - len(genomes)
+    stats["n_genomes_kept"] = len(genomes)
+    stats["n_refseq_kept"] = sum(1 for g in genomes if is_refseq_genome(g))
+    log.info(
+        "%s: HMM-assigned %d proteins → %d genome(s) kept (%d RefSeq), "
+        "%d dropped (min_fraction), %d dropped (genome cap)",
+        species_name, n_proteins_fetched, len(genomes), stats["n_refseq_kept"],
+        stats.get("n_dropped_min_fraction", 0), stats["n_dropped_genome_cap"],
+    )
+    return genomes, stats
+
+
+def _fetch_species_marker_hmm(
+    taxid: int,
+    species_name: str,
+    marker: dict,
+    output_gb: Path,
+    max_per_species: int,
+    exclude_organisms: list[str] | None,
+    identifier: "MarkerIdentifier",
+    species_lineage: list[dict] | None,
+) -> int:
+    """Single-marker HMM fetch: fetch all species proteins, HMM-assign the one
+    marker per genome, and write the selected proteins to ``output_gb`` — which
+    is re-parsed downstream exactly like the name-based path.  Returns the count
+    written."""
+    all_proteins = _fetch_all_species_proteins(
+        taxid, output_gb.parent / f"{output_gb.stem}_allprot.gb",
+        exclude_organisms, species_name,
+    )
+    if not all_proteins:
+        return 0
+    if hasattr(identifier, "prescan"):
+        identifier.prescan(all_proteins)
+    genomes, _stats = group_proteins_by_genome(
+        proteins_by_marker={"__all__": all_proteins},
+        marker_set=[marker],
+        species_lineage=species_lineage,
+        min_fraction=1.0,  # the single marker must be present, else drop genome
+        identifier=identifier,
+    )
+    genomes = _cap_genomes_refseq_first(genomes, max_per_species)
+    name = marker["name"]
+    selected = [g[name] for g in genomes.values() if name in g]
+    if not selected:
+        log.info("%s: HMM found no %r marker in any genome.", species_name, name)
+        return 0
+    output_gb.parent.mkdir(parents=True, exist_ok=True)
+    for rec in selected:
+        rec.annotations.setdefault("molecule_type", "protein")
+    with open(output_gb, "w") as out_f:
+        SeqIO.write(selected, out_f, "genbank")
+    log.info(
+        "%s: HMM-selected marker %r in %d/%d genome(s)",
+        species_name, name, len(selected), len(genomes),
+    )
+    return len(selected)
 
 
 def load_proteins_from_marker_dir(
