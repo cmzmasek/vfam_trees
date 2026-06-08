@@ -10,6 +10,15 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.2.50] — 2026-06-08
+
+### Changed
+- **Docs: Auspice JSON viewer compatibility.** README and `run --help` now state
+  that the exported `*_auspice.json` is a schema-valid Auspice v2 dataset and name
+  the viewers it loads in — [auspice.us](https://auspice.us), Nextclade, and a
+  local `auspice view` — and note the **Outbreak** colouring/filter contributed by
+  `additional_data_sources` tips. Documentation only; no behaviour change.
+
 ## [1.2.49] — 2026-06-06
 
 ### Fixed

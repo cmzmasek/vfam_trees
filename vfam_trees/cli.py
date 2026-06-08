@@ -143,7 +143,8 @@ def run(
     infer trees (FastTree for tree_500 / IQ-TREE for tree_100) →
     iterative post-tree branch-length outlier removal (re-align + re-tree) →
     annotate internal nodes (LCA taxonomy) → write Newick, PhyloXML,
-    Auspice v2 JSON, PDF/PNG tree images, and per-family report.
+    Auspice v2 JSON (viewable at auspice.us / Nextclade / `auspice view`),
+    PDF/PNG tree images, and per-family report.
 
     MSA and tree-inference steps are content-hash-checkpointed, so reruns
     skip stages whose inputs and config are unchanged. A cross-family
