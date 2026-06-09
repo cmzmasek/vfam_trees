@@ -110,8 +110,23 @@ DNA_FAMILIES: dict[str, dict] = {
     "Papillomaviridae":   {"sequence": {"region": "L1", "type": "protein"}},           # ~8 kb dsDNA circular
 
     # ---- Medium–large dsDNA families: marker-protein approach ----
-    # Adenoviridae (~35 kb) — hexon (major capsid protein)
-    "Adenoviridae":       {"sequence": {"region": "hexon", "type": "protein"}},
+    # Adenoviridae (~35 kb) — hexon (major capsid protein).  HMM-identified by
+    # the adenovirus hexon domain architecture Adeno_hexon (PF01065, N-term)
+    # --> Adeno_hexon_C (PF03678, C-term), OR'd with the single Adeno_hexon
+    # domain as a fallback.  The architecture token is tried first (exercises
+    # N-to-C domain-order matching); the single-domain fallback recovers the
+    # many real hexons it misses — a 2026-06 live run over 761 species found
+    # the strict 2-domain gate is highly specific but under-sensitive, because
+    # Adeno_hexon_C misses its GA cutoff on divergent adenoviruses and NCBI
+    # carries fragmented/partial hexon deposits (the two domains land on
+    # different records).  Tokens are OR'd: a protein satisfying EITHER wins.
+    "Adenoviridae": {
+        "sequence": {
+            "region": "hexon", "type": "protein",
+            "hmms": ["Adeno_hexon--Adeno_hexon_C", "Adeno_hexon"],
+        },
+        "hmm": {"enabled": True, "database": "Adenoviridae"},
+    },
     # Herpesviruses (~130–240 kb) — DNA polymerase (UL30/UL30-like)
     "Orthoherpesviridae": {"sequence": {"region": "DNA polymerase", "type": "protein"}},
     "Herpesviridae":      {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # legacy ICTV name
@@ -182,41 +197,49 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
                     "aliases": ["DNA-directed DNA polymerase", "DNA pol"],
                     "aliases_Entomopoxvirinae": ["DNA polymerase B"],
                     "locus_tag_hint": r"E9L|polB",
+                    "hmms": ["DNA_pol_B"],                  # PF00136
                 },
                 {
                     "name": "DNA-directed RNA polymerase 147 kDa subunit",
                     "aliases": ["RPO147", "RNA polymerase subunit RPO147"],
                     "locus_tag_hint": r"A24R|RPO147|rpo147",
+                    "hmms": ["RNA_pol_Rpb1_2"],             # PF00623
                 },
                 {
                     "name": "DNA-directed RNA polymerase 132 kDa subunit",
                     "aliases": ["RPO132", "RNA polymerase subunit RPO132"],
                     "locus_tag_hint": r"J6R|RPO132|rpo132",
+                    "hmms": ["RNA_pol_Rpb2_6"],             # PF00562
                 },
                 {
                     "name": "mRNA capping enzyme large subunit",
                     "aliases": ["capping enzyme large subunit"],
                     "locus_tag_hint": r"D1R",
+                    "hmms": ["mRNA_cap_enzyme"],            # PF01331 (D1 catalytic)
                 },
                 {
                     "name": "DNA helicase",
                     "aliases": ["NPH-II", "transcript release factor"],
                     "locus_tag_hint": r"A18R|NPH2",
+                    "hmms": ["NPH-II"],                     # PF12011
                 },
                 {
                     "name": "poly(A) polymerase catalytic subunit",
                     "aliases": ["poly(A) polymerase large subunit"],
                     "locus_tag_hint": r"E1L|VP55",
+                    "hmms": ["Pox_polyA_pol"],              # PF03296
                 },
                 {
                     "name": "late transcription factor VLTF-3",
                     "aliases": ["VLTF3", "late transcription factor 3"],
                     "locus_tag_hint": r"A1L|VLTF",
+                    "hmms": ["Pox_VLTF3"],                  # PF04947
                 },
                 {
                     "name": "uracil-DNA glycosylase",
                     "aliases": ["UNG"],
                     "locus_tag_hint": r"D4R|UNG",
+                    "hmms": ["UDG"],                        # PF03167
                 },
                 # ssDNA-binding protein (I3L) was previously included but a
                 # 2026-05 cache audit (128 species) showed 1 % coverage —
@@ -224,6 +247,7 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
                 # outside Chordopoxvirinae reference annotations.
             ],
         },
+        "hmm": {"enabled": True, "database": "Poxviridae"},
     },
 
     # ---- Herpesviridae and other herpesvirus families (7 markers) -------
@@ -783,6 +807,34 @@ DEFAULT_FAMILY_CONFIG: dict = {
     #                  PhyloXML 'vipr:outbreak' property and an Auspice trait
     #                  (e.g. "Bdbv-2026") for colouring / filtering.
     "additional_data_sources": [],
+    # HMM-based marker-protein identification (HMMER hmmscan + curated
+    # family-specific Pfam-A profiles).  When enabled, markers are identified
+    # by profile homology instead of GenBank protein names — far more robust
+    # for large DNA viruses whose annotation is inconsistent.  Applies to both
+    # the single-marker (DNA_FAMILIES) and concatenated-marker
+    # (CONCATENATION_FAMILIES) paths via the MarkerIdentifier swap
+    # (markers.make_identifier); a marker is HMM-gated when its spec carries an
+    # 'hmms' token list (single "Name" or multidomain "A--B--C" in N-to-C order).
+    #   enabled:        master switch (default false → name + alias matching).
+    #   database:       a bundled per-family set NAME (e.g. "Poxviridae" →
+    #                   vfam_trees/data/hmms/Poxviridae/), a directory of .hmm
+    #                   files, or a single .hmm file path.  null when disabled.
+    #   default_evalue: domain E-value gate for profiles lacking a curated GA.
+    #   use_ga_when_available: prefer each profile's curated Pfam GA bit-score.
+    #   relative_length_cutoff: minimum fraction of the HMM model a hit must
+    #                   cover (in HMM-model coordinates), in [0, 1].
+    #   multidomain_overlap_tolerance: residues two adjacent domains of a
+    #                   multidomain "A--B" token may overlap (cleavage-site slack).
+    #   threads:        hmmscan --cpu; null → use the run's thread count.
+    "hmm": {
+        "enabled": False,
+        "database": None,
+        "default_evalue": 1.0e-5,
+        "use_ga_when_available": True,
+        "relative_length_cutoff": 0.5,
+        "multidomain_overlap_tolerance": 30,
+        "threads": None,
+    },
 }
 
 
@@ -1321,6 +1373,111 @@ def _validate_additional_data_sources(cfg: dict, family: str) -> None:
     cfg["additional_data_sources"] = cleaned
 
 
+def _validate_hmm_block(cfg: dict, family: str) -> None:
+    """Validate the optional ``hmm`` block and any marker ``hmms`` tokens.
+
+    Fills defaults so the pipeline reads a fully-typed block.  No network or
+    filesystem I/O — the database is resolved (and hmmscan invoked) only at
+    runtime.  When ``hmm.enabled`` is true a ``database`` must be set, and every
+    ``hmms`` token (on concatenation markers or the single-marker ``sequence``
+    block) must be well-formed (``parse_hmm_token`` rejects empty components).
+    """
+    from .hmm import parse_hmm_token  # local import: cheap, avoids any cycle
+
+    raw = cfg.get("hmm")
+    if raw is None:
+        raw = dict(DEFAULT_FAMILY_CONFIG["hmm"])
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{family}: hmm must be a mapping (got {type(raw).__name__})."
+        )
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"{family}: hmm.enabled must be a boolean.")
+
+    database = raw.get("database")
+    if database is not None and (
+        not isinstance(database, str) or not database.strip()
+    ):
+        raise ValueError(
+            f"{family}: hmm.database must be null or a non-empty string "
+            "(a bundled set name, a directory of .hmm files, or a .hmm path)."
+        )
+
+    ev = raw.get("default_evalue", 1.0e-5)
+    if isinstance(ev, bool) or not isinstance(ev, (int, float)) or ev <= 0:
+        raise ValueError(f"{family}: hmm.default_evalue must be a positive number.")
+
+    rel = raw.get("relative_length_cutoff", 0.5)
+    if isinstance(rel, bool) or not isinstance(rel, (int, float)) or not (
+        0.0 <= rel <= 1.0
+    ):
+        raise ValueError(
+            f"{family}: hmm.relative_length_cutoff must be a number in [0, 1]."
+        )
+
+    use_ga = raw.get("use_ga_when_available", True)
+    if not isinstance(use_ga, bool):
+        raise ValueError(f"{family}: hmm.use_ga_when_available must be a boolean.")
+
+    tol = raw.get("multidomain_overlap_tolerance", 30)
+    if isinstance(tol, bool) or not isinstance(tol, int) or tol < 0:
+        raise ValueError(
+            f"{family}: hmm.multidomain_overlap_tolerance must be a "
+            "non-negative integer."
+        )
+
+    threads = raw.get("threads")
+    if threads is not None and (
+        isinstance(threads, bool) or not isinstance(threads, int) or threads <= 0
+    ):
+        raise ValueError(
+            f"{family}: hmm.threads must be null or a positive integer."
+        )
+
+    if enabled and not database:
+        raise ValueError(
+            f"{family}: hmm.enabled is true but hmm.database is not set. Point "
+            "it at a bundled family set name, a directory of .hmm files, or a "
+            ".hmm file."
+        )
+
+    def _check_tokens(tokens, where: str) -> None:
+        # Tokens are validated even when hmm is disabled, so a typo surfaces
+        # regardless of the master switch.
+        if tokens is None:
+            return
+        if not isinstance(tokens, list):
+            raise ValueError(f"{family}: {where} must be a list of token strings.")
+        for tok in tokens:
+            if not isinstance(tok, str):
+                raise ValueError(
+                    f"{family}: {where} entries must be strings "
+                    f"(got {type(tok).__name__})."
+                )
+            try:
+                parse_hmm_token(tok)
+            except ValueError as exc:
+                raise ValueError(f"{family}: {where} token {tok!r}: {exc}") from exc
+
+    _check_tokens((cfg.get("sequence") or {}).get("hmms"), "sequence.hmms")
+    proteins = ((cfg.get("concatenation") or {}).get("proteins")) or []
+    for i, spec in enumerate(proteins):
+        if isinstance(spec, dict):
+            _check_tokens(spec.get("hmms"), f"concatenation.proteins[{i}].hmms")
+
+    cfg["hmm"] = {
+        "enabled": enabled,
+        "database": database.strip() if isinstance(database, str) else database,
+        "default_evalue": float(ev),
+        "use_ga_when_available": use_ga,
+        "relative_length_cutoff": float(rel),
+        "multidomain_overlap_tolerance": int(tol),
+        "threads": threads,
+    }
+
+
 def _warn_unknown_keys(cfg: dict, path: Path) -> None:
     """Warn about top-level keys in a user config that are not recognised."""
     unknown = [
@@ -1353,6 +1510,7 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
         _validate_concatenation_block(cfg, family)
         _validate_manual_block(cfg, family)
         _validate_additional_data_sources(cfg, family)
+        _validate_hmm_block(cfg, family)
         return cfg, False
     else:
         cfg = _generate_default_family_config(family, global_cfg)
@@ -1360,6 +1518,7 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
         _validate_concatenation_block(cfg, family)
         _validate_manual_block(cfg, family)
         _validate_additional_data_sources(cfg, family)
+        _validate_hmm_block(cfg, family)
         _write_family_config(cfg, config_path)
         log.warning(
             "No config found for %s — auto-generated default at %s. "

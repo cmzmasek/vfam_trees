@@ -14,6 +14,10 @@ setup(
     name="vfam_trees",
     version=VERSION,
     packages=find_packages(),
+    # Bundled curated Pfam-A profiles for HMM marker identification, shipped as
+    # per-family directories (vfam_trees/data/hmms/<Family>/*.hmm).  CC0-licensed.
+    include_package_data=True,
+    package_data={"vfam_trees": ["data/hmms/*/*.hmm"]},
     install_requires=[
         "biopython>=1.81",
         "click>=8.1",

@@ -407,6 +407,28 @@ def run_family(
     max_per_species = family_cfg["download"]["max_per_species"]
     clustering_tool = family_cfg["clustering"].get("tool", "mmseqs2")
     quality_cfg = family_cfg["quality"]
+
+    # HMM marker identification (single-marker path).  When enabled, the marker
+    # is identified by profile homology instead of the name query: all proteins
+    # of each species are fetched and the marker assigned by HMM, bypassing the
+    # global sequence cache (whose key does not encode the HMM database).
+    hmm_cfg = family_cfg.get("hmm") or {}
+    hmm_active = bool(hmm_cfg.get("enabled"))
+    hmm_identifier = None
+    hmm_marker = None
+    if hmm_active:
+        from .markers import make_identifier
+        hmm_identifier = make_identifier(family_cfg)
+        hmm_marker = {
+            "name": region,
+            "hmms": (family_cfg.get("sequence") or {}).get("hmms") or [],
+            "aliases": [region],
+        }
+        log.info(
+            "HMM marker identification enabled (database=%r, marker=%r, tokens=%s) "
+            "— global sequence cache bypassed",
+            hmm_cfg.get("database"), region, hmm_marker["hmms"],
+        )
     manual_cfg = family_cfg.get("manual") or {}
     manual_include_ids: set[str] = set(manual_cfg.get("include") or [])
     manual_exclude_ids: set[str] = set(manual_cfg.get("exclude") or [])
@@ -545,8 +567,8 @@ def run_family(
         if gb_file.exists():
             log.info("[%d/%d] Local cache hit: %s", i, len(species_list), sp_name)
 
-        # Tier 2: global shared cache
-        elif seq_cache is not None:
+        # Tier 2: global shared cache (skipped under HMM — see hmm_active note)
+        elif seq_cache is not None and not hmm_active:
             # Fast path: skip lock acquisition entirely for known-empty species.
             if seq_cache.get_empty(sp_taxid, db, region, segment, max_per_species):
                 log.info("[%d/%d] Cached empty result: %s — skipping.", i, len(species_list), sp_name)
@@ -586,7 +608,7 @@ def run_family(
                         continue
                     seq_cache.store(sp_taxid, db, region, segment, max_per_species, gb_file, n, family=family)
 
-        # Tier 3: no global cache — plain download
+        # Tier 3: no global cache — plain download (also the HMM path)
         else:
             log.info("[%d/%d] Downloading: %s", i, len(species_list), sp_name)
             n = fetch_species_sequences(
@@ -598,6 +620,9 @@ def run_family(
                 max_per_species=max_per_species,
                 exclude_organisms=quality_cfg.get("exclude_organisms"),
                 segment=segment,
+                hmm_identifier=hmm_identifier,
+                hmm_marker=hmm_marker,
+                species_lineage=sp.get("lineage"),
             )
             if n == 0:
                 log.info("[%d/%d] No sequences found for %s — skipping.",

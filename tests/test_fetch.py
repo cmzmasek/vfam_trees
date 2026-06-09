@@ -1010,3 +1010,155 @@ class TestFetchAccessionsdirectly:
         assert recs == []
         assert called["n"] == 0
 
+
+# ---------------------------------------------------------------------------
+# HMM fetch mode (all-proteins-per-species → HMM marker assignment)
+# ---------------------------------------------------------------------------
+
+def _hmm_hit(target, *, ali_from=1, ali_to=100):
+    return {"target": target, "passing": True, "dom_evalue": 1e-30,
+            "ali_from": ali_from, "ali_to": ali_to}
+
+
+def _hprot(acc, source_acc, length, hits, description="protein"):
+    """Protein record with a coded_by source genome AND pre-computed HMM hits
+    (so the real HMMIdentifier runs without hmmscan)."""
+    rec = _protein(acc, description=description, length=length, source_acc=source_acc)
+    rec.annotations["hmm_hits"] = hits
+    return rec
+
+
+class TestNoNameQuery:
+    def test_all_proteins_query_has_no_name_clause(self):
+        from vfam_trees.fetch import _build_all_proteins_query
+        q = _build_all_proteins_query(10244, None)
+        assert q.startswith("txid10244[Organism:exp]")
+        assert "[Protein Name]" not in q and "[Title]" not in q
+        assert "NOT patent[filter]" in q
+
+    def test_refseq_and_exclude(self):
+        from vfam_trees.fetch import _build_all_proteins_query
+        q = _build_all_proteins_query(1, ["Homo sapiens"], refseq_only=True)
+        assert "refseq[filter]" in q
+        assert 'NOT "Homo sapiens"[Organism]' in q
+
+
+class TestCapGenomes:
+    def test_caps_refseq_first(self):
+        from vfam_trees.fetch import _cap_genomes_refseq_first
+        g = {"NC_1.1": {}, "AY_2.1": {}, "AY_3.1": {}, "AY_1.1": {}}
+        kept = _cap_genomes_refseq_first(g, 2)
+        assert "NC_1.1" in kept          # RefSeq always kept
+        assert len(kept) == 2
+
+    def test_no_cap_when_zero_or_under(self):
+        from vfam_trees.fetch import _cap_genomes_refseq_first
+        g = {"NC_1.1": {}, "AY_2.1": {}}
+        assert len(_cap_genomes_refseq_first(g, 0)) == 2
+        assert len(_cap_genomes_refseq_first(g, 5)) == 2
+
+
+class TestHmmFetch:
+    def test_fetch_species_genomes_hmm(self, monkeypatch, tmp_path):
+        from vfam_trees import fetch as fetch_mod
+        from vfam_trees.markers import HMMIdentifier
+        recs = [
+            _hprot("P1", "NC_001.1", 900, [_hmm_hit("Adeno_hexon")], "hexon"),
+            _hprot("P2", "NC_001.1", 400, [_hmm_hit("Adeno_penton")], "penton"),
+            _hprot("P3", "AB_002.1", 880, [_hmm_hit("Adeno_hexon")], "hexon"),
+        ]
+        monkeypatch.setattr(fetch_mod, "_fetch_all_species_proteins",
+                            lambda *a, **k: recs)
+        ident = HMMIdentifier({"hmm": {"enabled": True}})
+        marker_set = [{"name": "hexon", "hmms": ["Adeno_hexon"]},
+                      {"name": "penton", "hmms": ["Adeno_penton"]}]
+        genomes, stats = fetch_mod._fetch_species_genomes_hmm(
+            taxid=1, species_name="sp", species_lineage=None,
+            marker_set=marker_set, output_dir=tmp_path, max_per_species=200,
+            min_fraction=0.5, exclude_organisms=None, identifier=ident,
+            source_nuc_min_length_frac=0.0, nuc_length_lookup=None,
+        )
+        assert set(genomes) == {"NC_001.1", "AB_002.1"}
+        assert genomes["NC_001.1"]["hexon"].id == "P1"
+        assert genomes["NC_001.1"]["penton"].id == "P2"
+        assert "penton" not in genomes["AB_002.1"]
+        assert stats["n_proteins_fetched"] == 3
+        assert stats["n_genomes_kept"] == 2
+
+    def test_genome_cap_applied(self, monkeypatch, tmp_path):
+        from vfam_trees import fetch as fetch_mod
+        from vfam_trees.markers import HMMIdentifier
+        recs = [
+            _hprot("P1", "NC_001.1", 900, [_hmm_hit("Adeno_hexon")], "hexon"),
+            _hprot("P3", "AY_002.1", 880, [_hmm_hit("Adeno_hexon")], "hexon"),
+            _hprot("P4", "AY_003.1", 870, [_hmm_hit("Adeno_hexon")], "hexon"),
+        ]
+        monkeypatch.setattr(fetch_mod, "_fetch_all_species_proteins",
+                            lambda *a, **k: recs)
+        ident = HMMIdentifier({"hmm": {"enabled": True}})
+        genomes, stats = fetch_mod._fetch_species_genomes_hmm(
+            taxid=1, species_name="sp", species_lineage=None,
+            marker_set=[{"name": "hexon", "hmms": ["Adeno_hexon"]}],
+            output_dir=tmp_path, max_per_species=2, min_fraction=1.0,
+            exclude_organisms=None, identifier=ident,
+            source_nuc_min_length_frac=0.0, nuc_length_lookup=None,
+        )
+        assert len(genomes) == 2               # capped from 3
+        assert "NC_001.1" in genomes           # RefSeq survives the cap
+        assert stats["n_dropped_genome_cap"] == 1
+
+    def test_fetch_species_marker_hmm_writes_selected(self, monkeypatch, tmp_path):
+        from Bio import SeqIO
+        from vfam_trees import fetch as fetch_mod
+        from vfam_trees.markers import HMMIdentifier
+        recs = [
+            _hprot("P1", "NC_001.1", 900, [_hmm_hit("Adeno_hexon")], "hexon"),
+            _hprot("P2", "NC_001.1", 400, [_hmm_hit("Adeno_penton")], "penton"),
+            _hprot("P3", "AB_002.1", 880, [_hmm_hit("Adeno_hexon")], "hexon"),
+        ]
+        monkeypatch.setattr(fetch_mod, "_fetch_all_species_proteins",
+                            lambda *a, **k: recs)
+        ident = HMMIdentifier({"hmm": {"enabled": True}})
+        out = tmp_path / "out.gb"
+        n = fetch_mod._fetch_species_marker_hmm(
+            taxid=1, species_name="sp",
+            marker={"name": "hexon", "hmms": ["Adeno_hexon"]},
+            output_gb=out, max_per_species=200, exclude_organisms=None,
+            identifier=ident, species_lineage=None,
+        )
+        assert n == 2  # hexon selected in both genomes
+        parsed = list(SeqIO.parse(out, "genbank"))
+        assert {r.id for r in parsed} == {"P1", "P3"}
+
+    def test_fetch_species_sequences_routes_to_hmm(self, monkeypatch, tmp_path):
+        from vfam_trees import fetch as fetch_mod
+
+        captured = {}
+
+        def fake_marker_hmm(**kwargs):
+            captured.update(kwargs)
+            return 7
+
+        monkeypatch.setattr(fetch_mod, "_fetch_species_marker_hmm", fake_marker_hmm)
+
+        class _StubHmm:
+            is_hmm = True
+
+        n = fetch_mod.fetch_species_sequences(
+            taxid=1, species_name="s", seq_type="protein", region="hexon",
+            output_gb=tmp_path / "x.gb", hmm_identifier=_StubHmm(),
+            hmm_marker={"name": "hexon", "hmms": ["Adeno_hexon--Adeno_hexon_C"]},
+        )
+        assert n == 7
+        assert captured["marker"]["name"] == "hexon"
+
+    def test_name_mode_unaffected_when_no_hmm_identifier(self, monkeypatch, tmp_path):
+        # Without an HMM identifier the classic name-query path is used.
+        from vfam_trees import fetch as fetch_mod
+        monkeypatch.setattr(fetch_mod, "_search_ids", lambda *a, **k: [])
+        n = fetch_mod.fetch_species_sequences(
+            taxid=1, species_name="s", seq_type="protein", region="hexon",
+            output_gb=tmp_path / "x.gb",
+        )
+        assert n == 0
+

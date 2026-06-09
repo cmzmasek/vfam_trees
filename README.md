@@ -67,6 +67,7 @@ Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 - **Interactive trees (Auspice / Nextstrain / Nextclade)** — every family also emits a schema-valid Auspice v2 JSON per tree (`<prefix>_tree_{500,100}_auspice.json`) loadable in the Nextstrain viewers: [auspice.us](https://auspice.us) (drag-and-drop), Nextclade, or a local `auspice view`. These are *divergence* trees (branch lengths are substitutions per site, not time-resolved); the "color by genus" view reuses the same palette as the PDF/PhyloXML output, and genus / subfamily / species / host / location / year (plus an **Outbreak** trait for `additional_data_sources` tips) are available as colorings and filters. Toggle with the `output.auspice_json` per-family flag (default on).
 - **Custom output naming** — set `manual.name` to rename a family's outputs (e.g. run *Filoviridae* restricted to the *Orthoebolavirus* genus and label everything `Orthoebolavirus`); the directory and all files take the sanitized display name while NCBI/taxonomy/cache lookups keep using the biological family. See [Output prefix and directory naming](#output-prefix-and-directory-naming).
 - **Additional data sources (outbreak sequences)** — supplement a family tree with forced-include sequences from [Pathoplexus](https://pathoplexus.org) via the `additional_data_sources` config block. These bypass QC and clustering (like `manual.include`) but carry real host/location/date/taxon metadata, so they are coloured by genus. Useful for grafting the latest outbreak genomes onto an existing tree. See [Additional data sources (Pathoplexus)](#additional-data-sources-pathoplexus).
+- **HMM-based marker identification** — for large DNA virus families with inconsistent annotation, identify marker proteins by **HMMER profile homology** instead of GenBank protein names, via the per-family `hmm:` config block. Each marker carries an `hmms:` token — a single curated Pfam-A profile (`"DNA_pol_B"`) or a multidomain architecture (`"Adeno_hexon--Adeno_hexon_C"`, HMMs in N-to-C order). Hits are gated on the curated Pfam GA bit-score (or an E-value) plus HMM-model coverage; the all-proteins-per-species pool is grouped by source genome and assigned to markers by HMM. Works on both the single-marker and concatenated-marker paths. Bundled CC0 Pfam-A sets ship for **Poxviridae** (8 markers) and **Adenoviridae** (hexon); requires HMMER on `$PATH`. See [HMM-based marker identification](#hmm-based-marker-identification).
 - **Pre-configured family presets** — 28 segmented RNA virus families (segment keywords) and 26 DNA virus families (sequence type, region/marker, and concat marker sets for the 16 families that use concatenation) ship with curated defaults.
 - **Checkpointing** — MSA and tree steps store a content-hashed sidecar of inputs + tool / model / options, so any change auto-invalidates the cache. Each iterative outlier-removal pass gets its own hash; partially-completed runs resume in the right place.
 - **Family-annotation TSV** (optional) — joins extra per-family columns (e.g. `baltimore_class`) into `summary.tsv` and `status.tsv`. Missing file or family is silent.
@@ -95,11 +96,13 @@ matplotlib >= 3.9    # PDF report and tree images; requires NumPy 2.x compatible
 | `FastTree` | Rapid ML tree inference (tree_500) |
 | `iqtree2` | ML tree inference (tree_100) |
 | `mmseqs` | Sequence clustering |
+| `hmmscan`, `hmmpress` (HMMER) | *Optional* — HMM-based marker identification (only when `hmm.enabled`) |
 
-All tools must be available on `$PATH`. Installation via conda is recommended:
+All required tools must be available on `$PATH`. Installation via conda is recommended:
 
 ```bash
 conda install -c bioconda mafft fasttree iqtree mmseqs2 trimal
+conda install -c bioconda hmmer        # only needed for HMM-based marker identification
 ```
 
 ## Installation
@@ -489,6 +492,40 @@ Families using **multi-marker protein concatenation** (`region: concatenated`) a
 - **Mimiviridae, Marseilleviridae, Pithoviridae** — split off from the NCLDV fallback to 6-marker presets (per-family drop list).
 
 The 8-marker NCLDV-hallmark fallback now applies only to Pandoraviridae and Medusaviridae (no cache audit data yet). If a stale auto-generated config file exists with incorrect settings for any of these families, the program logs a warning and suggests deleting the file to regenerate it.
+
+#### HMM-based marker identification
+
+For large DNA virus families whose GenBank annotation is inconsistent (synonyms, gene-symbol vs descriptive names, mis-/un-annotated or divergent orthologs), marker proteins can be identified by **HMMER profile homology** instead of protein-name queries. Enable it per family with the `hmm:` block and give each marker an `hmms:` token list:
+
+```yaml
+hmm:
+  enabled: true
+  database: Poxviridae          # bundled set name, a dir of .hmm files, or a single .hmm path
+  default_evalue: 1.0e-5        # used only for profiles lacking a curated Pfam GA
+  use_ga_when_available: true   # prefer each profile's curated GA bit-score
+  relative_length_cutoff: 0.5   # min fraction of the HMM model a hit must cover
+  multidomain_overlap_tolerance: 30   # residue slack between adjacent domains of an "A--B" token
+  threads: null                 # hmmscan --cpu; null → the run's thread count
+
+# Single-marker family (DNA_FAMILIES) — token on the sequence block.
+# OR'd tokens: try the 2-domain architecture first, fall back to the single domain.
+sequence:
+  region: hexon
+  type: protein
+  hmms: ["Adeno_hexon--Adeno_hexon_C", "Adeno_hexon"]
+
+# Concatenation family — token per marker:
+concatenation:
+  proteins:
+    - {name: "DNA polymerase", hmms: ["DNA_pol_B"], locus_tag_hint: "E9L|polB"}
+    # ...
+```
+
+**Tokens.** A token is either a single profile `NAME` (`"DNA_pol_B"`) or a **multidomain architecture** `"A--B--C"` whose HMMs must hit in N-to-C order along the protein (non-overlapping, within `multidomain_overlap_tolerance`). Multiple tokens on one marker are **alternatives** (OR'd) — useful when a protein has divergent architectures. A marker that declares `hmms` is HMM-authoritative (no name fallback); markers without `hmms` fall back to name+alias matching, so mixed sets work.
+
+**How it works.** When `hmm.enabled`, the per-marker name queries are replaced by an all-proteins-per-species fetch. Each protein is scanned once (`hmmscan`, batched and sequence-deduplicated); a hit passes when it clears the curated Pfam **GA** bit-score (or `default_evalue`) **and** covers ≥ `relative_length_cutoff` of the HMM model. Proteins are grouped by source genome and the longest token-satisfying protein is chosen per marker; `max_per_species` then bounds the number of genomes kept (RefSeq-first). Works on both the single-marker and concatenated-marker paths; the global sequence cache is bypassed in HMM mode.
+
+**Bundled profiles.** Curated CC0 **Pfam-A** sets ship under `vfam_trees/data/hmms/<Family>/` and are selected by bare family name (`database: Poxviridae`). **Poxviridae** (8 single-domain markers) and **Adenoviridae** (hexon, as the 2-domain `Adeno_hexon--Adeno_hexon_C` architecture OR'd with the single `Adeno_hexon` domain) are bundled and enabled in their presets. (A live 761-species Adenoviridae run showed the strict 2-domain gate is highly specific but under-sensitive — `Adeno_hexon_C` misses its GA cutoff on divergent hexons and partial deposits split the domains across records — hence the single-domain fallback.) Point `database` at your own directory of `.hmm` files (or a single `.hmm`) for other families; the set is auto-combined and `hmmpress`-ed on first use. Rebuild the bundled sets with `scripts/build_bundled_hmms.sh`. Requires **HMMER** (`hmmscan`/`hmmpress`) on `$PATH`.
 
 ## Usage
 

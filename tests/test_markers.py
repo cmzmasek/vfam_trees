@@ -227,3 +227,112 @@ class TestTiebreakers:
         marker = {**_POLB, "locus_tag_hint": r"E9L"}
         out = self.id.identify([rec], [marker])
         assert out["DNA polymerase"].id == "YP_1"
+
+
+# ---------------------------------------------------------------------------
+# HMMIdentifier — driven by PRE-ANNOTATED hits (no live hmmscan needed)
+# ---------------------------------------------------------------------------
+
+from vfam_trees.markers import HMMIdentifier, make_identifier
+
+
+def _hit(target: str, *, passing: bool = True, dom_evalue: float = 1e-30,
+         ali_from: int = 1, ali_to: int = 100) -> dict:
+    return {
+        "target": target, "passing": passing, "dom_evalue": dom_evalue,
+        "ali_from": ali_from, "ali_to": ali_to,
+    }
+
+
+def _hrec(acc: str, length: int, hits: list[dict],
+          description: str = "") -> SeqRecord:
+    """Protein-like record carrying pre-computed HMM hits (skips hmmscan)."""
+    rec = SeqRecord(Seq("M" * length), id=acc, description=description or acc)
+    rec.annotations = {"hmm_hits": hits}
+    rec.features = []
+    return rec
+
+
+class TestMakeIdentifier:
+    def test_disabled_returns_namematch(self):
+        assert type(make_identifier({"hmm": {"enabled": False}})).__name__ == \
+            "NameMatchIdentifier"
+
+    def test_missing_block_returns_namematch(self):
+        assert type(make_identifier({})).__name__ == "NameMatchIdentifier"
+
+    def test_enabled_returns_hmm(self):
+        assert type(make_identifier({"hmm": {"enabled": True}})).__name__ == \
+            "HMMIdentifier"
+
+
+class TestHMMIdentifier:
+    ident = HMMIdentifier({"hmm": {"enabled": True}})
+
+    def test_single_token_picks_satisfying(self):
+        hexon = _hrec("A1", 900, [_hit("Adeno_hexon")])
+        penton = _hrec("A2", 500, [_hit("Adeno_penton")])
+        out = self.ident.identify(
+            [hexon, penton],
+            [{"name": "hexon", "hmms": ["Adeno_hexon"]},
+             {"name": "penton", "hmms": ["Adeno_penton"]}],
+        )
+        assert out["hexon"].id == "A1"
+        assert out["penton"].id == "A2"
+
+    def test_longest_satisfying_wins(self):
+        short = _hrec("S", 300, [_hit("Adeno_hexon")])
+        long_ = _hrec("L", 950, [_hit("Adeno_hexon")])
+        out = self.ident.identify(
+            [short, long_], [{"name": "hexon", "hmms": ["Adeno_hexon"]}],
+        )
+        assert out["hexon"].id == "L"
+
+    def test_non_passing_hit_ignored(self):
+        rec = _hrec("A1", 900, [_hit("Adeno_hexon", passing=False)])
+        out = self.ident.identify(
+            [rec], [{"name": "hexon", "hmms": ["Adeno_hexon"]}],
+        )
+        assert "hexon" not in out  # HMM-authoritative: no passing hit → dropped
+
+    def test_hmm_authoritative_no_name_fallback(self):
+        # Record name says "hexon" but carries no passing HMM hit → still dropped
+        # (a spec with hmms is HMM-authoritative; aliases are NOT consulted).
+        rec = _hrec("A1", 900, [], description="adenovirus hexon protein")
+        out = self.ident.identify(
+            [rec],
+            [{"name": "hexon", "aliases": ["hexon"], "hmms": ["Adeno_hexon"]}],
+        )
+        assert "hexon" not in out
+
+    def test_multidomain_token_requires_order(self):
+        # A--B satisfied only when A is N-terminal to B on the protein.
+        good = _hrec("G", 800, [
+            _hit("DomA", ali_from=10, ali_to=200),
+            _hit("DomB", ali_from=300, ali_to=600),
+        ])
+        bad = _hrec("Bd", 800, [
+            _hit("DomB", ali_from=10, ali_to=200),
+            _hit("DomA", ali_from=300, ali_to=600),
+        ])
+        spec = [{"name": "fusion", "hmms": ["DomA--DomB"]}]
+        assert self.ident.identify([good], spec)["fusion"].id == "G"
+        assert "fusion" not in self.ident.identify([bad], spec)
+
+    def test_or_tokens_alternative_architectures(self):
+        # Two tokens in one spec are OR'd: either architecture satisfies.
+        alpha = _hrec("alpha", 600, [_hit("CoV_S1"), _hit("CoV_S2",
+                                                          ali_from=300, ali_to=590)])
+        spec = [{"name": "spike", "hmms": ["CoV_S1--CoV_S2", "bCoV_RBD--CoV_S2"]}]
+        out = self.ident.identify([alpha], spec)
+        assert out["spike"].id == "alpha"
+
+    def test_spec_without_hmms_uses_name_fallback(self):
+        rec = _hrec("B1", 300, [], description="DNA polymerase catalytic subunit")
+        out = self.ident.identify(
+            [rec], [{"name": "pol", "aliases": ["DNA polymerase"]}],
+        )
+        assert out["pol"].id == "B1"
+
+    def test_empty_proteins_returns_empty(self):
+        assert self.ident.identify([], [{"name": "x", "hmms": ["X"]}]) == {}

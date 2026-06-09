@@ -397,13 +397,15 @@ New page: per-marker coverage bar chart (genomes-with-marker, one bar per marker
 - The `region: concatenated` value triggers the new path; no default behavior changes for families not in `CONCATENATION_FAMILIES`.
 - For families newly added to `CONCATENATION_FAMILIES`, users with a pre-existing custom family yaml (which already specifies `region`) keep their setting — auto-defaults only apply to auto-generated configs (per the existing project policy: no migration of existing yamls).
 
-## 8. v2 plan (HMMER swap-in, separate effort)
+## 8. v2 plan (HMMER swap-in) — SHIPPED in v1.3.0
 
-- Add `HmmerIdentifier` implementing the `MarkerIdentifier` protocol.
-- Add HMMER as a runtime dependency (`hmmsearch`).
-- Bundle or fetch HMM profiles per family (proposed: a per-family asset directory `vfam_trees/markers/<family>/<marker>.hmm`, or pull from a curated repository).
-- Fetcher path changes: instead of per-marker name queries, fetch the full proteome of each genome (one query per source nuc accession), run `hmmsearch` with each marker's HMM, take the best hit.
-- Keep `NameMatchIdentifier` as a fallback path or for families without curated HMMs.
+Implemented; differs from the sketch below in a few specifics (noted):
+
+- `markers.HMMIdentifier` implements the `MarkerIdentifier` protocol; `markers.make_identifier(cfg)` selects it from `hmm.enabled` (else `NameMatchIdentifier`). Both the single-marker (`pipeline.py`) and concat (`pipeline_concat.py`) paths route through it.
+- HMMER (`hmmscan`/`hmmpress`) is an **optional** runtime dependency — required only when `hmm.enabled`. The vendored, pure-stdlib `vfam_trees/hmm/` package (from the sister project *repseq*) wraps it: batched `hmmscan --domtblout`, auto-`hmmpress`, GA-cutoff parsing, a directory-of-`.hmm` combiner, and the `A--B--C` multidomain token grammar.
+- Profiles are bundled per family under `vfam_trees/data/hmms/<Family>/*.hmm` (curated CC0 Pfam-A; **Poxviridae** + **Adenoviridae** ship), selected by bare family name in `hmm.database`; `scripts/build_bundled_hmms.sh` is the reproducible build recipe. (The sketch proposed `vfam_trees/markers/<family>/<marker>.hmm` — the actual layout is `data/hmms/<Family>/` and the file is named by the Pfam profile NAME.)
+- Fetcher: instead of per-marker name queries, **one all-proteins-per-species** fetch (not one query per genome) is grouped by source nuc accession (Policy A, unchanged) and assigned to markers by HMM; `max_per_species` bounds the genome count (RefSeq-first). The `hmms:` token (single or multidomain) on each marker spec drives gating (curated GA / E-value + HMM-model coverage).
+- `NameMatchIdentifier` remains the default and the per-marker fallback (specs without `hmms`), so mixed and HMM-less families are unaffected. The global sequence cache is bypassed under HMM (its key does not encode the HMM database).
 
 ## 9. Implementation phases
 

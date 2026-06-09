@@ -220,6 +220,14 @@ def run_family_concat(
     # -------------------------------------------------------------------------
     # Per-species fetch
     # -------------------------------------------------------------------------
+    from .markers import make_identifier
+    identifier = make_identifier(family_cfg)
+    if getattr(identifier, "is_hmm", False):
+        log.info(
+            "HMM marker identification enabled (database=%r) — markers assigned "
+            "by profile homology; concat sequence cache bypassed",
+            (family_cfg.get("hmm") or {}).get("database"),
+        )
     species_genomes, species_lineages, fetch_stats = _fetch_all_species(
         family=family,
         species_list=species_list,
@@ -230,6 +238,7 @@ def run_family_concat(
         exclude_organisms=quality_cfg.get("exclude_organisms"),
         seq_cache=seq_cache,
         source_nuc_min_length_frac=source_nuc_min_length_frac,
+        identifier=identifier,
     )
 
     manual_exclude_seen: set[str] = set()
@@ -1070,6 +1079,7 @@ def _fetch_all_species(
     exclude_organisms: list[str] | None,
     seq_cache: SequenceCache | None = None,
     source_nuc_min_length_frac: float = 0.0,
+    identifier: "MarkerIdentifier | None" = None,
 ) -> tuple[dict[str, dict[str, dict[str, SeqRecord]]], dict[str, list[dict]], dict]:
     """Fetch genomes per species and return:
        - species_genomes: {species_name: {genome_id: {marker_name: SeqRecord}}}
@@ -1127,6 +1137,7 @@ def _fetch_all_species(
                 min_fraction=min_fraction,
                 exclude_organisms=exclude_organisms,
                 source_nuc_min_length_frac=source_nuc_min_length_frac,
+                identifier=identifier,
             )
         except Exception as e:
             log.warning("[%d/%d] Concat fetch failed for %s: %s — skipping species.",
@@ -1156,12 +1167,17 @@ def _fetch_one_species_with_cache(
     min_fraction: float,
     exclude_organisms: list[str] | None,
     source_nuc_min_length_frac: float = 0.0,
+    identifier: "MarkerIdentifier | None" = None,
 ) -> tuple[dict[str, dict[str, SeqRecord]], dict]:
     """Run the per-species fetch, going through the global concat cache when set.
 
-    When seq_cache is None, falls through directly to ``fetch_species_genomes``.
+    When seq_cache is None — or HMM marker identification is active — falls
+    through directly to ``fetch_species_genomes``.  The concat cache is bypassed
+    under HMM because its on-disk layout (per-marker GenBank files keyed by a
+    marker-name/alias hash) does not match the all-proteins HMM fetch.
     """
-    if seq_cache is None:
+    hmm_active = getattr(identifier, "is_hmm", False)
+    if seq_cache is None or hmm_active:
         return fetch_species_genomes(
             taxid=sp_taxid,
             species_name=species_label,
@@ -1171,6 +1187,7 @@ def _fetch_one_species_with_cache(
             max_per_species=max_per_species,
             min_fraction=min_fraction,
             exclude_organisms=exclude_organisms,
+            identifier=identifier,
             source_nuc_min_length_frac=source_nuc_min_length_frac,
         )
 
