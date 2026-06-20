@@ -215,7 +215,12 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
                     "name": "mRNA capping enzyme large subunit",
                     "aliases": ["capping enzyme large subunit"],
                     "locus_tag_hint": r"D1R",
-                    "hmms": ["mRNA_cap_enzyme"],            # PF01331 (D1 catalytic)
+                    # PF03291 (the cap N7-methyltransferase domain carried by the
+                    # D1 large subunit).  The generic capping families PF01331
+                    # (catalytic) and PF03919 (C-term) do NOT match poxvirus D1
+                    # at all — a 2026-06 live run scored 0/499 coverage with
+                    # PF01331; PF03291 recovers it (score ~58 vs GA ~27).
+                    "hmms": ["mRNA_G-N7_MeTrfase"],        # PF03291
                 },
                 {
                     "name": "DNA helicase",
@@ -247,7 +252,16 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
                 # outside Chordopoxvirinae reference annotations.
             ],
         },
-        "hmm": {"enabled": True, "database": "Poxviridae"},
+        # relative_length_cutoff lowered to 0.40 (from the 0.50 default): the
+        # divergent Avipoxvirus capping enzyme (D1) matches mRNA_G-N7_MeTrfase
+        # with a strong score (~53 vs GA ~27) but covers only 47 % of the HMM
+        # model, so the 0.50 gate dropped it; 0.40 admits it.  The GA bit-score
+        # gate still filters non-homologs, and the 6 universal markers are
+        # high-coverage so they are unaffected.
+        "hmm": {
+            "enabled": True, "database": "Poxviridae",
+            "relative_length_cutoff": 0.40,
+        },
     },
 
     # ---- Herpesviridae and other herpesvirus families (7 markers) -------

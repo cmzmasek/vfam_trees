@@ -25,7 +25,7 @@ PROFILES=(
     "Poxviridae   PF00136 DNA_pol_B        DNA_polymerase_E9L"
     "Poxviridae   PF00623 RNA_pol_Rpb1_2   RNA_pol_147kDa_A24R_RPO147"
     "Poxviridae   PF00562 RNA_pol_Rpb2_6   RNA_pol_132kDa_J6R_RPO132"
-    "Poxviridae   PF01331 mRNA_cap_enzyme  mRNA_capping_enzyme_large_D1R"
+    "Poxviridae   PF03291 mRNA_G-N7_MeTrfase mRNA_capping_enzyme_large_D1R_N7MTase"
     "Poxviridae   PF12011 NPH-II           DNA_helicase_NPH-II_A18R"
     "Poxviridae   PF03296 Pox_polyA_pol    polyA_polymerase_E1L_VP55"
     "Poxviridae   PF04947 Pox_VLTF3        late_transcription_factor_VLTF3_A1L"

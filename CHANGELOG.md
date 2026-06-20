@@ -10,6 +10,22 @@ user-visible surface area.
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-06-11
+
+### Changed
+- **Poxviridae HMM capping-enzyme marker fixed.** A live 761-species Poxviridae
+  HMM run scored **0/499** coverage on the mRNA capping enzyme (D1R): its bundled
+  profile `mRNA_cap_enzyme` (PF01331, the generic catalytic domain) — and the
+  alternative PF03919 — do not match the poxvirus D1 large subunit at all. The
+  marker now uses **`mRNA_G-N7_MeTrfase`** (PF03291), the cap N7-methyltransferase
+  domain carried by D1, which matches strongly (score ~58 vs GA ~27 on vaccinia).
+  Paired with a lowered Poxviridae `hmm.relative_length_cutoff` of **0.40** (from
+  0.50) so the divergent *Avipoxvirus* D1 — a strong hit (~53 vs GA ~27) that
+  covers only 47 % of the model — is also admitted. Both Orthopox and Avipox D1
+  now recover. The other 6 Poxviridae markers were already at 499/499 and are
+  unaffected. Re-run `scripts/build_bundled_hmms.sh` to refresh the bundled set
+  (the `mRNA_cap_enzyme.hmm` profile is replaced by `mRNA_G-N7_MeTrfase.hmm`).
+
 ## [1.3.0] — 2026-06-08
 
 ### Added
