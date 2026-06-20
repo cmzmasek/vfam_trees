@@ -146,6 +146,12 @@ def run(
     Auspice v2 JSON (viewable at auspice.us / Nextclade / `auspice view`),
     PDF/PNG tree images, and per-family report.
 
+    For single-marker DNA families and concatenated-marker families, marker
+    proteins are identified by GenBank protein name — or, when a family sets
+    `hmm.enabled`, by HMMER profile homology against curated Pfam-A profiles
+    (more robust for inconsistently-annotated large DNA viruses; requires
+    HMMER on PATH).
+
     MSA and tree-inference steps are content-hash-checkpointed, so reruns
     skip stages whose inputs and config are unchanged. A cross-family
     overview PNG (overview_tree_100.png) is generated automatically when
@@ -574,6 +580,7 @@ def test(global_config: Path):
       - Required Python packages (biopython, snakemake, taxopy, ...)
       - Required external tools (mafft, iqtree2, mmseqs, FastTree, trimal)
       - Optional tools (cd-hit, cd-hit-est — only needed when clustering.tool: cdhit)
+      - HMMER tools (hmmscan, hmmpress — only needed when hmm.enabled)
       - global.yaml exists and has ncbi.email set
       - Live connectivity to NCBI Entrez
 
