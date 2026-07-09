@@ -17,7 +17,7 @@ The family TaxID is resolved from NCBI Taxonomy and every descendant species is 
 
 ### 2. Sequence download
 
-GenBank is queried per species with RefSeq priority. The query targets the configured molecule (`whole_genome` or a marker name) and, for segmented viruses, the configured segment keyword (records lacking it in their title are dropped). RefSeqs are uncapped; non-RefSeq records are limited by `download.max_per_species`.
+GenBank is queried per species with RefSeq priority. The query targets the configured molecule (`whole_genome` or a marker name) and, for segmented viruses, the configured segment keyword (records lacking it in their title are dropped). When `hmm.enabled`, the marker-name query is instead replaced by a single all-proteins-per-species fetch, and markers are identified downstream by HMMER profile homology rather than by name (see [HMM-based marker identification](#hmm-based-marker-identification)). RefSeqs are uncapped; non-RefSeq records are limited by `download.max_per_species`.
 
 An optional shared cache (configurable TTL, per-entry locking, negative-result caching) avoids re-downloading the same species across runs and across parallel family jobs.
 
@@ -45,7 +45,7 @@ Each species' sequences are filtered in this order:
 - **IQ-TREE** for tree_100, with per-sequence-type options: `--fast` for nucleotides (SH-aLRT support, auto-added by the wrapper) and `-B 1000` for protein (UFBoot ultrafast bootstrap, more robust on divergent protein families). Setting `model_aa: TEST` triggers ModelFinder; the chosen model (e.g. `LG+I+G4`) is parsed from the IQ-TREE log and surfaces in `summary.tsv`, the per-family PDF, and the PhyloXML provenance.
 - **Branch-support measure** is picked per tree (`SH_like` / `SH_aLRT` / `UFBoot`) and recorded uniformly: `tree{500,100}_support_type` plus generic `support_{min,q1,median,q3,max,iqr}` columns; the PhyloXML `<confidence type="…">` attribute mirrors the same label.
 - **Iterative branch-length outlier removal** — between iterations, leaves with terminal branch length exceeding `median + factor × MAD` are removed and MSA + tree are re-run (up to `max_iterations`; only when ≥ `min_seqs` remain). RefSeqs are protected: a flagged RefSeq stays with a warning. Detailed per-outlier log lines include length, ratio to median, and threshold.
-- **Multi-marker protein concatenation** — large DNA virus families with curated marker presets concatenate per-marker MAFFT + trimAl alignments into a single matrix; tree_100 uses partitioned IQ-TREE (`-p partitions.nex -m MFP`) so each marker gets its own ModelFinder pick. Per-marker fetches are bucketed by source nucleotide accession (Policy A); a length filter (`concatenation.source_nuc_min_length_frac`, default 0.3) drops source-nuc accessions shorter than that fraction of the longest parent so partial single-gene submissions don't crowd out genome-scale proteins under `download.max_per_species` (default 3000 for concat families). See [CONCAT_DESIGN.md](CONCAT_DESIGN.md) for design details.
+- **Multi-marker protein concatenation** — large DNA virus families with curated marker presets concatenate per-marker MAFFT + trimAl alignments into a single matrix; tree_100 uses partitioned IQ-TREE (`-p partitions.nex -m MFP`) so each marker gets its own ModelFinder pick. Markers are found either by GenBank name (per-marker query) or, when `hmm.enabled`, by HMMER profile homology over one all-proteins-per-species fetch (see [HMM-based marker identification](#hmm-based-marker-identification)); either way the returned proteins are bucketed by source nucleotide accession (Policy A). A length filter (`concatenation.source_nuc_min_length_frac`, default 0.3) drops source-nuc accessions shorter than that fraction of the longest parent so partial single-gene submissions don't crowd out genome-scale proteins under `download.max_per_species` (default 3000 for concat families). See [CONCAT_DESIGN.md](CONCAT_DESIGN.md) for design details.
 
 ### 6. Annotation and rooting
 
@@ -68,7 +68,7 @@ Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 - **Custom output naming** — set `manual.name` to rename a family's outputs (e.g. run *Filoviridae* restricted to the *Orthoebolavirus* genus and label everything `Orthoebolavirus`); the directory and all files take the sanitized display name while NCBI/taxonomy/cache lookups keep using the biological family. See [Output prefix and directory naming](#output-prefix-and-directory-naming).
 - **Additional data sources (outbreak sequences)** — supplement a family tree with forced-include sequences from [Pathoplexus](https://pathoplexus.org) via the `additional_data_sources` config block. These bypass QC and clustering (like `manual.include`) but carry real host/location/date/taxon metadata, so they are coloured by genus. Useful for grafting the latest outbreak genomes onto an existing tree. See [Additional data sources (Pathoplexus)](#additional-data-sources-pathoplexus).
 - **HMM-based marker identification** — for large DNA virus families with inconsistent annotation, identify marker proteins by **HMMER profile homology** instead of GenBank protein names, via the per-family `hmm:` config block. Each marker carries an `hmms:` token — a single curated Pfam-A profile (`"DNA_pol_B"`) or a multidomain architecture (`"Adeno_hexon--Adeno_hexon_C"`, HMMs in N-to-C order). Hits are gated on the curated Pfam GA bit-score (or an E-value) plus HMM-model coverage; the all-proteins-per-species pool is grouped by source genome and assigned to markers by HMM. Works on both the single-marker and concatenated-marker paths. Bundled CC0 Pfam-A sets ship for **Poxviridae** (8 markers) and **Adenoviridae** (hexon); requires HMMER on `$PATH`. See [HMM-based marker identification](#hmm-based-marker-identification).
-- **Pre-configured family presets** — 28 segmented RNA virus families (segment keywords) and 26 DNA virus families (sequence type, region/marker, and concat marker sets for the 16 families that use concatenation) ship with curated defaults.
+- **Pre-configured family presets** — 28 segmented RNA virus families (segment keywords) and 26 DNA virus families (sequence type, region/marker, and concat marker sets for the 15 families that use concatenation) ship with curated defaults.
 - **Checkpointing** — MSA and tree steps store a content-hashed sidecar of inputs + tool / model / options, so any change auto-invalidates the cache. Each iterative outlier-removal pass gets its own hash; partially-completed runs resume in the right place.
 - **Family-annotation TSV** (optional) — joins extra per-family columns (e.g. `baltimore_class`) into `summary.tsv` and `status.tsv`. Missing file or family is silent.
 - **Stage tracking** — `vfam_trees status` reports the current processing stage for in-progress families (downloading/QC, MSA, tree inference, annotating).
@@ -215,8 +215,10 @@ quality:
   exclude_organisms:            # case-insensitive substring match against
     - synthetic construct       # ORGANISM + SOURCE + DEFINITION (joined with newline
     - metagenome                # so terms cannot straddle field boundaries)
-    - uncultured
     - "MAG:"                    # metagenome-assembled genomes (NCBI DEFINITION prefix)
+    - uncultured
+    - unverified
+    - vector
     - recombinant
     - patent
 
@@ -442,22 +444,39 @@ For each entry, NCBI Taxonomy is queried for the species-rank descendants under 
 
 #### Length-outlier behaviour
 
-The pre-MSA length-outlier filter takes the **union** of two windows around the median sequence length:
+Just before alignment, vfam_trees removes sequences whose **length** is wildly out of line with the rest of the family — tiny fragments and unusually long records (often mis-annotated or concatenated entries). A handful of these distort the whole multiple-sequence alignment far out of proportion to their number, so they are dropped first. (RefSeq and `manual.include` records are never dropped here; if flagged they are kept with a warning.)
 
-- **MAD-on-log-lengths**: `exp(median(log L) ± k · σ_log)` with `σ_log = 1.4826 · MAD(log L)`. Adapts to each family's natural spread; `k=0` disables.
-- **Hard floor**: `[min_lo_mult, max_hi_mult] × median`. Guarantees a minimum keep window even when MAD is degenerate or the family is very tight; either knob set to `0` disables that side.
+The filter keeps a **window of acceptable lengths** and removes anything outside it. The window is designed to be *generous by default but adaptive when the data call for it*. It is the **wider** of two ranges on each side:
 
-Behaviour across distribution shapes (median = 1000, defaults `k=5.0`, floor `[0.20×, 5.0×]`):
+1. **A fixed safety range** — by default **`0.20× to 5×` the median length**. Anything in this range is always kept; this is what stops the filter from over-trimming.
+2. **An adaptive range** — from how spread out the family's lengths actually are (a robust, outlier-resistant estimate on log-lengths). When a family genuinely spans a broad range of lengths, this **widens** the window so real long/short members survive. It can only widen the window, never shrink it below the fixed range.
 
-| Distribution | Effective keep window | Notes |
+A sequence is removed **only if it falls outside both** — that is, only genuine extremes are cut.
+
+*Why combine them?* If you used only the adaptive range, a very uniform family (almost every sequence the same length) would have a near-zero spread, collapsing the window to a sliver and wrongly flagging anything slightly off. The fixed floor prevents that. If you used only the fixed range, a genuinely diverse family would lose real members; the adaptive range widens it when warranted. Combining them gives both.
+
+**Exact form.** Keep a sequence of length *L* when `lo ≤ L ≤ hi`:
+
+```
+lo = min( 0.20 × median ,  exp( median(log L) − k·σ ) )      # k = 5 by default
+hi = max( 5.0  × median ,  exp( median(log L) + k·σ ) )
+     └─── fixed floor ───┘  └──── adaptive (robust, on log-lengths) ────┘
+σ = 1.4826 × MAD(log L)      # a robust stand-in for the std. dev. of log-lengths
+```
+
+Per-family knobs: `length_outlier.k` (default 5; set `0` to disable the adaptive range), `min_lo_mult` / `max_hi_mult` (default 0.20 / 5.0 — set either to `0` to disable that side of the floor).
+
+**Worked examples** (median length = 1000, defaults `k=5`, floor `0.20×–5×`):
+
+| Family's length distribution | Keep window | What happens |
 |---|---|---|
-| Tight family + 0.40× truncation | `[0.20×, 5.0×]` | Floor kicks in; moderate truncations kept |
-| Variable family (~2× spread) | `[0.19×, 5.23×]` | MAD widens beyond the floor |
-| Bimodal (≥50% tied at median) | `[0.20×, 5.0×]` | MAD = 0; floor alone applies |
-| Tight bulk + 30× extreme outlier | `[0.20×, 5.0×]` | Floor catches the outlier |
-| Tight bulk + 0.03× extreme outlier | `[0.20×, 5.0×]` | Floor catches the outlier |
+| Very uniform (all ≈ 1000) | `200 – 5000` | Adaptive range ~vanishes; the floor governs. A 400-nt record (0.40×) is **kept** |
+| Broadly spread (~2× range) | `≈190 – ≈5230` | Adaptive range widens past the floor to admit the family's real long/short members |
+| Half the sequences tied at the median | `200 – 5000` | Robust spread = 0, so the floor alone applies |
+| Uniform bulk + one 30,000-nt record (30×) | `200 – 5000` | 30,000 is outside the window → **dropped** |
+| Uniform bulk + one 30-nt fragment (0.03×) | `200 – 5000` | 30 is outside the window → **dropped** |
 
-Filter outcome (kept / dropped, the median, and the resolved keep window) is logged at INFO once per tree and written to `summary.tsv` (`tree{500,100}_n_length_outliers_{long,short}`, `length_filter_median`, `length_filter_lo_cutoff`, `length_filter_hi_cutoff`).
+The outcome — how many long and short outliers were dropped, the median, and the resolved `lo`/`hi` — is logged once per tree and written to `summary.tsv` (`tree{500,100}_n_length_outliers_{long,short}`, `length_filter_median`, `length_filter_lo_cutoff`, `length_filter_hi_cutoff`).
 
 #### DNA virus families
 
