@@ -199,3 +199,36 @@ class TestNormalizeBootstrap:
         _normalize_bootstrap(t, support_type="SH_aLRT")
         confs = sorted(c.confidence for c in t.find_clades() if c.confidence is not None)
         assert confs == [85, 96]
+
+
+# ---------------------------------------------------------------------------
+# NCBI rank is authoritative for internal labels ("unclassified X" stays unranked)
+# ---------------------------------------------------------------------------
+
+class TestInternalRankFromNcbi:
+    def test_unclassified_prefix_not_ranked_by_suffix(self):
+        assert _infer_rank("unclassified Caliciviridae") == ""
+        assert _infer_rank("Unclassified Caliciviridae") == ""
+
+    def _tree(self):
+        a, b = Clade(name="a", branch_length=0.1), Clade(name="b", branch_length=0.1)
+        return Clade(clades=[a, b])
+
+    def test_ncbi_no_rank_wins_over_suffix(self):
+        from vfam_trees.taxonomy import _annotate_internal_nodes
+        root = self._tree()
+        lin = ["Caliciviridae", "unclassified Caliciviridae"]
+        _annotate_internal_nodes(root, {"a": lin, "b": lin},
+                                 {"Caliciviridae": "family", "unclassified Caliciviridae": ""},
+                                 {"unclassified Caliciviridae": "179239"})
+        assert root.name == "unclassified Caliciviridae"
+        assert root._taxonomy_rank == ""
+        assert root._taxonomy_id == "179239"
+
+    def test_suffix_used_when_ncbi_has_no_entry(self):
+        from vfam_trees.taxonomy import _annotate_internal_nodes
+        root = self._tree()
+        lin = ["Caliciviridae", "Norovirus"]
+        _annotate_internal_nodes(root, {"a": lin, "b": lin}, {})
+        assert root._taxonomy_rank == "genus"
+        assert not hasattr(root, "_taxonomy_id")

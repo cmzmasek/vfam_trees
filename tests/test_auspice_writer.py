@@ -44,11 +44,13 @@ _META = {
         "species": "Zaire ebolavirus",
         "accession": "NC_002549.1",
         "host": "Homo sapiens",
-        "location": "Guinea",
+        "location": "Guinea: Gueckedou",
         "collection_date": "2014-05-01",
         "lineage_ranked": [
             {"rank": "subfamily", "name": "Orthovirinae"},
             {"rank": "genus", "name": "Ebolavirus"},
+            {"rank": "species", "name": "Orthoebolavirus zairense"},
+            {"rank": "no rank", "name": "Zaire ebolavirus"},
         ],
     },
     "B": {
@@ -216,8 +218,23 @@ def test_clade_label_from_internal_name(tmp_path):
 def test_leaf_traits_emitted_as_value_objects(tmp_path):
     a = {n["name"]: n for n in _leaves(_load(tmp_path)["tree"])}["A"]
     assert a["node_attrs"]["genus"] == {"value": "Ebolavirus"}
-    assert a["node_attrs"]["species"] == {"value": "Zaire ebolavirus"}
+    assert a["node_attrs"]["species"] == {"value": "Orthoebolavirus zairense"}
     assert a["node_attrs"]["host"] == {"value": "Homo sapiens"}
+
+
+def test_species_is_ictv_species_from_lineage(tmp_path):
+    # B has a ranked lineage without a species rank: no pseudo-species from
+    # the GenBank organism string.
+    b = {n["name"]: n for n in _leaves(_load(tmp_path)["tree"])}["B"]
+    assert "species" not in b["node_attrs"]
+
+
+def test_country_and_location_detail(tmp_path):
+    a = {n["name"]: n for n in _leaves(_load(tmp_path)["tree"])}["A"]
+    assert a["node_attrs"]["country"] == {"value": "Guinea"}
+    assert a["node_attrs"]["location"] == {"value": "Guinea: Gueckedou"}
+    keys = [c["key"] for c in _load(tmp_path)["meta"]["colorings"]]
+    assert "country" in keys
 
 
 def test_placeholder_species_skipped(tmp_path):

@@ -1162,3 +1162,30 @@ class TestHmmFetch:
         )
         assert n == 0
 
+
+
+# ---------------------------------------------------------------------------
+# extract_metadata: location from /geo_loc_name (INSDC, 2024) or /country
+# ---------------------------------------------------------------------------
+
+def _gb_record(**qualifiers):
+    from Bio.Seq import Seq
+    from Bio.SeqFeature import FeatureLocation, SeqFeature
+    from Bio.SeqRecord import SeqRecord
+    rec = SeqRecord(Seq("ACGT"), id="MN000001.1", description="test")
+    rec.annotations["organism"] = "Zaire ebolavirus"
+    rec.features.append(SeqFeature(FeatureLocation(0, 4), type="source",
+                                   qualifiers={k: [v] for k, v in qualifiers.items()}))
+    return rec
+
+
+def test_extract_metadata_reads_geo_loc_name():
+    from vfam_trees.fetch import extract_metadata
+    meta = extract_metadata(_gb_record(geo_loc_name="Guinea: Gueckedou"))
+    assert meta["location"] == "Guinea: Gueckedou"
+
+
+def test_extract_metadata_falls_back_to_country():
+    from vfam_trees.fetch import extract_metadata
+    assert extract_metadata(_gb_record(country="Sierra Leone"))["location"] == "Sierra Leone"
+    assert extract_metadata(_gb_record())["location"] == "unknown"

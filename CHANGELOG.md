@@ -8,7 +8,71 @@ The full per-commit history is in `git log`; this file summarizes only
 changes that affect outputs, configuration, CLI behaviour, or other
 user-visible surface area.
 
-## [Unreleased]
+## [1.4.0] — 2026-10-20
+
+### Added
+- **Archaeopteryx.js page per tree.** `<prefix>_tree_{500,100}.html` inlines the
+  PhyloXML in a page that opens it in Archaeopteryx.js 3.28.0 (viewer, d3, sax,
+  phyloxml and the PDF-export libraries loaded from jsDelivr at pinned versions;
+  needs an internet connection). It opens coloured by Genus (by Species on a
+  one-genus tree), as the PDF figures are, when the viewer can show that field in
+  full (2–20 values); otherwise the viewer chooses. The URL hash carries the view,
+  so a copied link reopens the tree as left. Toggle with `output.archaeopteryx_html`
+  (default on).
+- **Tip dates in PhyloXML.** Each tip with a parsable collection date gets
+  `<date unit="year">` with the decimal year (midpoint of the stated day / month /
+  year / range, leap-year aware — the convention both Archaeopteryx viewers use)
+  and the raw GenBank string in `<desc>`. This is where both viewers read tip
+  dates, e.g. for the root-to-tip clock plot (offered when every tip is dated).
+- **`branch_length_unit="subs/site"`** on `<phylogeny>`: both viewers print it on
+  the scale bar and use it as the clock-plot rate unit, and it keeps a tree with
+  tip dates from being drawn on a calendar axis in Archaeopteryx.js.
+- **`vipr:Country`** (PhyloXML) / **`country`** (Auspice): the country part of the
+  location, for grouping and colouring.
+- NCBI taxids on internal-node `<taxonomy>` (`<id provider="ncbi">`).
+
+### Changed
+- **`vipr:Species` is the ICTV species** (the species-rank entry of the NCBI
+  lineage, e.g. "Orthoebolavirus zairense"), consistent with the internal LCA
+  labels. It used to be the GenBank organism string ("Zaire ebolavirus", "Bundibugyo
+  virus", "Sapovirus sp."), which both Archaeopteryx viewers reported as
+  contradicting the internal nodes, and which split one species into several
+  clades in "Clades by rank". A tip whose lineage has no species rank gets no
+  `vipr:Species`; without a ranked lineage (pasted sequences) the organism is kept.
+  The Auspice `species` trait follows. Leaf labels are unchanged.
+- **Leaf `<taxonomy>` is the tip's own NCBI taxon**: its id, NCBI's current name
+  for that id (GenBank organism strings can be stale), and `<rank>` when NCBI's
+  rank is a phyloXML rank.
+- **`vipr:Location`** is written only when it says more than the country
+  ("USA: Texas, Austin"); a country-only location is `vipr:Country` alone. The
+  Auspice `location` trait follows.
+- **Accession sources.** Pathoplexus accessions are `source="pathoplexus"` with a
+  `<uri>` to the record page; pasted / FASTA-file sequences are `source="user"`.
+  Both were `source="ncbi"`, which gave dead "open database" links in the viewers.
+- **`style:font_color` is off by default** (`output.phyloxml_font_colors`): both
+  viewers open a tree with their own Color-by, which hides style colours, and these
+  have no legend. PDF/PNG and Auspice keep the genus palette.
+
+### Fixed
+- **Location was empty for every NCBI record.** INSDC renamed the GenBank
+  `/country` qualifier to `/geo_loc_name`; it is now read (with `/country` as the
+  fallback), filling `vipr:Location`/`vipr:Country`, the Auspice traits, the
+  metadata TSVs and the `{location}` label placeholder.
+- **"unclassified X" internal nodes no longer get a Linnaean rank.** A rank was
+  inferred from the name suffix ("unclassified Caliciviridae" → family) even when
+  NCBI says "no rank"; NCBI's rank is now authoritative and the suffix is used
+  only for names NCBI did not supply. Such nodes also no longer get a family
+  label in the PDF tree images.
+- **Placeholder values are no longer written as data.** "n/a", "none" and the
+  INSDC missing-value terms ("not collected", "missing: control sample", …) are
+  treated like "unknown" in PhyloXML properties and Auspice traits alike; before,
+  PhyloXML skipped only "unknown", so the two files disagreed.
+- **False "absent from the tree" warning for `additional_data_sources`.** Every
+  injected record (e.g. Pathoplexus) was reported as a `manual.include` accession
+  "not found … (will be absent from the tree)", though it was in the tree.
+- A pair of sister tips with the same ICTV species no longer gets a redundant
+  species-level internal label in the PhyloXML when their GenBank organism strings
+  differ.
 
 ## [1.3.1] — 2026-06-11
 

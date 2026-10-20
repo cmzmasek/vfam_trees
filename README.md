@@ -52,11 +52,11 @@ Each species' sequences are filtered in this order:
 - **LCA-based internal-node annotation** using NCBI ranked lineages, with a configurable lineage-depth filter (`taxonomy.lca_min_rank`, default `species`) so leaves whose lineage is too shallow are excluded from the LCA vote.
 - **Genus inference** for taxa lacking a formal `genus` rank in NCBI lineage: `none`, `suffix` (single-word taxa ending in `virus` treated as genus, per ICTV convention), or `deepest` (default — suffix first, then deepest rank above species).
 - **Taxonomy-guided rooting** via LCA specificity scoring, with MAD and midpoint fallbacks. The PhyloXML `<phylogeny>` is emitted with `rooted="true" rerootable="false"` so downstream viewers cannot re-root the carefully rooted output.
-- **Genus / subfamily coloring** in HLS color space — one hue band per subfamily, lightness varies across genera within a subfamily; colors are applied to PDF/PNG figures and to PhyloXML (`style:font_color`).
+- **Genus / subfamily coloring** in HLS color space — one hue band per subfamily, lightness varies across genera within a subfamily; colors are applied to PDF/PNG figures and the Auspice JSON, and optionally to PhyloXML (`style:font_color`, `output.phyloxml_font_colors`).
 
 ### 7. Output
 
-Per-family: Newick, PhyloXML (with `<taxonomy>`, `<sequence>`, `vipr:` metadata, and rank properties), an Auspice v2 (Nextstrain) JSON for interactive exploration, rooted-rectangular and unrooted-radial PDF + PNG tree images, a topology-only icon PNG, sequence and metadata FASTAs/TSVs, a per-family PDF report, and a per-family log.
+Per-family: Newick, PhyloXML (with `<taxonomy>`, `<sequence>`, tip `<date>`, `vipr:` metadata, and rank properties), a ready-to-open Archaeopteryx.js HTML page and an Auspice v2 (Nextstrain) JSON for interactive exploration, rooted-rectangular and unrooted-radial PDF + PNG tree images, a topology-only icon PNG, sequence and metadata FASTAs/TSVs, a per-family PDF report, and a per-family log.
 
 Cross-family: a row-per-family `summary.tsv` with full statistics, a lightweight `status.tsv` (success/skip), and an `overview_tree_100.png` thumbnail grid shaded by viral realm. See [Output](#output) for the full file inventory.
 
@@ -64,7 +64,8 @@ Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 
 ## Other capabilities
 
-- **Interactive trees (Auspice / Nextstrain / Nextclade)** — every family also emits a schema-valid Auspice v2 JSON per tree (`<prefix>_tree_{500,100}_auspice.json`) loadable in the Nextstrain viewers: [auspice.us](https://auspice.us) (drag-and-drop), Nextclade, or a local `auspice view`. These are *divergence* trees (branch lengths are substitutions per site, not time-resolved); the "color by genus" view reuses the same palette as the PDF/PhyloXML output, and genus / subfamily / species / host / location / year (plus an **Outbreak** trait for `additional_data_sources` tips) are available as colorings and filters. Toggle with the `output.auspice_json` per-family flag (default on).
+- **Interactive trees (Auspice / Nextstrain / Nextclade)** — every family also emits a schema-valid Auspice v2 JSON per tree (`<prefix>_tree_{500,100}_auspice.json`) loadable in the Nextstrain viewers: [auspice.us](https://auspice.us) (drag-and-drop), Nextclade, or a local `auspice view`. These are *divergence* trees (branch lengths are substitutions per site, not time-resolved); the "color by genus" view reuses the same palette as the PDF/PhyloXML output, and genus / subfamily / species / host / country / location / year (plus an **Outbreak** trait for `additional_data_sources` tips) are available as colorings and filters. Toggle with the `output.auspice_json` per-family flag (default on).
+- **Interactive trees (Archaeopteryx / Archaeopteryx.js)** — the PhyloXML is written for the [Archaeopteryx](https://github.com/cmzmasek/forester) desktop viewer and [Archaeopteryx.js](https://github.com/cmzmasek/archaeopteryx-js): `branch_length_unit="subs/site"` (scale bar and clock-plot rate units), each tip's collection date as a decimal-year `<date unit="year">` (the viewers' root-to-tip clock plot needs every tip dated), ICTV species in `vipr:Species` consistent with the internal labels (so "Clades by rank" groups a species once), the leaf's own NCBI taxon (id, current name, rank) in `<taxonomy>`, NCBI ids on internal taxonomies, `vipr:Country` for grouping, and accession sources (`ncbi` / `pathoplexus` with a record `<uri>` / `user`). Each tree also gets `<prefix>_tree_{500,100}.html`: the tree inlined in a page that opens it in Archaeopteryx.js 3.28.0 loaded from jsDelivr — double-click to explore (needs an internet connection). Toggle with `output.archaeopteryx_html` (default on).
 - **Custom output naming** — set `manual.name` to rename a family's outputs (e.g. run *Filoviridae* restricted to the *Orthoebolavirus* genus and label everything `Orthoebolavirus`); the directory and all files take the sanitized display name while NCBI/taxonomy/cache lookups keep using the biological family. See [Output prefix and directory naming](#output-prefix-and-directory-naming).
 - **Additional data sources (outbreak sequences)** — supplement a family tree with forced-include sequences from [Pathoplexus](https://pathoplexus.org) via the `additional_data_sources` config block. These bypass QC and clustering (like `manual.include`) but carry real host/location/date/taxon metadata, so they are coloured by genus. Useful for grafting the latest outbreak genomes onto an existing tree. See [Additional data sources (Pathoplexus)](#additional-data-sources-pathoplexus).
 - **HMM-based marker identification** — for large DNA virus families with inconsistent annotation, identify marker proteins by **HMMER profile homology** instead of GenBank protein names, via the per-family `hmm:` config block. Each marker carries an `hmms:` token — a single curated Pfam-A profile (`"DNA_pol_B"`) or a multidomain architecture (`"Adeno_hexon--Adeno_hexon_C"`, HMMs in N-to-C order). Hits are gated on the curated Pfam GA bit-score (or an E-value) plus HMM-model coverage; the all-proteins-per-species pool is grouped by source genome and assigned to markers by HMM. Works on both the single-marker and concatenated-marker paths. Bundled CC0 Pfam-A sets ship for **Poxviridae** (8 markers) and **Adenoviridae** (hexon); requires HMMER on `$PATH`. See [HMM-based marker identification](#hmm-based-marker-identification).
@@ -306,6 +307,11 @@ output:
                                 # (<prefix>_tree_{500,100}_auspice.json) for interactive
                                 # viewing at auspice.us; divergence tree only (branch lengths
                                 # are substitutions/site, so it is not time-resolved)
+  phyloxml_font_colors: false   # write the genus palette as style:font_color on PhyloXML
+                                # tips (off: the Archaeopteryx viewers open a tree with their
+                                # own Color-by, which hides style colours, and these have no legend)
+  archaeopteryx_html: true      # also write <prefix>_tree_{500,100}.html, which opens the tree
+                                # in Archaeopteryx.js (viewer loaded from cdn.jsdelivr.net)
 
 manual:                         # curator overrides on per-family record selection
   include: []                   # exact accessions (with version, e.g. "NC_002617.1") that
@@ -355,6 +361,7 @@ For example, running `Filoviridae` restricted to the *Orthoebolavirus* genus wit
 results/Orthoebolavirus_11266/
   Orthoebolavirus_tree_100.nwk
   Orthoebolavirus_tree_100.xml
+  Orthoebolavirus_tree_100.html
   Orthoebolavirus_tree_100_auspice.json
   Orthoebolavirus_report.pdf
   ...
@@ -609,8 +616,9 @@ Filoviridae
 | File | Description |
 |------|-------------|
 | `<Family>_tree_{500,100}.nwk` | Newick tree |
-| `<Family>_tree_{500,100}.xml` | PhyloXML tree (rooted, non-rerootable; `<taxonomy>`, `<sequence>`, `vipr:` metadata, rank properties, `style:font_color`) |
-| `<Family>_tree_{500,100}_auspice.json` | Auspice v2 (Nextstrain) JSON — interactive divergence tree, schema-valid for [auspice.us](https://auspice.us) / Nextclade / `auspice view`; genus / subfamily / species / host / location / year (and **Outbreak** for `additional_data_sources` tips) colorings and filters, genus palette matching the other outputs, branch support as toggleable branch labels. Emitted unless `output.auspice_json: false` |
+| `<Family>_tree_{500,100}.xml` | PhyloXML tree (rooted, non-rerootable, `branch_length_unit="subs/site"`; `<taxonomy>`, `<sequence>`, tip `<date>`, `vipr:` metadata, rank properties; `style:font_color` when `output.phyloxml_font_colors: true`) |
+| `<Family>_tree_{500,100}.html` | The PhyloXML inlined in a page that opens it in Archaeopteryx.js (loaded from jsDelivr; needs internet). Emitted unless `output.archaeopteryx_html: false` |
+| `<Family>_tree_{500,100}_auspice.json` | Auspice v2 (Nextstrain) JSON — interactive divergence tree, schema-valid for [auspice.us](https://auspice.us) / Nextclade / `auspice view`; genus / subfamily / species / host / country / location / year (and **Outbreak** for `additional_data_sources` tips) colorings and filters, genus palette matching the other outputs, branch support as toggleable branch labels. Emitted unless `output.auspice_json: false` |
 
 **Tree images** — each tree is exported in two layouts at PDF and 150 dpi PNG:
 

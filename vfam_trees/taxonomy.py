@@ -106,21 +106,28 @@ def annotate_tree(
                 lca_min_rank, n_excluded, n_before, lca_min_rank,
             )
 
-    # Build authoritative name → rank map from NCBI ranked lineages
+    # Build authoritative name → rank / taxid maps from NCBI ranked lineages.
+    # "no rank" is kept (as "") so a name NCBI leaves unranked, such as
+    # "unclassified Caliciviridae", is not given a rank by its suffix.
     name_to_rank: dict[str, str] = {}
+    name_to_taxid: dict[str, str] = {}
     for meta in metadata:
         for entry in meta.get("lineage_ranked", []) or []:
             name = entry.get("name")
             rank = entry.get("rank", "")
-            if name and rank and rank != "no rank" and name not in name_to_rank:
-                name_to_rank[name] = rank
+            if name and rank and name not in name_to_rank:
+                name_to_rank[name] = "" if rank == "no rank" else rank
+            taxid = str(entry.get("taxid") or "")
+            if name and taxid and name not in name_to_taxid:
+                name_to_taxid[name] = taxid
 
     # Root the tree
     _root_tree(tree, short_id_to_lineage)
 
     # Annotate internal nodes with LCA from lineages
     if short_id_to_lineage:
-        _annotate_internal_nodes(tree.root, short_id_to_lineage, name_to_rank)
+        _annotate_internal_nodes(tree.root, short_id_to_lineage, name_to_rank,
+                                 name_to_taxid)
         _keep_deepest_labels(tree)
     else:
         log.warning("No lineage data available — skipping taxonomy annotation")
@@ -454,9 +461,12 @@ def _infer_rank(name: str) -> str:
 
     Returns an empty string when the rank cannot be determined. Single-word
     names ending in "virus" are treated as genus; multi-word names ending in
-    "virus" are vernacular species names and left unranked.
+    "virus" are vernacular species names and left unranked.  Placeholder
+    groupings ("unclassified Caliciviridae") are left unranked.
     """
     lower = name.lower()
+    if lower.startswith(("unclassified ", "unassigned ", "environmental samples")):
+        return ""
     for suffix, rank in _ICTV_RANK_SUFFIXES:
         if lower.endswith(suffix):
             return rank
@@ -469,17 +479,22 @@ def _annotate_internal_nodes(
     clade: Clade,
     short_id_to_lineage: dict[str, list[str]],
     name_to_rank: dict[str, str] | None = None,
+    name_to_taxid: dict[str, str] | None = None,
 ) -> None:
     """Recursively annotate internal nodes with LCA taxon from leaf lineages.
 
-    Sets clade.name to the LCA taxon name and stores the rank from NCBI
-    taxonomy (or the suffix-based fallback) in clade._taxonomy_rank.
+    Sets clade.name to the LCA taxon name, stores the rank in
+    clade._taxonomy_rank and the NCBI taxid (when known) in
+    clade._taxonomy_id.  The rank is NCBI's when NCBI knows the name ('' for
+    its "no rank"); the suffix-based fallback is used only for names NCBI
+    did not supply.
     """
     if clade.is_terminal():
         return
 
     for child in clade.clades:
-        _annotate_internal_nodes(child, short_id_to_lineage, name_to_rank)
+        _annotate_internal_nodes(child, short_id_to_lineage, name_to_rank,
+                                 name_to_taxid)
 
     terminals = clade.get_terminals()
     leaf_lineages = [
@@ -497,8 +512,14 @@ def _annotate_internal_nodes(
     if lca_lineage:
         taxon = lca_lineage[-1]
         clade.name = taxon
-        rank = (name_to_rank or {}).get(taxon, "")
-        clade._taxonomy_rank = rank or _infer_rank(taxon)
+        name_to_rank = name_to_rank or {}
+        if taxon in name_to_rank:
+            clade._taxonomy_rank = name_to_rank[taxon]
+        else:
+            clade._taxonomy_rank = _infer_rank(taxon)
+        taxid = (name_to_taxid or {}).get(taxon, "")
+        if taxid:
+            clade._taxonomy_id = taxid
 
 
 def _find_lca_lineage(lineages: list[list[str]]) -> list[str]:

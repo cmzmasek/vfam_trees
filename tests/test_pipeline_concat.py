@@ -511,9 +511,11 @@ class TestConcatPhyloxmlIntegration:
         assert 'ref="vipr:Collection_Date"' in xml
         assert "2020-05-14" in xml
 
-    def test_vipr_location_property_present(self, tmp_path):
+    def test_vipr_country_property_present(self, tmp_path):
+        # A country-only location ("USA") is written as vipr:Country alone.
         xml = self._write_xml(tmp_path).read_text()
-        assert 'ref="vipr:Location"' in xml
+        assert 'ref="vipr:Country"' in xml
+        assert 'ref="vipr:Location"' not in xml
         assert "USA" in xml
 
     def test_vipr_strain_property_present(self, tmp_path):

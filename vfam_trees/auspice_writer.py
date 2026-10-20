@@ -21,6 +21,8 @@ from pathlib import Path
 from Bio import Phylo
 
 from . import __version__
+from .leaf_fields import clean_value as _clean
+from .leaf_fields import leaf_species, location_fields, ranked_name
 from .logger import get_logger
 
 log = get_logger(__name__)
@@ -33,10 +35,6 @@ _YEAR_RE = re.compile(r'\b(1[89]\d{2}|20\d{2})\b')
 # so we emit accession only when it matches.
 _ACCESSION_RE = re.compile(r'^[0-9A-Za-z._-]+$')
 
-# Placeholder species value emitted upstream by extract_metadata; treated as
-# "no value" here, mirroring phyloxml_writer.
-_PLACEHOLDERS = frozenset({"", "unknown", "n/a", "na", "none"})
-
 # Categorical traits surfaced as colorings / filters when present on any leaf.
 # (key, human title)
 _CATEGORICAL_TRAITS = [
@@ -45,6 +43,7 @@ _CATEGORICAL_TRAITS = [
     ("subfamily", "Subfamily"),
     ("species",   "Species"),
     ("host",      "Host"),
+    ("country",   "Country"),
     ("location",  "Location"),
     ("strain",    "Strain"),
     ("outbreak",  "Outbreak"),
@@ -58,27 +57,21 @@ def _extract_year(date_str: str) -> str:
     return m.group(1) if m else ""
 
 
-def _clean(val) -> str:
-    """Return a stripped string, or '' for placeholder / empty values."""
-    s = str(val).strip() if val is not None else ""
-    return "" if s.lower() in _PLACEHOLDERS else s
-
-
 def _leaf_traits(meta: dict) -> dict[str, str]:
-    """Extract categorical trait values for a leaf from its metadata dict."""
-    taxa = {"genus": "", "subgenus": "", "subfamily": ""}
-    for entry in meta.get("lineage_ranked", []) or []:
-        if isinstance(entry, dict):
-            rank = (entry.get("rank") or "").lower()
-            if rank in taxa:
-                taxa[rank] = entry.get("name", "")
+    """Extract categorical trait values for a leaf from its metadata dict.
+
+    Species, country and location follow the PhyloXML writer (shared helpers
+    in ``leaf_fields``): ICTV species; location only when more than a country.
+    """
+    country, location_detail = location_fields(meta)
     traits = {
-        "genus":     _clean(taxa["genus"]),
-        "subgenus":  _clean(taxa["subgenus"]),
-        "subfamily": _clean(taxa["subfamily"]),
-        "species":   _clean(meta.get("species", "")),
+        "genus":     ranked_name(meta, "genus"),
+        "subgenus":  ranked_name(meta, "subgenus"),
+        "subfamily": ranked_name(meta, "subfamily"),
+        "species":   _clean(leaf_species(meta)),
         "host":      _clean(meta.get("host", "")),
-        "location":  _clean(meta.get("location", "")),
+        "country":   country,
+        "location":  location_detail,
         "strain":    _clean(meta.get("strain", "")),
         "outbreak":  _clean(meta.get("outbreak", "")),
     }
@@ -206,7 +199,7 @@ def write_auspice_json(
     color_by = "genus" if "genus" in present_traits else (
         colorings[0]["key"] if colorings else "div"
     )
-    filter_keys = [k for k in ("genus", "subfamily", "host", "species", "outbreak")
+    filter_keys = [k for k in ("genus", "subfamily", "host", "species", "country", "outbreak")
                    if k in present_traits]
     if has_year:
         filter_keys.append("year")

@@ -51,6 +51,7 @@ from .fetch import (
 from .logger import get_logger
 from .phyloxml_writer import write_phyloxml
 from .auspice_writer import write_auspice_json
+from .archaeopteryx_html import write_archaeopteryx_html
 from .rename import (
     DEFAULT_LABEL_FORMAT, _normalize_field, _YEAR_RE,
     format_leaf_label, restore_fasta_names,
@@ -943,6 +944,7 @@ def _run_target_concat(
         if any(m in selected_genomes[gid] for gid in selected_genomes)
     ]
     xml_path = family_dir / f"{out_prefix}_tree_{label}.xml"
+    output_cfg = family_cfg.get("output", {})
     write_phyloxml(
         newick_path=annotated_nwk,
         output_xml=xml_path,
@@ -959,13 +961,18 @@ def _run_target_concat(
                  f"[{', '.join(markers_used)}] (target_{label})"
         ),
         confidence_type=support_type,
-        leaf_colors=short_to_color,
+        leaf_colors=short_to_color if output_cfg.get("phyloxml_font_colors", False) else None,
         aligned_seqs={gid: str(rec.seq) for gid, rec in concat.items()},
         seq_type="protein",
     )
+    if output_cfg.get("archaeopteryx_html", True):
+        write_archaeopteryx_html(
+            xml_path, family_dir / f"{out_prefix}_tree_{label}.html",
+            title=f"{display_name} [concatenated|{len(markers_used)} markers]",
+        )
 
     # Auspice v2 JSON (Nextstrain interactive tree) — divergence tree only.
-    if family_cfg.get("output", {}).get("auspice_json", True):
+    if output_cfg.get("auspice_json", True):
         write_auspice_json(
             output_json=family_dir / f"{out_prefix}_tree_{label}_auspice.json",
             id_map=short_to_display,

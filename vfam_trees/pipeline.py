@@ -45,6 +45,7 @@ from .tree import (
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
 from .auspice_writer import write_auspice_json
+from .archaeopteryx_html import write_archaeopteryx_html
 from .report import generate_family_report, save_tree_images, save_tree_icon, save_sequence_length_plot
 from .colors import assign_leaf_colors
 from .concat import is_refseq_genome
@@ -221,6 +222,8 @@ def _inject_pasted_sequences(
             "taxon_id": "",
             "length": len(seq_str),
             "lineage": [],
+            # Not an NCBI accession: written as <accession source="user">.
+            "source": "user",
         }
         # When the organism is empty (single-token FASTA header) the id is
         # used as the bucket key so distinct entries are not merged into one
@@ -751,13 +754,19 @@ def run_family(
             # each record (the fetcher stays purely about sequences + metadata):
             #   name_prefix   -> prepended to the leaf label
             #   outbreak_name -> vipr:outbreak property + Auspice trait
+            #   source        -> <accession source=...> (never defaults to NCBI)
             for rec in fetched:
+                rec.setdefault("source", src["source"])
                 rec.setdefault("name_prefix", src.get("name_prefix", ""))
                 rec.setdefault("outbreak_name", src.get("outbreak_name", ""))
             ext_entries.extend(fetched)
         n_ext = _inject_external_sequences(
             species_data, manual_include_ids, ext_entries, family,
         )
+        # Every entry is now in species_data (a collision raises): mark them
+        # seen, or the unseen-manual.include check below reports them "absent
+        # from the tree" (also when the id is listed in manual.include too).
+        seen_manual_include |= {e["id"] for e in ext_entries}
         if n_ext:
             log.info(
                 "additional_data_sources: injected %d sequence(s) — bypassed QC, "
@@ -1563,9 +1572,11 @@ def _run_target(
     aligned_seqs: dict[str, str] | None = None
     if region != "whole_genome" and tree_input_fasta.exists():
         aligned_seqs = {r.id: str(r.seq) for r in SeqIO.parse(tree_input_fasta, "fasta")}
+    output_cfg = family_cfg.get("output", {})
+    xml_path = family_dir / f"{out_prefix}_tree_{label}.xml"
     write_phyloxml(
         newick_path=annotated_nwk,
-        output_xml=family_dir / f"{out_prefix}_tree_{label}.xml",
+        output_xml=xml_path,
         id_map=short_to_display,
         leaf_metadata={r.id: short_id_to_meta.get(r.id, {}) for r in sel_records},
         family=family,
@@ -1573,13 +1584,18 @@ def _run_target(
         phylogeny_name=phylogeny_name,
         phylogeny_detail=phylogeny_detail,
         confidence_type=confidence_type,
-        leaf_colors=short_to_color,
+        leaf_colors=short_to_color if output_cfg.get("phyloxml_font_colors", False) else None,
         aligned_seqs=aligned_seqs,
         seq_type=seq_type,
     )
+    if output_cfg.get("archaeopteryx_html", True):
+        write_archaeopteryx_html(
+            xml_path, family_dir / f"{out_prefix}_tree_{label}.html",
+            title=phylogeny_name,
+        )
 
     # Auspice v2 JSON (Nextstrain interactive tree) — divergence tree only.
-    if family_cfg.get("output", {}).get("auspice_json", True):
+    if output_cfg.get("auspice_json", True):
         log.info("Writing Auspice JSON for tree_%s ...", label)
         write_auspice_json(
             output_json=family_dir / f"{out_prefix}_tree_{label}_auspice.json",

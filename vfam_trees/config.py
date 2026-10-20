@@ -749,6 +749,15 @@ DEFAULT_FAMILY_CONFIG: dict = {
         # per site, not time, so the tree is not time-resolved.  The "color by
         # genus" view reuses the same palette as the PDF/PNG/PhyloXML output.
         "auspice_json": True,
+        # Write style:font_color (the genus palette) on every PhyloXML tip.
+        # Off by default: Archaeopteryx and Archaeopteryx.js open a tree with
+        # their own Color-by, which hides style colours, and these have no
+        # legend.  PDF/PNG/Auspice keep the palette either way.
+        "phyloxml_font_colors": False,
+        # Write {prefix}_tree_{500,100}.html next to each PhyloXML: the tree
+        # inlined in a page that opens it in Archaeopteryx.js (the viewer is
+        # loaded from cdn.jsdelivr.net, so it needs an internet connection).
+        "archaeopteryx_html": True,
     },
     "manual": {
         # Curator overrides on per-family record selection.  include/exclude

@@ -161,7 +161,7 @@ def _filter_species(species: list[dict], family: str) -> list[dict]:
 def fetch_taxonomy_lineages(taxids) -> dict[str, list[dict]]:
     """Fetch ranked lineages for a set of NCBI taxids.
 
-    Returns {taxid: [{"name": str, "rank": str}, ...]} ordered root → tip,
+    Returns {taxid: [{"name": str, "rank": str, "taxid": str}, ...]} ordered root → tip,
     with the taxon itself appended as the final entry. Ranks are NCBI's
     authoritative values (including "no rank" / "clade").
     """
@@ -178,12 +178,14 @@ def fetch_taxonomy_lineages(taxids) -> dict[str, list[dict]]:
                 for rec in records:
                     taxid = str(rec["TaxId"])
                     lineage = [
-                        {"name": str(e["ScientificName"]), "rank": str(e.get("Rank", "") or "")}
+                        {"name": str(e["ScientificName"]), "rank": str(e.get("Rank", "") or ""),
+                         "taxid": str(e.get("TaxId", "") or "")}
                         for e in rec.get("LineageEx", [])
                     ]
                     lineage.append({
                         "name": str(rec["ScientificName"]),
                         "rank": str(rec.get("Rank", "") or ""),
+                        "taxid": taxid,
                     })
                     result[taxid] = lineage
                 time.sleep(0.2)
@@ -456,7 +458,10 @@ def extract_metadata(record: SeqRecord) -> dict:
             meta["strain"] = _first(q.get("strain", [])) or _first(q.get("isolate", [])) or "unknown"
             meta["host"] = _first(q.get("host", [])) or _first(q.get("lab_host", [])) or "unknown"
             meta["collection_date"] = _first(q.get("collection_date", [])) or "unknown"
-            meta["location"] = _first(q.get("country", [])) or "unknown"
+            # INSDC renamed /country to /geo_loc_name (2024); older records
+            # still carry /country.
+            meta["location"] = (_first(q.get("geo_loc_name", []))
+                                or _first(q.get("country", [])) or "unknown")
             db_xref = _first(q.get("db_xref", []))
             if db_xref and db_xref.startswith("taxon:"):
                 meta["taxon_id"] = db_xref.split("taxon:")[1]

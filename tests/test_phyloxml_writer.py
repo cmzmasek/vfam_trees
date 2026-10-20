@@ -120,6 +120,23 @@ class TestIsSameSpeciesPair:
         meta = {"a": {"species": ""}, "b": {"species": ""}}
         assert _is_same_species_pair(parent, meta) is False
 
+    def test_same_ictv_species_different_organism(self):
+        # Leaves show vipr:Species = ICTV species, so a pair sharing it is
+        # redundant even when the GenBank organism strings differ.
+        lineage = [{"name": "Norovirus", "rank": "genus"},
+                   {"name": "Norovirus norwalkense", "rank": "species"}]
+        parent = Clade()
+        parent.clades = [self._mk_leaf("a"), self._mk_leaf("b")]
+        meta = {"a": {"species": "Norovirus GII.4", "lineage_ranked": lineage},
+                "b": {"species": "Norovirus GII.17", "lineage_ranked": lineage}}
+        assert _is_same_species_pair(parent, meta) is True
+
+    def test_placeholder_species_is_not_a_match(self):
+        parent = Clade()
+        parent.clades = [self._mk_leaf("a"), self._mk_leaf("b")]
+        meta = {"a": {"species": "unknown"}, "b": {"species": "unknown"}}
+        assert _is_same_species_pair(parent, meta) is False
+
 
 # ---------------------------------------------------------------------------
 # write_phyloxml — integration-ish test using an in-memory tree
@@ -224,7 +241,7 @@ class TestWritePhyloxml:
         text = mini_xml.read_text()
         assert 'ref="vipr:Host"' in text
         assert 'ref="vipr:Collection_Date"' in text
-        assert 'ref="vipr:Location"' in text
+        assert 'ref="vipr:Country"' in text
         assert 'ref="vipr:Strain"' in text
 
     def test_vipr_year_added_for_iso_date(self, mini_xml):
@@ -427,3 +444,145 @@ def test_metadata_fields_are_three_tuples():
         assert isinstance(field, str) and field
         assert datatype.startswith("xsd:")
         assert ref and (ref[0].isupper() or ref in _LOWERCASE_REFS)
+
+
+# ---------------------------------------------------------------------------
+# Archaeopteryx / Archaeopteryx.js integration
+# ---------------------------------------------------------------------------
+
+class TestViewerIntegration:
+    """What the Archaeopteryx viewers read: unit, tip dates, taxa, sources."""
+
+    def _meta(self):
+        meta = _make_meta()
+        # s1: own taxon = species node (taxid matches the last lineage entry)
+        meta["s1"]["lineage_ranked"] = [
+            {"name": "Flaviviridae", "rank": "family", "taxid": "11050"},
+            {"name": "Orthoflavivirus", "rank": "genus", "taxid": "3044782"},
+            {"name": "Orthoflavivirus denguei", "rank": "species", "taxid": "3052464"},
+            {"name": "Dengue virus", "rank": "no rank", "taxid": "11053"},
+        ]
+        meta["s1"]["location"] = "USA: Texas, Austin"
+        # s2: Pathoplexus record
+        meta["s2"]["source"] = "pathoplexus"
+        meta["s2"]["accession"] = "PP_00711S5.2"
+        # s3: pasted sequence, no lineage
+        meta["s3"]["source"] = "user"
+        return meta
+
+    def _write(self, tmp_path, tree=None):
+        out = tmp_path / "out.xml"
+        write_phyloxml(
+            newick_path=tmp_path / "unused.nwk", output_xml=out,
+            id_map={"s1": "a", "s2": "b", "s3": "c"}, leaf_metadata=self._meta(),
+            family="Flaviviridae", tree=tree or _make_mini_tree(),
+        )
+        return ET.parse(out).getroot()
+
+    def _leaf(self, root, name):
+        for clade in root.iter(f"{NS}clade"):
+            n = clade.find(f"{NS}name")
+            if n is not None and n.text == name and clade.find(f"{NS}clade") is None:
+                return clade
+        raise AssertionError(name)
+
+    def _props(self, clade):
+        return {p.attrib["ref"]: p.text for p in clade.findall(f"{NS}property")}
+
+    def test_branch_length_unit_and_attribute_order(self, tmp_path):
+        phy = self._write(tmp_path).find(f"{NS}phylogeny")
+        assert phy.attrib["branch_length_unit"] == "subs/site"
+        assert list(phy.attrib) == ["rooted", "branch_length_unit", "rerootable"]
+
+    def test_tip_date_decimal_year_with_raw_desc(self, tmp_path):
+        root = self._write(tmp_path)
+        d1 = self._leaf(root, "a").find(f"{NS}date")
+        assert d1.attrib["unit"] == "year"
+        assert d1.find(f"{NS}desc").text == "2020-05-14"
+        # 14 May 2020 = day 135 of a leap year, mid-day
+        assert d1.find(f"{NS}value").text == f"{2020 + 134.5 / 366:.5f}"
+        assert d1.find(f"{NS}minimum") is None and d1.find(f"{NS}maximum") is None
+        assert self._leaf(root, "b").find(f"{NS}date") is not None   # Sep-1985
+        assert self._leaf(root, "c").find(f"{NS}date") is None       # no date
+
+    def test_date_sits_between_sequence_and_properties(self, tmp_path):
+        tags = [c.tag.replace(NS, "") for c in self._leaf(self._write(tmp_path), "a")]
+        assert tags.index("sequence") < tags.index("date") < tags.index("property")
+
+    def test_leaf_taxonomy_is_own_ncbi_taxon(self, tmp_path):
+        tax = self._leaf(self._write(tmp_path), "a").find(f"{NS}taxonomy")
+        assert tax.find(f"{NS}id").text == "11053"
+        assert tax.find(f"{NS}scientific_name").text == "Dengue virus"
+        assert tax.find(f"{NS}rank") is None          # NCBI "no rank"
+
+    def test_leaf_taxonomy_rank_written_when_ncbi_rank_is_valid(self, tmp_path):
+        meta = self._meta()
+        meta["s1"]["taxon_id"] = "3052464"
+        meta["s1"]["lineage_ranked"] = meta["s1"]["lineage_ranked"][:3]
+        out = tmp_path / "out.xml"
+        write_phyloxml(newick_path=tmp_path / "x.nwk", output_xml=out,
+                       id_map={"s1": "a", "s2": "b", "s3": "c"}, leaf_metadata=meta,
+                       family="Flaviviridae", tree=_make_mini_tree())
+        tax = self._leaf(ET.parse(out).getroot(), "a").find(f"{NS}taxonomy")
+        assert tax.find(f"{NS}scientific_name").text == "Orthoflavivirus denguei"
+        assert tax.find(f"{NS}rank").text == "species"
+
+    def test_vipr_species_is_ictv_species(self, tmp_path):
+        root = self._write(tmp_path)
+        assert self._props(self._leaf(root, "a"))["vipr:Species"] == "Orthoflavivirus denguei"
+        # s2: ranked lineage without a species rank -> no pseudo-species
+        assert "vipr:Species" not in self._props(self._leaf(root, "b"))
+        # s3: no ranked lineage -> organism fallback
+        assert self._props(self._leaf(root, "c"))["vipr:Species"] == "Zika virus"
+
+    def test_country_and_location_detail(self, tmp_path):
+        props = self._props(self._leaf(self._write(tmp_path), "a"))
+        assert props["vipr:Country"] == "USA"
+        assert props["vipr:Location"] == "USA: Texas, Austin"
+
+    def test_accession_sources(self, tmp_path):
+        root = self._write(tmp_path)
+        acc = {n: self._leaf(root, n).find(f"{NS}sequence/{NS}accession")
+               for n in ("a", "b", "c")}
+        assert acc["a"].attrib["source"] == "ncbi"
+        assert acc["b"].attrib["source"] == "pathoplexus"
+        assert acc["c"].attrib["source"] == "user"
+        uri = self._leaf(root, "b").find(f"{NS}sequence/{NS}uri")
+        assert uri.text == "https://pathoplexus.org/seq/PP_00711S5.2"
+        assert self._leaf(root, "a").find(f"{NS}sequence/{NS}uri") is None
+        assert self._leaf(root, "c").find(f"{NS}sequence/{NS}uri") is None
+
+    def test_no_font_color_without_leaf_colors(self, tmp_path):
+        root = self._write(tmp_path)
+        assert all("style:font_color" not in self._props(c) for c in root.iter(f"{NS}clade"))
+
+    def test_internal_ncbi_no_rank_is_not_inferred_from_suffix(self, tmp_path):
+        tree = _make_mini_tree()
+        inner = tree.root.clades[0]
+        inner.name = "unclassified Flaviviridae"
+        inner._taxonomy_rank = ""          # NCBI: no rank
+        inner._taxonomy_id = "38144"
+        tax = self._write(tmp_path, tree=tree).find(f"{NS}phylogeny/{NS}clade/{NS}clade/{NS}taxonomy")
+        assert tax.find(f"{NS}scientific_name").text == "unclassified Flaviviridae"
+        assert tax.find(f"{NS}rank") is None
+        assert tax.find(f"{NS}id").text == "38144"
+        assert tax.find(f"{NS}id").attrib["provider"] == "ncbi"
+
+    def test_placeholder_values_not_written(self, tmp_path):
+        meta = self._meta()
+        meta["s1"]["host"] = "n/a"
+        meta["s1"]["strain"] = "not provided"
+        meta["s1"]["location"] = "missing: control sample"
+        meta["s1"]["collection_date"] = "not collected"
+        out = tmp_path / "out.xml"
+        write_phyloxml(
+            newick_path=tmp_path / "unused.nwk", output_xml=out,
+            id_map={"s1": "a", "s2": "b", "s3": "c"}, leaf_metadata=meta,
+            family="Flaviviridae", tree=_make_mini_tree(),
+        )
+        leaf = self._leaf(ET.parse(out).getroot(), "a")
+        props = self._props(leaf)
+        for ref in ("vipr:Host", "vipr:Strain", "vipr:Country", "vipr:Location",
+                    "vipr:Collection_Date", "vipr:Year"):
+            assert ref not in props
+        assert leaf.find(f"{NS}date") is None
