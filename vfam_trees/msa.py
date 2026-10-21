@@ -46,13 +46,127 @@ def validate_msa(fasta_path: Path) -> None:
     log.debug("MSA validated: %d sequences, alignment length %d", len(records), lengths.pop())
 
 
+# Prefix MAFFT --adjustdirection puts on the name of every sequence it
+# reverse-complemented.
+MAFFT_REVERSED_PREFIX = "_R_"
+
+# Sidecar beside an alignment listing the ids it holds reverse-complemented,
+# one per line, so a run that reuses a cached alignment can still report them.
+FLIPPED_IDS_SUFFIX = ".flipped"
+
+# IUPAC nucleotide complement, both cases; gaps and unknown symbols pass through.
+_COMPLEMENT = str.maketrans(
+    "ACGTURYKMBVDHNSWacgturykmbvdhnsw",
+    "TGCAAYRMKVBHDNSWtgcaayrmkvbhdnsw",
+)
+
+
+def reverse_complement(seq: str) -> str:
+    """Reverse-complement a nucleotide (alignment) row; gaps are kept."""
+    return seq.translate(_COMPLEMENT)[::-1]
+
+
+def _read_records(path: Path) -> list:
+    from Bio import SeqIO
+    return list(SeqIO.parse(str(path), "fasta"))
+
+
+def _write_records(records: list, path: Path) -> None:
+    from Bio import SeqIO
+    with open(path, "w") as fh:
+        SeqIO.write(records, fh, "fasta")
+
+
+def strip_mafft_direction_prefix(fasta_path: Path) -> list[str]:
+    """Remove MAFFT's ``_R_`` name prefix from *fasta_path* in place.
+
+    ``--adjustdirection`` reverse-complements sequences deposited on the
+    opposite strand and marks them by prefixing the name.  The sequences are
+    left as MAFFT wrote them (every row on the same strand); only the names
+    are restored so downstream id lookups keep working.
+
+    Returns the ids of the flipped sequences, in file order; empty when
+    nothing was flipped (the file is then left untouched).
+    """
+    records = _read_records(fasta_path)
+    flipped: list[str] = []
+    for rec in records:
+        if rec.id.startswith(MAFFT_REVERSED_PREFIX):
+            n = len(MAFFT_REVERSED_PREFIX)
+            rec.id = rec.name = rec.id[n:]
+            rec.description = rec.description[n:]
+            flipped.append(rec.id)
+    if flipped:
+        _write_records(records, fasta_path)
+    return flipped
+
+
+def _flipped_ids_path(alignment_fasta: Path) -> Path:
+    return alignment_fasta.with_name(alignment_fasta.name + FLIPPED_IDS_SUFFIX)
+
+
+def write_flipped_ids(alignment_fasta: Path, ids: list[str]) -> None:
+    """Record *ids* beside *alignment_fasta*; remove the record when empty."""
+    path = _flipped_ids_path(alignment_fasta)
+    if ids:
+        path.write_text("".join(f"{i}\n" for i in ids))
+    else:
+        path.unlink(missing_ok=True)
+
+
+def read_flipped_ids(alignment_fasta: Path) -> list[str]:
+    """Return the ids recorded by :func:`write_flipped_ids`; empty if none."""
+    try:
+        text = _flipped_ids_path(alignment_fasta).read_text()
+    except OSError:
+        return []
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def orient_to_majority_strand(alignment_fasta: Path, flipped: list[str]) -> list[str]:
+    """Put the alignment on the strand most records were deposited on.
+
+    MAFFT's ``--adjustdirection`` orients every row against the *first*
+    input record.  When that record is on the minority strand, MAFFT flips
+    the majority instead.  Every row is then on one strand already, so
+    reverse-complementing the whole alignment puts it on the majority strand
+    without a second MAFFT run; the tree is unaffected.  At an exact tie the
+    strand of the record with the smallest id wins, so the choice does not
+    depend on record order either way.
+
+    Returns the ids now held reverse-complemented (in file order), and
+    rewrites *alignment_fasta* only when the strand changes.
+    """
+    if not flipped:
+        return []
+    records = _read_records(alignment_fasta)
+    ids = [r.id for r in records]
+    flipped_set = set(flipped)
+    n_flipped, n = len(flipped_set), len(records)
+    flip_all = 2 * n_flipped > n or (2 * n_flipped == n and min(ids) in flipped_set)
+    if not flip_all:
+        return flipped
+    from Bio.Seq import Seq
+    for rec in records:
+        rec.seq = Seq(reverse_complement(str(rec.seq)))
+    _write_records(records, alignment_fasta)
+    now_flipped = [i for i in ids if i not in flipped_set]
+    log.info(
+        "MAFFT --adjustdirection oriented %d of %d sequences against a "
+        "minority-strand leader; reverse-complemented the alignment so that "
+        "%d stay as deposited.",
+        n_flipped, n, n - len(now_flipped),
+    )
+    return now_flipped
+
+
 def run_msa(
     input_fasta: Path,
     output_fasta: Path,
     tool: str = "mafft",
     options: str = "--auto",
     threads: int = 1,
-) -> None:
+) -> list[str]:
     """Run multiple sequence alignment.
 
     Args:
@@ -61,15 +175,27 @@ def run_msa(
         tool: alignment tool name ('mafft' supported)
         options: tool-specific options string
         threads: number of CPU threads
+
+    Returns:
+        ids of sequences the alignment holds reverse-complemented (MAFFT
+        ``--adjustdirection``); empty otherwise.  The same list is recorded
+        beside the alignment (:func:`read_flipped_ids`).
+
+    With ``--adjustdirection`` the alignment is put on the majority strand
+    (:func:`orient_to_majority_strand`), so the strand never depends on
+    which record happens to come first.
     """
     output_fasta.parent.mkdir(parents=True, exist_ok=True)
 
-    if tool.lower() == "mafft":
-        _run_mafft(input_fasta, output_fasta, options, threads)
-    else:
+    if tool.lower() != "mafft":
         raise ValueError(f"Unsupported MSA tool: {tool}. Supported: mafft")
 
+    flipped = _run_mafft(input_fasta, output_fasta, options, threads)
+    flipped = orient_to_majority_strand(output_fasta, flipped)
+    write_flipped_ids(output_fasta, flipped)
+
     log.debug("MSA complete: %s", output_fasta)
+    return flipped
 
 
 def _run_mafft(
@@ -77,9 +203,10 @@ def _run_mafft(
     output_fasta: Path,
     options: str,
     threads: int,
-) -> None:
+) -> list[str]:
     cmd = ["mafft"]
     cmd += options.split()
+    adjusts_direction = any(o.startswith("--adjustdirection") for o in options.split())
     cmd += ["--thread", str(threads)]
     cmd += ["--out", str(output_fasta)]
     cmd += [str(input_fasta)]
@@ -107,3 +234,10 @@ def _run_mafft(
 
     log.debug("MAFFT stdout: %s", result.stdout[:500] if result.stdout else "(none)")
     log.info("MAFFT complete")
+    flipped = strip_mafft_direction_prefix(output_fasta) if adjusts_direction else []
+    if flipped:
+        log.debug(
+            "MAFFT --adjustdirection reversed %d sequence(s) relative to the first record",
+            len(flipped),
+        )
+    return flipped

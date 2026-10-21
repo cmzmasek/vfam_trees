@@ -199,8 +199,8 @@ def generate_family_report(
                         edgecolor="white", linewidth=0.5)
                 ax.set_xlabel("Support value", fontsize=11)
                 ax.set_ylabel("Number of internal nodes", fontsize=11)
-                tool = tool_labels[key] or ("FastTree" if key == "500" else "IQ-TREE")
-                sup  = sup_labels[key]  or ("SH-like" if key == "500" else "SH-aLRT")
+                tool = tool_labels[key] or "IQ-TREE"
+                sup  = sup_labels[key]  or ("SH-aLRT" if key == "500" else "UFBoot")
                 ax.set_title(f"{_dn} tree_{key}\n{sup} ({tool}) (n={len(vals)})",
                              fontsize=11)
                 ax.set_xlim(0, 100)

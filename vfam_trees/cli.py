@@ -25,8 +25,8 @@ def main():
 
     Builds maximum-likelihood phylogenetic trees for one or more viral
     families using sequences downloaded from NCBI. For each family, two
-    trees are produced: a broad 500-sequence tree (FastTree) and a more
-    collapsed 100-sequence tree (IQ-TREE).
+    trees are produced: a broad 500-sequence tree (IQ-TREE --fast) and a
+    more collapsed 100-sequence tree (IQ-TREE full search with UFBoot).
 
     \b
     Typical workflow:
@@ -140,7 +140,7 @@ def run(
     quality filter → adaptive per-species clustering → proportional merge
     (RefSeqs preferred) → pre-MSA length-outlier removal →
     align (MAFFT) → trim alignment columns (trimAl) →
-    infer trees (FastTree for tree_500 / IQ-TREE for tree_100) →
+    infer trees (IQ-TREE: --fast for tree_500, full search for tree_100) →
     iterative post-tree branch-length outlier removal (re-align + re-tree) →
     annotate internal nodes (LCA taxonomy) → write Newick, PhyloXML,
     Auspice v2 JSON (viewable at auspice.us / Nextclade / `auspice view`),
@@ -407,14 +407,17 @@ defaults:
     max_500: 500
     max_100: 100
 
+  # --adjustdirection (nucleotide only) reverse-complements GenBank records
+  # deposited on the opposite strand; the pipeline strips MAFFT's "_R_"
+  # name prefix and logs the flipped ids.
   msa_500:
     tool: mafft
-    options_nuc: "--6merpair --retree 2"
+    options_nuc: "--retree 2 --adjustdirection"
     options_aa: "--auto"
 
   msa_100:
     tool: mafft
-    options_nuc: "--retree 3"
+    options_nuc: "--retree 3 --adjustdirection"
     options_aa: "--maxiterate 1000 --localpair"
 
   # Column trimming applied between MAFFT and tree inference (both tree_500
@@ -426,25 +429,26 @@ defaults:
     tool: trimal
     options: "-automated1"
 
-  # FastTree (tree_500) uses the same per-sequence-type option split as
-  # IQ-TREE (tree_100) — options_nuc for nucleotide runs, options_aa for
-  # protein runs (e.g. large DNA virus families with marker-gene fetches).
+  # tree_500: IQ-TREE --fast (same wall time as FastTree, clearly better
+  # likelihood); the wrapper auto-adds -alrt 1000 for SH-aLRT support.
+  # options_nuc applies to nucleotide runs, options_aa to protein runs
+  # (e.g. large DNA virus families with marker-gene fetches).
+  # FastTree remains available: set tool: fasttree AND options_nuc: "" /
+  # options_aa: "" (IQ-TREE options such as --fast are rejected at load).
   tree_500:
-    tool: fasttree
-    options_nuc: ""
-    options_aa: ""
+    tool: iqtree
+    options_nuc: "--fast"
+    options_aa: "--fast"
     model_nuc: GTR+G
     model_aa: LG+G
 
-  # IQ-TREE (tree_100) uses different options per sequence type.
-  # Nucleotide trees use --fast; the wrapper auto-adds -alrt 1000 for
-  # SH-aLRT branch support.  Protein trees use UFBoot (-B 1000) instead,
-  # which gives stronger support values on divergent protein families.
-  # --fast is incompatible with -B, hence the split.
+  # tree_100: full IQ-TREE search with SH-aLRT and UFBoot (--bnni curbs
+  # UFBoot overestimation under model violation).  Outputs carry the UFBoot
+  # value; the SH-aLRT value stays in the IQ-TREE .treefile under _work.
   tree_100:
     tool: iqtree
-    options_nuc: "--fast"
-    options_aa: "-B 1000"
+    options_nuc: "-alrt 1000 -B 1000 --bnni"
+    options_aa: "-alrt 1000 -B 1000 --bnni"
     model_nuc: GTR+G
     model_aa: TEST
 
@@ -560,8 +564,9 @@ def init(global_config: Path, force: bool):
 # test
 # ---------------------------------------------------------------------------
 
-REQUIRED_TOOLS = ["mafft", "iqtree2", "mmseqs", "FastTree", "trimal"]
+REQUIRED_TOOLS = ["mafft", "iqtree2", "mmseqs", "trimal"]
 OPTIONAL_TOOLS = ["cd-hit", "cd-hit-est"]
+FASTTREE_TOOLS = ["FastTree"]  # needed only when a tree block sets tool: fasttree
 HMM_TOOLS = ["hmmscan", "hmmpress"]  # HMMER; needed only when hmm.enabled
 REQUIRED_PACKAGES = ["Bio", "click", "yaml", "snakemake", "requests"]
 
@@ -578,8 +583,9 @@ def test(global_config: Path):
 
     Verifies:
       - Required Python packages (biopython, snakemake, taxopy, ...)
-      - Required external tools (mafft, iqtree2, mmseqs, FastTree, trimal)
+      - Required external tools (mafft, iqtree2, mmseqs, trimal)
       - Optional tools (cd-hit, cd-hit-est — only needed when clustering.tool: cdhit)
+      - FastTree (only needed when tree_500.tool or tree_100.tool is fasttree)
       - HMMER tools (hmmscan, hmmpress — only needed when hmm.enabled)
       - global.yaml exists and has ncbi.email set
       - Live connectivity to NCBI Entrez
@@ -628,6 +634,17 @@ def test(global_config: Path):
             click.echo(f"  [OK]  {tool}  ({path})")
         else:
             click.echo(f"  [--]  {tool}  (not found — only needed if clustering.tool: cdhit)")
+
+    click.echo("")
+
+    # FastTree (optional since v1.5.0 — both trees default to IQ-TREE)
+    click.echo("FastTree (only used when a tree block sets tool: fasttree):")
+    for tool in FASTTREE_TOOLS:
+        path = shutil.which(tool)
+        if path:
+            click.echo(f"  [OK]  {tool}  ({path})")
+        else:
+            click.echo(f"  [--]  {tool}  (not found — only needed if tool: fasttree)")
 
     click.echo("")
 

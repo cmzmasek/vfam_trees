@@ -1,11 +1,11 @@
 # vfam_trees
 
-**vfam_trees** is a bioinformatics pipeline for building maximum-likelihood phylogenetic trees for viral families. For each family it discovers species via NCBI Taxonomy, downloads sequences from GenBank, applies quality filtering, clusters per species, aligns with MAFFT, infers trees with FastTree and IQ-TREE, annotates internal nodes with LCA-based taxonomy, roots taxonomy-aware, and writes Newick, PhyloXML, and Auspice v2 (Nextstrain) JSON output along with PDF/PNG figures and per-run TSV summaries.
+**vfam_trees** is a bioinformatics pipeline for building maximum-likelihood phylogenetic trees for viral families. For each family it discovers species via NCBI Taxonomy, downloads sequences from GenBank, applies quality filtering, clusters per species, aligns with MAFFT, infers trees with IQ-TREE (FastTree optional), annotates internal nodes with LCA-based taxonomy, roots taxonomy-aware, and writes Newick, PhyloXML, and Auspice v2 (Nextstrain) JSON output along with PDF/PNG figures and per-run TSV summaries.
 
 Two trees are produced per family:
 
-- **tree_500** — broad diversity tree (up to 500 sequences, FastTree / GTR+G or LG+G, SH-like support)
-- **tree_100** — collapsed representative tree (up to 100 sequences, IQ-TREE / GTR+G or `TEST`-selected best-fit AA model; SH-aLRT support for nucleotide trees, UFBoot for protein trees)
+- **tree_500** — broad diversity tree (up to 500 sequences, IQ-TREE `--fast` / GTR+G or LG+G, SH-aLRT support)
+- **tree_100** — collapsed representative tree (up to 100 sequences, full IQ-TREE search / GTR+G or `TEST`-selected best-fit AA model; UFBoot support, SH-aLRT also computed)
 
 ## How it works
 
@@ -39,12 +39,12 @@ Each species' sequences are filtered in this order:
 
 ### 5. Alignment and tree inference
 
-- **MAFFT** with separate options for nucleotide vs. protein, and for tree_500 vs. tree_100 (the latter typically slower / more accurate).
+- **MAFFT** with separate options for nucleotide vs. protein, and for tree_500 vs. tree_100 (the latter typically slower / more accurate). Nucleotide alignments run with `--adjustdirection`: GenBank records deposited on the opposite strand are reverse-complemented before alignment (otherwise they land in the tree as nonsense long branches). MAFFT orients against the first record, so when that record is on the minority strand the finished alignment is reverse-complemented as a whole onto the majority strand (ties go to the strand of the smallest id); the strand never depends on record order and MAFFT runs once. The flipped accessions are logged, also when a cached alignment is reused, and the `*_sequences_raw_*.fasta` files keep the deposited orientation.
 - **trimAl** column trimming (`-automated1` by default) between MAFFT and tree inference; pre-trim length, tool, and options are recorded per tree.
-- **FastTree** for tree_500 (configurable `model_nuc` / `model_aa`; `+G` / `+GAMMA` enables discrete-gamma rate variation).
-- **IQ-TREE** for tree_100, with per-sequence-type options: `--fast` for nucleotides (SH-aLRT support, auto-added by the wrapper) and `-B 1000` for protein (UFBoot ultrafast bootstrap, more robust on divergent protein families). Setting `model_aa: TEST` triggers ModelFinder; the chosen model (e.g. `LG+I+G4`) is parsed from the IQ-TREE log and surfaces in `summary.tsv`, the per-family PDF, and the PhyloXML provenance.
-- **Branch-support measure** is picked per tree (`SH_like` / `SH_aLRT` / `UFBoot`) and recorded uniformly: `tree{500,100}_support_type` plus generic `support_{min,q1,median,q3,max,iqr}` columns; the PhyloXML `<confidence type="…">` attribute mirrors the same label.
-- **Iterative branch-length outlier removal** — between iterations, leaves with terminal branch length exceeding `median + factor × MAD` are removed and MSA + tree are re-run (up to `max_iterations`; only when ≥ `min_seqs` remain). RefSeqs are protected: a flagged RefSeq stays with a warning. Detailed per-outlier log lines include length, ratio to median, and threshold.
+- **IQ-TREE `--fast`** for tree_500 (SH-aLRT support, auto-added by the wrapper). It takes the same wall time as FastTree and reaches a clearly better likelihood. FastTree remains available: set `tree_500.tool: fasttree` together with `options_nuc: ""` and `options_aa: ""` (config validation rejects IQ-TREE options such as `--fast` under FastTree, and FastTree options under IQ-TREE). `+G` / `+GAMMA` enables discrete-gamma rate variation.
+- **IQ-TREE full search** for tree_100 with `-alrt 1000 -B 1000 --bnni`: SH-aLRT and UFBoot (ultrafast bootstrap, with `--bnni` to curb overestimation under model violation). The outputs carry the UFBoot value; the IQ-TREE `.treefile` under `_work/100/tree/` keeps both as `alrt/ufboot` labels. IQ-TREE 2.3.2 can abort in its post-bootstrap consensus step on particular taxon sets; the wrapper then scores the ML tree that run already found with SH-aLRT (a fixed-topology run that takes seconds; ModelFinder's pick is read from the aborted run's log) instead of failing the family, and the outputs report `SH_aLRT`. A `WARNING` in the family log says when this happened. Setting `model_aa: TEST` triggers ModelFinder; the chosen model (e.g. `LG+I+G4`) is parsed from the IQ-TREE log and surfaces in `summary.tsv`, the per-family PDF, and the PhyloXML provenance.
+- **Branch-support measure** is picked per tree (`SH_like` / `SH_aLRT` / `UFBoot` / `Bootstrap`) and recorded uniformly: `tree{500,100}_support_type` plus generic `support_{min,q1,median,q3,max,iqr}` columns; the PhyloXML `<confidence type="…">` attribute mirrors the same label. When several IQ-TREE measures are requested (any of `-alrt`/`--alrt`, `-lbp`, `-abayes`, `-B`/`--ufboot`, `-b`/`--boot`), each node keeps one value: the bootstrap-type one if present, else SH-aLRT. `_work/<label>/tree/tree_<label>.tree_info.json` records the tool, options and the measure the tree actually carries.
+- **Iterative branch-length outlier removal** — between iterations, leaves with terminal branch length exceeding `median + factor × MAD` are removed and MSA + tree are re-run (up to `max_iterations`; only when ≥ `min_seqs` remain). Zero-length tips (identical sequences, ≤ 1e-5 subs/site; IQ-TREE writes them as 1e-6) are left out of the median and MAD, so families with many identical genomes don't get an artificially low threshold. RefSeqs are protected: a flagged RefSeq stays with a warning. Detailed per-outlier log lines include length, ratio to median, and threshold.
 - **Multi-marker protein concatenation** — large DNA virus families with curated marker presets concatenate per-marker MAFFT + trimAl alignments into a single matrix; tree_100 uses partitioned IQ-TREE (`-p partitions.nex -m MFP`) so each marker gets its own ModelFinder pick. Markers are found either by GenBank name (per-marker query) or, when `hmm.enabled`, by HMMER profile homology over one all-proteins-per-species fetch (see [HMM-based marker identification](#hmm-based-marker-identification)); either way the returned proteins are bucketed by source nucleotide accession (Policy A). A length filter (`concatenation.source_nuc_min_length_frac`, default 0.3) drops source-nuc accessions shorter than that fraction of the longest parent so partial single-gene submissions don't crowd out genome-scale proteins under `download.max_per_species` (default 3000 for concat families). See [CONCAT_DESIGN.md](CONCAT_DESIGN.md) for design details.
 
 ### 6. Annotation and rooting
@@ -70,7 +70,7 @@ Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 - **Additional data sources (outbreak sequences)** — supplement a family tree with forced-include sequences from [Pathoplexus](https://pathoplexus.org) via the `additional_data_sources` config block. These bypass QC and clustering (like `manual.include`) but carry real host/location/date/taxon metadata, so they are coloured by genus. Useful for grafting the latest outbreak genomes onto an existing tree. See [Additional data sources (Pathoplexus)](#additional-data-sources-pathoplexus).
 - **HMM-based marker identification** — for large DNA virus families with inconsistent annotation, identify marker proteins by **HMMER profile homology** instead of GenBank protein names, via the per-family `hmm:` config block. Each marker carries an `hmms:` token — a single curated Pfam-A profile (`"DNA_pol_B"`) or a multidomain architecture (`"Adeno_hexon--Adeno_hexon_C"`, HMMs in N-to-C order). Hits are gated on the curated Pfam GA bit-score (or an E-value) plus HMM-model coverage; the all-proteins-per-species pool is grouped by source genome and assigned to markers by HMM. Works on both the single-marker and concatenated-marker paths. Bundled CC0 Pfam-A sets ship for **Poxviridae** (8 markers) and **Adenoviridae** (hexon); requires HMMER on `$PATH`. See [HMM-based marker identification](#hmm-based-marker-identification).
 - **Pre-configured family presets** — 28 segmented RNA virus families (segment keywords) and 26 DNA virus families (sequence type, region/marker, and concat marker sets for the 15 families that use concatenation) ship with curated defaults.
-- **Checkpointing** — MSA and tree steps store a content-hashed sidecar of inputs + tool / model / options, so any change auto-invalidates the cache. Each iterative outlier-removal pass gets its own hash; partially-completed runs resume in the right place.
+- **Checkpointing** — MSA and tree steps store a content-hashed sidecar of inputs + tool / model / options (and, for trees, the tool version), so any change, including a tool upgrade, auto-invalidates the cache. Each iterative outlier-removal pass gets its own hash; partially-completed runs resume in the right place.
 - **Family-annotation TSV** (optional) — joins extra per-family columns (e.g. `baltimore_class`) into `summary.tsv` and `status.tsv`. Missing file or family is silent.
 - **Stage tracking** — `vfam_trees status` reports the current processing stage for in-progress families (downloading/QC, MSA, tree inference, annotating).
 - **Dry-run mode** — `vfam_trees run --dry-run` previews per-family parameters without executing.
@@ -94,16 +94,17 @@ matplotlib >= 3.9    # PDF report and tree images; requires NumPy 2.x compatible
 |------|---------|
 | `mafft` | Multiple sequence alignment |
 | `trimal` | Alignment column trimming |
-| `FastTree` | Rapid ML tree inference (tree_500) |
-| `iqtree2` | ML tree inference (tree_100) |
+| `FastTree` | Optional alternative tree tool (`tool: fasttree`); not needed by the defaults, and `vfam_trees test` reports it as optional |
+| `iqtree2` | ML tree inference (tree_500 and tree_100) |
 | `mmseqs` | Sequence clustering |
 | `hmmscan`, `hmmpress` (HMMER) | *Optional* — HMM-based marker identification (only when `hmm.enabled`) |
 
 All required tools must be available on `$PATH`. Installation via conda is recommended:
 
 ```bash
-conda install -c bioconda mafft fasttree iqtree mmseqs2 trimal
+conda install -c bioconda mafft iqtree mmseqs2 trimal
 conda install -c bioconda hmmer        # only needed for HMM-based marker identification
+conda install -c bioconda fasttree     # only needed for tool: fasttree
 ```
 
 ## Installation
@@ -236,13 +237,13 @@ targets:
 
 msa_500:
   tool: mafft
-  options_nuc: "--6merpair --retree 2"   # used for nucleotide sequences
-  options_aa: "--auto"                   # used for amino acid sequences (MAFFT auto-selects strategy)
+  options_nuc: "--retree 2 --adjustdirection"   # nucleotide; --adjustdirection flips opposite-strand records
+  options_aa: "--auto"                          # amino acid (MAFFT auto-selects strategy)
 
 msa_100:
   tool: mafft
-  options_nuc: "--retree 3"                       # used for nucleotide sequences
-  options_aa: "--maxiterate 1000 --localpair"     # used for amino acid sequences (MAFFT L-INS-i; high accuracy, slower)
+  options_nuc: "--retree 3 --adjustdirection"     # nucleotide
+  options_aa: "--maxiterate 1000 --localpair"     # amino acid (MAFFT L-INS-i; high accuracy, slower)
 
 msa_trim:
   enabled: true                  # drop poorly-aligned columns before tree inference
@@ -250,17 +251,16 @@ msa_trim:
   options: "-automated1"         # adaptive; works for both nucleotide and protein
 
 tree_500:
-  tool: fasttree
-  options_nuc: ""             # used for nucleotide sequences
-  options_aa: ""              # used for amino acid sequences (e.g. marker-gene families)
+  tool: iqtree                # FastTree: tool: fasttree plus options_nuc/options_aa: ""
+  options_nuc: "--fast"       # nucleotide; SH-aLRT support auto-added by the wrapper
+  options_aa: "--fast"        # amino acid (e.g. marker-gene families)
   model_nuc: GTR+G
   model_aa: LG+G              # LG+G used for amino acid sequences
 
 tree_100:
   tool: iqtree
-  options_nuc: "--fast"        # nucleotide: SH-aLRT support (auto-added by wrapper)
-  options_aa: "-B 1000"        # protein: UFBoot ultrafast bootstrap (stronger support
-                               # for divergent protein families; --fast is incompatible with -B)
+  options_nuc: "-alrt 1000 -B 1000 --bnni"   # full search; outputs carry UFBoot, SH-aLRT stays in the .treefile
+  options_aa: "-alrt 1000 -B 1000 --bnni"
   model_nuc: GTR+G
   model_aa: TEST               # TEST = IQ-TREE ModelFinder; the chosen best-fit model
                                # is recorded in summary.tsv / PDF / PhyloXML instead of "TEST"
@@ -656,7 +656,7 @@ Filoviridae
 
 | File | Description |
 |------|-------------|
-| `summary.tsv` | One row per family analyzed (success or skip): species counts, QC breakdown, sequence-length stats, clustering thresholds, MSA / trim / tree program-model-options, leaf counts, support stats, length- and branch-outlier counts and cutoffs, genus/subfamily counts, plus joined columns from `annotation_tsv` (e.g. `baltimore_class`) |
+| `summary.tsv` | One row per family analyzed (success or skip): species counts, QC breakdown, sequence-length stats, clustering thresholds, MSA / trim / tree program-model-options, leaf counts, support stats, length- and branch-outlier counts and cutoffs, genus/subfamily counts, plus joined columns from `annotation_tsv` (e.g. `baltimore_class`). Rows are written by column name, so appending to a file from an earlier version first rewrites its header to the current columns |
 | `status.tsv` | Lightweight one-row-per-family table: `family`, `ncbi_taxid`, `molecule_region`, `status` (`OK` or skip reason), `lineage`, `baltimore_class` |
 | `overview_tree_100.png` | Thumbnail grid of all tree_100 trees, shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) |
 

@@ -8,6 +8,112 @@ The full per-commit history is in `git log`; this file summarizes only
 changes that affect outputs, configuration, CLI behaviour, or other
 user-visible surface area.
 
+## [1.5.0] — 2026-10-20
+
+Inference defaults from the 2026-10-20 accuracy review (benchmarks below).
+Only templates changed (`DEFAULT_FAMILY_CONFIG`, `GLOBAL_CONFIG_TEMPLATE`);
+existing YAML files keep their values, so edit `config/global.yaml` and use a
+fresh per-family configs directory to pick these up. A global.yaml that still
+says `tree_500: tool: fasttree` now fails at load time (see *Added*).
+
+### Changed
+- **tree_500 is inferred with IQ-TREE `--fast`** instead of FastTree: same wall
+  time with a clearly better likelihood (benchmarks below). Support becomes
+  SH-aLRT (`tree500_support_type` = `SH_aLRT`; was `SH_like`). FastTree remains
+  available: `tool: fasttree` together with `options_nuc: ""` and
+  `options_aa: ""`. FastTree is optional in `vfam_trees test` now.
+- **tree_100 runs a full IQ-TREE search with `-alrt 1000 -B 1000 --bnni`** for
+  both nucleotide and protein trees (was `--fast` for nucleotide, `-B 1000` for
+  protein). The outputs carry the UFBoot value (`tree100_support_type` =
+  `UFBoot`); the `.treefile` under `_work/100/tree/` keeps all values as
+  `alrt/ufboot` labels.
+- **Nucleotide MAFFT runs use `--adjustdirection`** (msa_500 and msa_100).
+  GenBank records deposited on the opposite strand are reverse-complemented
+  before alignment instead of entering the tree as nonsense long branches
+  (2 of 202 hantavirus L segments and 1 of 500 alphasatellites in the
+  2026-10-20 run). MAFFT orients against the first record; when that record
+  is on the minority strand, the finished alignment is reverse-complemented
+  as a whole so it sits on the majority strand (ties go to the strand of the
+  smallest id), so the result never depends on record order and MAFFT runs
+  only once. The flipped accessions are logged at WARNING level, also when a
+  cached alignment is reused (recorded in `<alignment>.flipped`). The
+  `*_sequences_raw_*.fasta` files keep the deposited orientation.
+- msa_500 nucleotide options are `--retree 2 --adjustdirection` (the redundant
+  `--6merpair` is gone; it is MAFFT's default distance anyway).
+- **One support value per node, for any combination of IQ-TREE measures.**
+  `-alrt`/`--alrt`, `-lbp`/`--lbp`, `-abayes`/`--abayes`, `-B`/`--ufboot`/`-bb`
+  and `-b`/`--boot` are all recognised; IQ-TREE's slash-joined labels
+  (`alrt/lbp/abayes/ufboot`) are reduced to the bootstrap-type value, else
+  SH-aLRT, and `support_type_for` names that value. The `SH_aLRT_UFBoot`
+  label is gone.
+- The tree cache key includes the tree tool's version, so trees are rebuilt
+  after a FastTree / IQ-TREE upgrade.
+
+### Added
+- **Tree options are checked at config load.** `tree_500` / `tree_100` must
+  name `iqtree` or `fasttree`, and the options key the run uses must not hold
+  the other tool's options (e.g. `--fast` under FastTree, `-gtr` under
+  IQ-TREE). Previously such a config failed per family after fetch and
+  alignment.
+- `<prefix>.tree_info.json` beside every tree in `_work/<label>/tree/`: tool,
+  options, the support measure the tree carries, and a note when IQ-TREE's
+  UFBoot fallback was used. Written for every tool and removed before every
+  run, so it always describes the tree next to it.
+
+### Fixed
+- **A UFBoot run that aborts no longer fails the family.** IQ-TREE 2.3.2 can
+  abort in its post-bootstrap consensus step (`Assertion '!findSplit(sp)'
+  failed` in `hashsplitset.cpp`) on particular taxon sets; the tree file it
+  leaves holds the final ML tree but no support values. The wrapper now
+  scores that fixed tree with SH-aLRT (`-t … --tree-fix`; ModelFinder's pick
+  is read from the run's log, a partitioned run's from its
+  `.best_scheme.nex`), which takes seconds, and repeats the search without
+  UFBoot only if that is impossible. `summary.tsv`, the PDF and PhyloXML then
+  report `SH_aLRT` and the options it came from (`-alrt 1000`), not UFBoot.
+- **Branch-length outliers with IQ-TREE trees.** Zero-length tips are left out
+  of the median / MAD, but the filter tested `> 0` and IQ-TREE writes them as
+  1e-6 (FastTree writes 0.0). On a tree_500 with many identical tips (e.g.
+  outbreak genomes) the threshold collapsed and ordinary tips were removed;
+  in a synthetic tree of 30 identical, 30 near-identical and 40 ordinary tips
+  all 40 ordinary tips were flagged. Branches ≤ 1e-5 now count as zero.
+- **The tree model now reaches `summary.tsv`.** `tree{500,100}_tree_model` and
+  `tree{500,100}_seq_type` were written by `build_summary_row` but missing from
+  `summary.COLUMNS`, and `csv.DictWriter(extrasaction="ignore")` dropped them
+  without a word (the per-family PDF was unaffected — it reads the in-memory
+  row). All four are declared now; a test asserts every key the builder
+  writes is declared.
+- **Appending to a `summary.tsv` / status TSV from another version** no longer
+  shifts columns: a file whose header differs is rewritten under the current
+  columns (plus any extra old ones) before the row is added, rows matched by
+  column name.
+- `vfam_trees test` no longer fails on a machine without FastTree, and the
+  FastTree version probe can no longer wait on standard input.
+
+### Benchmarks (2026-10-20)
+Hantavirus L segment from the 2026-10-20 run; 3 threads under load, so times
+are conservative. IQ-TREE 2.3.2, FastTree 2.1.11, MAFFT 7.520, trimAl 1.5.
+Likelihoods are for each topology re-optimised under GTR+G on the same
+alignment.
+
+| tree_500 set (202 × 6506 nt) | Time | lnL |
+|---|---|---|
+| FastTree `-nt -gtr -gamma` (old default) | 15 s | −418,410 |
+| FastTree `-spr 4 -mlacc 2 -slownni` | 30 s | −418,385 |
+| IQ-TREE `--fast -alrt 1000` (new default) | 17 s | −418,173 |
+| IQ-TREE full search | 451 s | −418,168 |
+
+| tree_100 set (99 × 6370 nt) | Time | Note |
+|---|---|---|
+| IQ-TREE `--fast` (old default) | 7 s | same topology as the full search |
+| full search `-alrt 1000 -B 1000 --bnni` (new default) | 248 s | adds UFBoot |
+| full search `-m MFP` | 1066 s | GTR+F+I+R10, lnL +680 |
+
+MAFFT modes on the tree_100 raw set (`--retree 2` 63 s, FFT-NS-i 88 s,
+E-INS-i 693 s, L-INS-i 1271 s) kept 74–80% of columns after trimAl at the same
+median pairwise identity, so alignment mode is not where accuracy is lost;
+whole-genome nucleotide alignment of divergent families is (e.g. Xinmoviridae
+keeps 13% of columns at median identity 0.50).
+
 ## [1.4.0] — 2026-10-20
 
 ### Added

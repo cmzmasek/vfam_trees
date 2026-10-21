@@ -627,12 +627,15 @@ DEFAULT_FAMILY_CONFIG: dict = {
     },
     "msa_500": {
         "tool": "mafft",
-        "options_nuc": "--6merpair --retree 2",
+        # --adjustdirection (nucleotide only): reverse-complements GenBank
+        # records deposited on the opposite strand.  The MSA wrapper strips
+        # MAFFT's "_R_" name prefix and the pipeline logs the flipped ids.
+        "options_nuc": "--retree 2 --adjustdirection",
         "options_aa": "--auto",
     },
     "msa_100": {
         "tool": "mafft",
-        "options_nuc": "--retree 3",
+        "options_nuc": "--retree 3 --adjustdirection",
         "options_aa": "--maxiterate 1000 --localpair",
     },
     "msa_trim": {
@@ -641,20 +644,24 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "options": "-automated1",
     },
     "tree_500": {
-        "tool": "fasttree",
-        "options_nuc": "",
-        "options_aa": "",
+        # IQ-TREE --fast: same wall time as FastTree with a clearly better
+        # likelihood (2026-10 benchmark, see CHANGELOG 1.5.0).  The wrapper
+        # adds -alrt 1000, so the tree carries SH-aLRT support.  FastTree is
+        # still available: tool: fasttree with options_nuc / options_aa set
+        # to "" (config validation rejects IQ-TREE options under FastTree).
+        "tool": "iqtree",
+        "options_nuc": "--fast",
+        "options_aa": "--fast",
         "model_nuc": "GTR+G",
         "model_aa": "LG+G",
     },
     "tree_100": {
         "tool": "iqtree",
-        # Nucleotide: --fast (SH-aLRT branch support auto-added by the
-        # IQ-TREE wrapper). Protein: UFBoot (-B 1000) produces stronger
-        # support on divergent protein families; --fast is incompatible
-        # with -B so a separate option is required.
-        "options_nuc": "--fast",
-        "options_aa": "-B 1000",
+        # Full tree search with SH-aLRT and UFBoot; --bnni curbs UFBoot
+        # overestimation under model violation.  Outputs carry the UFBoot
+        # value; the SH-aLRT value stays in the IQ-TREE .treefile in _work.
+        "options_nuc": "-alrt 1000 -B 1000 --bnni",
+        "options_aa": "-alrt 1000 -B 1000 --bnni",
         "model_nuc": "GTR+G",
         "model_aa": "TEST",
     },
@@ -985,6 +992,66 @@ _NULLABLE_NUMERIC_FIELDS: tuple = (
     (("quality", "min_length"), "int",    1,    None, True, True),
     (("quality", "max_length"), "int",    1,    None, True, True),
 )
+
+
+# Options only one of the two tree tools understands.  Each list holds
+# spellings the other tool does not have, so a hit is always a mistake —
+# typically a tool switched without clearing the options inherited from the
+# template (whose options_nuc / options_aa keys always win over a bare
+# legacy ``options`` key).
+_IQTREE_ONLY_OPTIONS = frozenset({
+    "--fast", "-alrt", "--alrt", "-abayes", "--abayes", "-lbp", "--lbp",
+    "-B", "--ufboot", "-bb", "-b", "--boot", "--bnni", "-m", "-T", "-p",
+    "-te", "--tree-fix", "--seqtype", "--prefix", "-s",
+})
+_FASTTREE_ONLY_OPTIONS = frozenset({
+    "-gtr", "-gamma", "-wag", "-lg", "-cat", "-nocat", "-spr", "-mlacc",
+    "-slownni", "-fastest", "-pseudo", "-nosupport", "-noml", "-nome",
+    "-mllen", "-bionj", "-topm", "-close", "-refresh", "-gtrrates",
+    "-gtrfreqs", "-intree", "-constraints",
+})
+_TREE_TOOLS = {"fasttree": "FastTree", "iqtree": "IQ-TREE", "iqtree2": "IQ-TREE"}
+
+
+def _validate_tree_blocks(cfg: dict, family: str) -> None:
+    """Check tree_500 / tree_100: a known tool, and options that tool accepts.
+
+    Only the options key the run will use is checked (``options_aa`` for
+    protein and concatenated runs, else ``options_nuc``; the legacy bare
+    ``options`` key when neither is set), mirroring
+    ``pipeline._resolve_tree_options``.  Raises ``ValueError`` at load time
+    instead of failing after the fetch and alignment.
+    """
+    seq = cfg.get("sequence") or {}
+    protein = seq.get("type") == "protein" or seq.get("region") == "concatenated"
+    key = "options_aa" if protein else "options_nuc"
+    for label in ("500", "100"):
+        block_name = f"tree_{label}"
+        block = cfg.get(block_name) or {}
+        tool = str(block.get("tool", "")).lower().replace("-", "").replace("_", "")
+        if tool not in _TREE_TOOLS:
+            raise ValueError(
+                f"{family}: {block_name}.tool must be 'iqtree' or 'fasttree' "
+                f"(got {block.get('tool')!r})."
+            )
+        used_key = key if key in block else "options"
+        options = block.get(used_key) or ""
+        if not isinstance(options, str):
+            raise ValueError(
+                f"{family}: {block_name}.{used_key} must be a string of "
+                f"command-line options (got {type(options).__name__})."
+            )
+        wrong = _IQTREE_ONLY_OPTIONS if tool == "fasttree" else _FASTTREE_ONLY_OPTIONS
+        bad = [o for o in options.split() if o in wrong]
+        if bad:
+            other = "IQ-TREE" if tool == "fasttree" else "FastTree"
+            raise ValueError(
+                f"{family}: {block_name}.tool is {block.get('tool')!r} but "
+                f"{block_name}.{used_key} has {other} option(s) {' '.join(bad)}, "
+                f"which {_TREE_TOOLS[tool]} rejects. When switching tools, set "
+                f"{block_name}.options_nuc and {block_name}.options_aa as well "
+                f"(\"\" for none)."
+            )
 
 
 def _validate_numeric_fields(cfg: dict, family: str) -> None:
@@ -1530,6 +1597,7 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
         _warn_smart_default_conflicts(family, file_cfg, config_path)
         cfg = _merge_with_defaults(file_cfg, global_cfg, family)
         _validate_numeric_fields(cfg, family)
+        _validate_tree_blocks(cfg, family)
         _validate_concatenation_block(cfg, family)
         _validate_manual_block(cfg, family)
         _validate_additional_data_sources(cfg, family)
@@ -1538,6 +1606,7 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
     else:
         cfg = _generate_default_family_config(family, global_cfg)
         _validate_numeric_fields(cfg, family)
+        _validate_tree_blocks(cfg, family)
         _validate_concatenation_block(cfg, family)
         _validate_manual_block(cfg, family)
         _validate_additional_data_sources(cfg, family)

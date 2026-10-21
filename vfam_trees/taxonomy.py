@@ -64,7 +64,7 @@ def annotate_tree(
         metadata: list of metadata dicts (each must have 'short_id' and 'lineage')
         output_nwk: path to write annotated Newick
         support_type: branch-support label ('SH_like', 'SH_aLRT', 'UFBoot',
-                      'SH_aLRT_UFBoot', 'Bootstrap'). When set, controls
+                      'Bootstrap'). When set, controls
                       whether confidences get rescaled from [0,1] to [0,100]
                       (only SH_like uses fractional support); falls back to
                       a max-value heuristic when empty.
@@ -580,7 +580,7 @@ def _normalize_bootstrap(tree: BioTree, support_type: str = "") -> None:
     """Scale confidence values to 0–100 and round to integer.
 
     Only ``SH_like`` (FastTree) uses the [0,1] range; ``SH_aLRT``,
-    ``UFBoot``, ``SH_aLRT_UFBoot``, and ``Bootstrap`` natively use [0,100].
+    ``UFBoot`` and ``Bootstrap`` natively use [0,100].
     When support_type is provided, rescaling is decided deterministically by
     that label.  When it is empty (legacy callers), fall back to the
     max-value heuristic (max ≤ 1.0 → rescale).

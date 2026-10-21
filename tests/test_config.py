@@ -18,6 +18,7 @@ from vfam_trees.config import (
     _validate_additional_data_sources,
     _validate_concatenation_block,
     _validate_hmm_block,
+    _validate_tree_blocks,
     _validate_manual_block,
     _validate_numeric_fields,
     _warn_smart_default_conflicts,
@@ -1604,3 +1605,98 @@ class TestHmmPresets:
         _validate_hmm_block(cfg, "Circoviridae")
         assert cfg["hmm"]["enabled"] is False
         assert cfg["hmm"]["database"] is None
+
+
+# ---------------------------------------------------------------------------
+# v1.5.0 inference defaults (accuracy review, 2026-10-20)
+# ---------------------------------------------------------------------------
+
+class TestInferenceDefaults:
+    def test_tree_500_is_iqtree_fast(self):
+        t5 = DEFAULT_FAMILY_CONFIG["tree_500"]
+        assert t5["tool"] == "iqtree"
+        assert t5["options_nuc"].split() == ["--fast"]
+        assert t5["options_aa"].split() == ["--fast"]
+
+    def test_tree_100_full_search_with_both_supports(self):
+        t1 = DEFAULT_FAMILY_CONFIG["tree_100"]
+        assert t1["tool"] == "iqtree"
+        for key in ("options_nuc", "options_aa"):
+            parts = t1[key].split()
+            assert "--fast" not in parts
+            assert "-alrt" in parts and "-B" in parts and "--bnni" in parts
+
+    def test_nucleotide_msa_adjusts_direction(self):
+        for block in ("msa_500", "msa_100"):
+            nuc = DEFAULT_FAMILY_CONFIG[block]["options_nuc"].split()
+            aa = DEFAULT_FAMILY_CONFIG[block]["options_aa"].split()
+            assert "--adjustdirection" in nuc
+            # MAFFT accepts --adjustdirection for nucleotide input only.
+            assert "--adjustdirection" not in aa
+        assert "--retree" in DEFAULT_FAMILY_CONFIG["msa_500"]["options_nuc"]
+
+    def test_global_template_mirrors_family_defaults(self):
+        from vfam_trees.cli import GLOBAL_CONFIG_TEMPLATE
+        tmpl = yaml.safe_load(GLOBAL_CONFIG_TEMPLATE)["defaults"]
+        for block in ("msa_500", "msa_100", "tree_500", "tree_100"):
+            assert tmpl[block] == DEFAULT_FAMILY_CONFIG[block], block
+
+
+
+# ---------------------------------------------------------------------------
+# _validate_tree_blocks — tool and options must match (load-time check)
+# ---------------------------------------------------------------------------
+
+class TestValidateTreeBlocks:
+    def _cfg(self, override, family="Xinmoviridae"):
+        return _merge_with_defaults(copy.deepcopy(override), make_minimal_global_cfg(), family)
+
+    def test_defaults_pass(self):
+        for fam in ("Xinmoviridae", "Circoviridae", "Poxviridae"):
+            _validate_tree_blocks(self._cfg({}, fam), fam)
+
+    def test_fasttree_with_template_options_rejected(self):
+        # The template's options_nuc ("--fast") wins over anything else, so
+        # switching only the tool used to crash FastTree per family.
+        with pytest.raises(ValueError, match=r"tree_500.*--fast.*FastTree rejects"):
+            _validate_tree_blocks(self._cfg({"tree_500": {"tool": "fasttree"}}), "Xinmoviridae")
+
+    def test_old_style_fasttree_block_rejected(self):
+        cfg = self._cfg({"tree_500": {"tool": "fasttree", "options": ""}})
+        with pytest.raises(ValueError, match="options_nuc"):
+            _validate_tree_blocks(cfg, "Xinmoviridae")
+
+    def test_fasttree_with_cleared_options_passes(self):
+        cfg = self._cfg({"tree_500": {"tool": "fasttree", "options_nuc": "", "options_aa": ""}})
+        _validate_tree_blocks(cfg, "Xinmoviridae")
+
+    def test_fasttree_own_options_pass(self):
+        cfg = self._cfg({"tree_500": {"tool": "fasttree",
+                                      "options_nuc": "-spr 4 -mlacc 2 -slownni",
+                                      "options_aa": ""}})
+        _validate_tree_blocks(cfg, "Xinmoviridae")
+
+    def test_iqtree_with_fasttree_options_rejected(self):
+        cfg = self._cfg({"tree_100": {"options_nuc": "-gtr -gamma"}})
+        with pytest.raises(ValueError, match=r"tree_100.*-gtr -gamma.*IQ-TREE rejects"):
+            _validate_tree_blocks(cfg, "Xinmoviridae")
+
+    def test_only_the_options_key_in_use_is_checked(self):
+        # Nucleotide family: options_aa is never used, so it is not checked.
+        cfg = self._cfg({"tree_500": {"tool": "fasttree", "options_nuc": ""}})
+        _validate_tree_blocks(cfg, "Xinmoviridae")
+        # Protein family: options_aa is the one in use.
+        with pytest.raises(ValueError, match="options_aa"):
+            _validate_tree_blocks(
+                self._cfg({"tree_500": {"tool": "fasttree", "options_nuc": ""}}, "Circoviridae"),
+                "Circoviridae",
+            )
+
+    def test_unknown_tool_rejected(self):
+        with pytest.raises(ValueError, match="must be 'iqtree' or 'fasttree'"):
+            _validate_tree_blocks(self._cfg({"tree_100": {"tool": "raxml"}}), "Xinmoviridae")
+
+    def test_load_family_config_runs_the_check(self, tmp_path):
+        (tmp_path / "Xinmoviridae.yaml").write_text("tree_500:\n  tool: fasttree\n")
+        with pytest.raises(ValueError, match="FastTree rejects"):
+            load_family_config("Xinmoviridae", tmp_path, make_minimal_global_cfg())

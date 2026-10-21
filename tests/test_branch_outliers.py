@@ -112,3 +112,35 @@ def test_pipeline_private_aliases_exist():
     )
     assert _branch_length_stats is branch_length_stats
     assert _find_branch_length_outliers is find_branch_length_outliers
+
+
+# ---------------------------------------------------------------------------
+# IQ-TREE writes zero-length tips as its minimum branch length (1e-6), not 0.0.
+# Those must be left out of the median / MAD exactly like FastTree's zeros,
+# or a tree with many near-identical tips gets a tiny threshold and ordinary
+# tips are flagged.
+# ---------------------------------------------------------------------------
+
+def _outbreak_like(tmp_path, name, zero_value):
+    """30 identical tips, 30 near-identical ones, 40 ordinary ones."""
+    tips = [f"Z{i}:{zero_value}" for i in range(30)]
+    tips += [f"N{i}:{0.0001 + 0.00001 * i:.6f}" for i in range(30)]
+    tips += [f"T{i}:{0.05 + 0.004 * i:.4f}" for i in range(40)]
+    path = tmp_path / name
+    path.write_text("(" + ",".join(tips) + ");")
+    return path
+
+
+class TestIqtreeMinimumBranchLength:
+    def test_iqtree_minimum_treated_like_fasttree_zero(self, tmp_path):
+        fasttree = branch_length_stats(_outbreak_like(tmp_path, "ft.nwk", "0.0"))
+        iqtree = branch_length_stats(_outbreak_like(tmp_path, "iq.nwk", "0.0000010000"))
+        assert iqtree["median"] == pytest.approx(fasttree["median"])
+        assert iqtree["mad"] == pytest.approx(fasttree["mad"])
+
+    def test_identical_tips_do_not_flag_ordinary_tips(self, tmp_path):
+        nwk = _outbreak_like(tmp_path, "iq.nwk", "0.0000010000")
+        # Counting the 1e-6 tips puts the median among the near-identical
+        # ones (~3e-4), so median + 20 × MAD fell below every ordinary tip
+        # and all 40 were flagged.
+        assert find_branch_length_outliers(nwk, factor=20.0) == set()

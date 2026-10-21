@@ -11,6 +11,13 @@ from pathlib import Path
 
 from Bio import Phylo
 
+# Terminal branches at or below this length count as zero (identical or
+# near-identical sequences) and are left out of the median / MAD.  FastTree
+# writes such branches as 0.0, but IQ-TREE writes its minimum branch length,
+# 1e-6, so a plain "> 0" test let them in.  1e-5 subs/site is under one
+# substitution even for a 100 kb alignment, so no real branch is lost.
+ZERO_BRANCH_LENGTH = 1e-5
+
 
 def branch_length_stats(treefile: Path) -> dict:
     """Return median, MAD, and per-leaf branch-length map for a Newick file.
@@ -28,7 +35,7 @@ def branch_length_stats(treefile: Path) -> dict:
         c.name: c.branch_length for c in bio_tree.get_terminals()
         if c.name and c.branch_length is not None
     }
-    bls = [b for b in bl_map.values() if b > 0]
+    bls = [b for b in bl_map.values() if b > ZERO_BRANCH_LENGTH]
     if len(bls) < 3:
         return {"median": 0.0, "mad": 0.0, "bl_map": bl_map}
     median_bl = statistics.median(bls)

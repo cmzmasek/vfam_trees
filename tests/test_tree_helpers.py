@@ -4,13 +4,20 @@ from pathlib import Path
 import pytest
 
 from vfam_trees.tree import (
+    TREE_INFO_SUFFIX,
     _fasttree_aa_flags,
     _fasttree_nuc_flags,
     is_model_finder_spec,
+    keep_support_value,
+    kept_support,
     parse_iqtree_best_model,
     parse_iqtree_partition_models,
+    read_tree_info,
+    strip_ufboot_flags,
+    support_measures,
     support_type_for,
     validate_newick,
+    with_default_support,
 )
 
 
@@ -250,8 +257,14 @@ class TestSupportTypeFor:
         # SH_aLRT in summary.tsv / PhyloXML.
         assert support_type_for("iqtree", "-B 1000") == "UFBoot"
 
-    def test_iqtree_with_ufboot_and_alrt(self):
-        assert support_type_for("iqtree", "-B 1000 -alrt 1000") == "SH_aLRT_UFBoot"
+    def test_iqtree_with_ufboot_and_alrt_carries_ufboot(self):
+        # v1.5.0 tree_100 default: IQ-TREE writes "alrt/ufboot" labels and the
+        # wrapper keeps the UFBoot value, so that is what the outputs carry.
+        assert support_type_for("iqtree", "-B 1000 -alrt 1000") == "UFBoot"
+        assert support_type_for("iqtree", "-alrt 1000 -B 1000 --bnni") == "UFBoot"
+
+    def test_iqtree_with_alrt_and_standard_bootstrap(self):
+        assert support_type_for("iqtree", "-alrt 1000 -b 100") == "Bootstrap"
 
     def test_iqtree_with_standard_bootstrap(self):
         assert support_type_for("iqtree", "-b 100") == "Bootstrap"
@@ -314,3 +327,260 @@ class TestIqtreeSeqtype:
         i = cmd.index("--seqtype")
         assert cmd[i + 1] == "AA"
 
+
+
+# ---------------------------------------------------------------------------
+# Support-flag classifier: every IQ-TREE spelling, IQ-TREE's label order.
+# ---------------------------------------------------------------------------
+
+class TestSupportClassifier:
+    def test_long_and_legacy_spellings(self):
+        assert support_measures("--alrt 1000 -B 1000".split()) == ["alrt", "ufboot"]
+        assert support_measures("-alrt 1000 --ufboot 1000".split()) == ["alrt", "ufboot"]
+        assert support_measures("-bb 1000".split()) == ["ufboot"]
+        assert support_measures("--boot 100".split()) == ["bootstrap"]
+        assert support_measures("--abayes --lbp 1000".split()) == ["lbp", "abayes"]
+
+    def test_label_order_matches_iqtree(self):
+        # IQ-TREE 2.3.2: "SH-aLRT / local bootstrap / aBayes / ultrafast bootstrap"
+        parts = "-B 1000 --abayes --lbp 1000 --alrt 1000".split()
+        assert support_measures(parts) == ["alrt", "lbp", "abayes", "ufboot"]
+
+    def test_default_alrt_added_only_without_alrt_or_bootstrap(self):
+        assert with_default_support(["--fast"]) == ["-alrt", "1000", "--fast"]
+        assert with_default_support(["--abayes"]) == ["-alrt", "1000", "--abayes"]
+        assert with_default_support(["--alrt", "1000"]) == ["--alrt", "1000"]
+        assert with_default_support(["-B", "1000"]) == ["-B", "1000"]
+        assert with_default_support(["-b", "100"]) == ["-b", "100"]
+
+    def test_kept_support_prefers_bootstrap_then_alrt(self):
+        assert kept_support("-alrt 1000 -B 1000 --bnni".split()) == ("ufboot", 1, 2)
+        assert kept_support("-alrt 1000 --abayes -B 1000".split()) == ("ufboot", 2, 3)
+        assert kept_support("-alrt 1000 --abayes".split()) == ("alrt", 0, 2)
+        assert kept_support(["-alrt", "1000"]) == ("alrt", 0, 1)
+
+    def test_support_type_for_aliases(self):
+        assert support_type_for("iqtree", "--alrt 1000 -B 1000") == "UFBoot"
+        assert support_type_for("iqtree", "-alrt 1000 --abayes -B 1000") == "UFBoot"
+        assert support_type_for("iqtree", "--abayes") == "SH_aLRT"
+        assert support_type_for("iqtree", "--boot 100") == "Bootstrap"
+
+
+# ---------------------------------------------------------------------------
+# keep_support_value — IQ-TREE's slash-joined node labels reduced to one value
+# ---------------------------------------------------------------------------
+
+class TestKeepSupportValue:
+    def test_two_values_keep_bootstrap(self):
+        nwk = "((A:0.1,B:0.2)96.2/94:0.05,(C:0.3,D:0.4)100/100:0.01)88.5/72;"
+        assert keep_support_value(nwk, 1, 2) == (
+            "((A:0.1,B:0.2)94:0.05,(C:0.3,D:0.4)100:0.01)72;"
+        )
+
+    def test_three_values_from_alrt_abayes_ufboot(self):
+        # IQ-TREE 2.3.2 with -alrt 1000 -abayes -B 1000 writes ")64.4/0.595/61:".
+        nwk = "((A:0.1,B:0.2)64.4/0.595/61:0.05,C:0.3);"
+        assert keep_support_value(nwk, 2, 3) == "((A:0.1,B:0.2)61:0.05,C:0.3);"
+
+    def test_four_values_and_first_kept(self):
+        nwk = "((A:0.1,B:0.2)100/100/1/100:0.05,C:0.3);"
+        assert keep_support_value(nwk, 3, 4) == "((A:0.1,B:0.2)100:0.05,C:0.3);"
+        assert keep_support_value("((A:1,B:1)64.4/0.595:1,C:1);", 0, 2) == "((A:1,B:1)64.4:1,C:1);"
+
+    def test_single_labels_unchanged(self):
+        nwk = "((A:0.1,B:0.2)94:0.05,(C:0.3,D:0.4)100:0.01);"
+        assert keep_support_value(nwk, 1, 2) == nwk
+
+    def test_leaf_names_with_slash_untouched(self):
+        nwk = "((A/1:0.1,B:0.2)96.2/94:0.05,C:0.3);"
+        assert keep_support_value(nwk, 1, 2) == "((A/1:0.1,B:0.2)94:0.05,C:0.3);"
+
+    def test_unexpected_value_count_falls_back_by_position(self):
+        nwk = "((A:1,B:1)10/20/30:1,C:1);"
+        assert keep_support_value(nwk, 1, 2) == "((A:1,B:1)30:1,C:1);"   # last kept
+        assert keep_support_value(nwk, 0, 2) == "((A:1,B:1)10:1,C:1);"   # first kept
+
+    def test_result_parses_with_confidences(self, tmp_path):
+        from Bio import Phylo
+        nwk = "((A:0.1,B:0.2)64.4/0.595/61:0.05,(C:0.3,D:0.4)100/1/100:0.01);"
+        path = tmp_path / "t.nwk"
+        path.write_text(keep_support_value(nwk, 2, 3))
+        tree = Phylo.read(str(path), "newick")
+        confs = sorted(c.confidence for c in tree.find_clades() if c.confidence is not None)
+        assert confs == [61.0, 100.0]
+
+
+# ---------------------------------------------------------------------------
+# strip_ufboot_flags — options for the fallback when UFBoot aborts
+# ---------------------------------------------------------------------------
+
+class TestStripUfbootFlags:
+    def test_drops_ufboot_and_bnni_keeps_alrt(self):
+        assert strip_ufboot_flags("-alrt 1000 -B 1000 --bnni".split()) == ["-alrt", "1000"]
+
+    def test_adds_alrt_when_only_ufboot_was_requested(self):
+        for flag in ("-B", "-bb", "--ufboot"):
+            assert strip_ufboot_flags([flag, "1000"]) == ["-alrt", "1000"]
+
+    def test_keeps_unrelated_options_and_other_measures(self):
+        assert strip_ufboot_flags("-B 1000 -ntmax 4".split()) == ["-alrt", "1000", "-ntmax", "4"]
+        assert strip_ufboot_flags("--alrt 1000 --abayes -B 1000".split()) == ["--alrt", "1000", "--abayes"]
+
+    def test_standard_bootstrap_is_not_touched(self):
+        assert strip_ufboot_flags(["-b", "100"]) == ["-b", "100"]
+
+    def test_fallback_options_yield_sh_alrt_label(self):
+        fallback = strip_ufboot_flags("-alrt 1000 -B 1000 --bnni".split())
+        assert support_type_for("iqtree", " ".join(fallback)) == "SH_aLRT"
+
+
+# ---------------------------------------------------------------------------
+# Run record beside each tree, and the UFBoot-abort fallback (no real tools:
+# subprocess.run is replaced by a scripted IQ-TREE).
+# ---------------------------------------------------------------------------
+
+class _Proc:
+    def __init__(self, returncode=0, stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, "", stderr
+
+
+_ABORT = ("ERROR: hashsplitset.cpp:60: void SplitIntMap::insertSplit(Split *, int): "
+          "Assertion `!findSplit(sp)' failed.\n*** IQ-TREE CRASHES WITH SIGNAL ABORTED\n")
+_ML_TREE = "((A:0.1,B:0.2):0.05,(C:0.3,D:0.4):0.01);"
+
+
+def _arg(cmd, flag):
+    return cmd[cmd.index(flag) + 1] if flag in cmd else None
+
+
+class _ScriptedIqtree:
+    """Plays IQ-TREE: a UFBoot run aborts after writing the ML tree."""
+
+    def __init__(self, abort=True, log_text="", scheme=False, leave_treefile=True):
+        self.calls, self.abort, self.log_text = [], abort, log_text
+        self.scheme, self.leave_treefile = scheme, leave_treefile
+
+    def __call__(self, cmd, *a, **k):
+        cmd = [str(c) for c in cmd]
+        self.calls.append(cmd)
+        prefix = _arg(cmd, "--prefix")
+        ufboot = "-B" in cmd
+        if ufboot and self.abort:
+            if self.leave_treefile:
+                Path(prefix + ".treefile").write_text(_ML_TREE)
+            Path(prefix + ".log").write_text(self.log_text)
+            if self.scheme:
+                Path(prefix + ".best_scheme.nex").write_text(
+                    "#nexus\nbegin sets;\n  charpartition mymodels = LG+G4: m1, WAG+G4: m2;\nend;\n")
+            return _Proc(-6, _ABORT)
+        labels = "100/98" if ufboot else "97"
+        Path(prefix + ".treefile").write_text(
+            f"((A:0.1,B:0.2){labels}:0.05,(C:0.3,D:0.4){labels}:0.01);")
+        return _Proc(0)
+
+
+def _run(monkeypatch, tmp_path, fake, options="-alrt 1000 -B 1000 --bnni", model="GTR+G"):
+    from vfam_trees import tree as tree_mod
+    monkeypatch.setattr(tree_mod.subprocess, "run", fake)
+    aln = tmp_path / "aln.fasta"
+    aln.write_text(">A\nATGC\n>B\nATGC\n>C\nATGA\n>D\nATGG\n")
+    nwk = tree_mod.run_tree(aln, tmp_path, "tree_100", tool="iqtree", seq_type="nucleotide",
+                            model_nuc=model, options=options)
+    return nwk, read_tree_info(tmp_path, "tree_100")
+
+
+class TestTreeInfo:
+    def test_missing_or_bad_record_is_none(self, tmp_path):
+        assert read_tree_info(tmp_path, "tree_100") is None
+        (tmp_path / f"tree_100{TREE_INFO_SUFFIX}").write_text("not json")
+        assert read_tree_info(tmp_path, "tree_100") is None
+
+    def test_normal_ufboot_run(self, tmp_path, monkeypatch):
+        nwk, info = _run(monkeypatch, tmp_path, _ScriptedIqtree(abort=False))
+        assert info == {"tool": "iqtree", "options": "-alrt 1000 -B 1000 --bnni",
+                        "support_type": "UFBoot", "note": ""}
+        assert "100/98" not in nwk.read_text() and ")98:" in nwk.read_text()
+
+    def test_fasttree_run_replaces_a_stale_iqtree_record(self, tmp_path, monkeypatch):
+        from vfam_trees import tree as tree_mod
+        (tmp_path / f"tree_500{TREE_INFO_SUFFIX}").write_text(
+            '{"tool": "iqtree", "options": "--fast", "support_type": "SH_aLRT", "note": ""}')
+
+        def fake_fasttree(alignment_fasta, output_dir, prefix, *a):
+            out = output_dir / f"{prefix}.nwk"
+            out.write_text("((A:0.1,B:0.2)0.97:0.05,C:0.3);")
+            return out
+
+        monkeypatch.setattr(tree_mod, "_run_fasttree", fake_fasttree)
+        tree_mod.run_tree(tmp_path / "aln.fasta", tmp_path, "tree_500", tool="fasttree",
+                          seq_type="nucleotide")
+        assert read_tree_info(tmp_path, "tree_500")["support_type"] == "SH_like"
+
+    def test_failed_run_leaves_no_record(self, tmp_path, monkeypatch):
+        from vfam_trees import tree as tree_mod
+        (tmp_path / f"tree_100{TREE_INFO_SUFFIX}").write_text(
+            '{"tool": "iqtree", "options": "", "support_type": "UFBoot", "note": ""}')
+        monkeypatch.setattr(tree_mod.subprocess, "run", lambda *a, **k: _Proc(2, "bad option"))
+        aln = tmp_path / "aln.fasta"
+        aln.write_text(">A\nAC\n>B\nAC\n")
+        with pytest.raises(RuntimeError):
+            tree_mod.run_tree(aln, tmp_path, "tree_100", tool="iqtree", seq_type="nucleotide")
+        assert read_tree_info(tmp_path, "tree_100") is None
+
+
+class TestUfbootAbortFallback:
+    def test_rescores_fixed_ml_tree_with_alrt(self, tmp_path, monkeypatch):
+        fake = _ScriptedIqtree()
+        nwk, info = _run(monkeypatch, tmp_path, fake)
+        assert len(fake.calls) == 2
+        rescore = fake.calls[1]
+        assert "--tree-fix" in rescore and _arg(rescore, "-t").endswith(".ml_tree.nwk")
+        assert "-B" not in rescore and "--bnni" not in rescore and "-alrt" in rescore
+        assert _arg(rescore, "-m") == "GTR+G"
+        assert info["support_type"] == "SH_aLRT"
+        assert info["options"] == "-alrt 1000"
+        assert "fixed topology" in info["note"]
+        assert ")97:" in nwk.read_text()
+
+    def test_modelfinder_pick_read_from_the_aborted_log(self, tmp_path, monkeypatch):
+        fake = _ScriptedIqtree(log_text="Best-fit model: GTR+F+I+G4 chosen according to BIC\n")
+        _, info = _run(monkeypatch, tmp_path, fake, model="TEST")
+        assert _arg(fake.calls[1], "-m") == "GTR+F+I+G4"
+        assert info["support_type"] == "SH_aLRT"
+
+    def test_partitioned_run_rescored_from_best_scheme_without_m(self, tmp_path, monkeypatch):
+        parts = tmp_path / "partitions_100.nex"
+        parts.write_text("#nexus\n")
+        fake = _ScriptedIqtree(scheme=True)
+        _, info = _run(monkeypatch, tmp_path, fake, model="MFP",
+                       options=f"-p {parts} -alrt 1000 -B 1000 --bnni")
+        rescore = fake.calls[1]
+        assert "-m" not in rescore
+        assert _arg(rescore, "-p").endswith(".fallback_scheme.nex")
+        assert (tmp_path / "tree_100.best_scheme.nex").exists()
+        assert info["options"] == f"-p {parts} -alrt 1000"
+
+    def test_full_search_without_ufboot_when_no_ml_tree(self, tmp_path, monkeypatch):
+        fake = _ScriptedIqtree(leave_treefile=False)
+        _, info = _run(monkeypatch, tmp_path, fake)
+        assert len(fake.calls) == 2
+        rerun = fake.calls[1]
+        assert "--tree-fix" not in rerun and "-B" not in rerun and "-alrt" in rerun
+        assert info["support_type"] == "SH_aLRT"
+        assert "search repeated" in info["note"]
+
+    def test_modelfinder_without_logged_pick_repeats_search(self, tmp_path, monkeypatch):
+        fake = _ScriptedIqtree(log_text="no model line\n")
+        _run(monkeypatch, tmp_path, fake, model="MFP")
+        assert "--tree-fix" not in fake.calls[1] and _arg(fake.calls[1], "-m") == "MFP"
+
+    def test_ordinary_failure_is_not_retried(self, tmp_path, monkeypatch):
+        calls = []
+
+        def fake(cmd, *a, **k):
+            calls.append(cmd)
+            return _Proc(2, "ERROR: Unknown option -X")
+
+        with pytest.raises(RuntimeError):
+            _run(monkeypatch, tmp_path, fake)
+        assert len(calls) == 1

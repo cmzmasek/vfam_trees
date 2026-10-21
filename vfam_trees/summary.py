@@ -54,7 +54,9 @@ COLUMNS = [
     "tree500_trim_tool",
     "tree500_trim_options",
     "tree500_msa_gap_pct",
+    "tree500_seq_type",
     "tree500_tree_tool",
+    "tree500_tree_model",
     "tree500_tree_options",
     # tree_100
     "tree100_leaves",
@@ -74,7 +76,9 @@ COLUMNS = [
     "tree100_trim_tool",
     "tree100_trim_options",
     "tree100_msa_gap_pct",
+    "tree100_seq_type",
     "tree100_tree_tool",
+    "tree100_tree_model",
     "tree100_tree_options",
     # diversity / outlier counts
     "tree500_n_outliers_removed",
@@ -238,17 +242,53 @@ def format_molecule_region(
     return f"{mol}, {region_str}"
 
 
-def write_summary_row(summary_path: Path, row: dict) -> None:
-    """Append one row to the summary TSV, writing the header if the file is new."""
-    is_new = not summary_path.exists() or summary_path.stat().st_size == 0
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(summary_path, "a", newline="") as f:
+def _append_tsv_row(path: Path, columns: list[str], row: dict) -> None:
+    """Append *row* to the TSV at *path* under *columns*.
+
+    Rows are written by column name.  A file whose header differs from
+    *columns* (written by another version) is first rewritten under
+    *columns* plus any extra columns it had, old rows keyed by their own
+    header, so every row lands under the right column name; nothing is
+    dropped.  Appending to such a file blindly would shift every value after
+    the first added column.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(columns)
+    if path.exists() and path.stat().st_size > 0:
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            old_header = list(reader.fieldnames or [])
+            fieldnames += [c for c in old_header if c not in columns]
+            old_rows = list(reader) if old_header != fieldnames else None
+        if old_rows is not None:
+            log.warning(
+                "%s has a header from another vfam_trees version; rewriting it "
+                "with the current columns (%d existing row(s) kept).",
+                path, len(old_rows),
+            )
+            with open(path, "w", newline="") as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=fieldnames, delimiter="\t",
+                    extrasaction="ignore", restval="",
+                )
+                writer.writeheader()
+                writer.writerows(old_rows)
+        mode, header = "a", False
+    else:
+        mode, header = "w", True
+    with open(path, mode, newline="") as f:
         writer = csv.DictWriter(
-            f, fieldnames=COLUMNS, delimiter="\t", extrasaction="ignore"
+            f, fieldnames=fieldnames, delimiter="\t",
+            extrasaction="ignore", restval="",
         )
-        if is_new:
+        if header:
             writer.writeheader()
         writer.writerow(row)
+
+
+def write_summary_row(summary_path: Path, row: dict) -> None:
+    """Append one row to the summary TSV, writing the header if the file is new."""
+    _append_tsv_row(summary_path, COLUMNS, row)
     log.debug("Summary updated: %s", summary_path)
 
 
@@ -280,15 +320,7 @@ def build_status_row(
 
 def write_status_row(status_path: Path, row: dict) -> None:
     """Append one row to the status TSV, writing the header if the file is new."""
-    is_new = not status_path.exists() or status_path.stat().st_size == 0
-    status_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(status_path, "a", newline="") as f:
-        writer = csv.DictWriter(
-            f, fieldnames=STATUS_COLUMNS, delimiter="\t", extrasaction="ignore"
-        )
-        if is_new:
-            writer.writeheader()
-        writer.writerow(row)
+    _append_tsv_row(status_path, STATUS_COLUMNS, row)
     log.debug("Status updated: %s", status_path)
 
 

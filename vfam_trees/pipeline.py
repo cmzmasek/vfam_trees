@@ -36,11 +36,12 @@ from .quality import (
 )
 from .rename import assign_short_ids, restore_fasta_names, DEFAULT_LABEL_FORMAT
 from .subsample import absorb_into_refseqs, adaptive_cluster_species, proportional_merge
-from .msa import run_msa, get_mafft_version, validate_msa
+from .msa import run_msa, get_mafft_version, read_flipped_ids, validate_msa
 from .trim import run_trim, get_trimal_version
 from .tree import (
     run_tree, get_tree_tool_version, validate_newick,
-    parse_iqtree_best_model, is_model_finder_spec, support_type_for,
+    parse_iqtree_best_model, is_model_finder_spec, read_tree_info,
+    support_type_for,
 )
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
@@ -1253,6 +1254,9 @@ def _run_target(
     tree_cfg = family_cfg[f"tree_{label}"]
     tree_options = _resolve_tree_options(tree_cfg, seq_type)
     support_type = _support_type_for(tree_cfg["tool"], tree_options)
+    # Part of the tree cache key: a tree built by another tool version is
+    # rebuilt, so e.g. a UFBoot fallback is retried after an IQ-TREE upgrade.
+    tree_tool_version = get_tree_tool_version(tree_cfg["tool"])
     trim_cfg = family_cfg.get("msa_trim", {})
     trim_enabled = bool(trim_cfg.get("enabled", True))
     trim_tool = trim_cfg.get("tool", "trimal")
@@ -1324,6 +1328,19 @@ def _run_target(
                 )
             _write_checkpoint(msa_checkpoint, msa_key)
 
+        # --adjustdirection: these GenBank records were deposited on the other
+        # strand; the alignment holds their reverse complement, while the
+        # *_sequences_raw_* file keeps the deposited orientation.  Read from
+        # the record beside the alignment so a cached MSA reports them too.
+        flipped = read_flipped_ids(msa_short_fasta)
+        if flipped:
+            log.warning(
+                "tree_%s (iteration %d): MAFFT --adjustdirection reverse-complemented "
+                "%d of %d sequences: %s",
+                label, iteration, len(flipped), len(sel_records),
+                "; ".join(short_to_display.get(s, s) for s in flipped),
+            )
+
         # ------------------------------------------------------------------
         # Tree inference — keyed on tree-input MSA content + tool/model/options
         # (trimmed alignment when msa_trim is enabled)
@@ -1335,6 +1352,7 @@ def _run_target(
         tree_key = {
             "msa_hash": hashlib.sha256(tree_input_fasta.read_bytes()).hexdigest()[:16],
             "tool":     tree_cfg["tool"],
+            "tool_version": tree_tool_version,
             "model":    tree_model_for_check,
             "options":  tree_options,
         }
@@ -1453,6 +1471,19 @@ def _run_target(
 
     restore_fasta_names(tree_input_fasta, family_dir / f"{out_prefix}_alignment_{label}.fasta", id_map)
 
+    # The run record beside the tree says what it actually carries: the
+    # wrapper falls back from UFBoot to SH-aLRT when IQ-TREE aborts in its
+    # bootstrap-consensus step, and that must show in every output.
+    tree_info = read_tree_info(tree_output_dir, f"tree_{label}")
+    if tree_info:
+        if tree_info.get("note"):
+            log.warning(
+                "tree_%s carries %s support, not the configured %s: %s.",
+                label, tree_info["support_type"], support_type, tree_info["note"],
+            )
+        support_type = tree_info["support_type"]
+        tree_options = tree_info.get("options", tree_options)
+
     # Taxonomy annotation + rooting
     log.info("Inferring internal node taxonomy and rooting tree_%s ...", label)
     annotated_nwk = target_work / f"tree_{label}_annotated.nwk"
@@ -1563,7 +1594,7 @@ def _run_target(
         msa_version=get_mafft_version(),
         msa_options=msa_options,
         tree_tool=tree_cfg["tool"],
-        tree_version=get_tree_tool_version(tree_cfg["tool"]),
+        tree_version=tree_tool_version,
         tree_model=tree_model,
         tree_options=tree_options,
     )

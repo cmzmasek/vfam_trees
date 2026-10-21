@@ -4,6 +4,7 @@ import csv
 from Bio.Phylo.BaseTree import Clade, Tree
 
 from vfam_trees.summary import (
+    COLUMNS,
     STATUS_COLUMNS,
     build_status_row,
     build_summary_row,
@@ -385,3 +386,95 @@ class TestConcatSummaryColumns:
         )
         assert row["tree500_concat_length"] == ""
         assert row["tree100_marker_models"] == ""
+
+
+# ---------------------------------------------------------------------------
+# COLUMNS must declare everything build_summary_row writes: DictWriter runs
+# with extrasaction="ignore", so an undeclared key is dropped in silence.
+# Regression: tree{500,100}_tree_model was written but never declared, so the
+# tree model (incl. the ModelFinder pick) never reached summary.tsv.
+# ---------------------------------------------------------------------------
+
+class TestColumnsCoverWrittenKeys:
+    def _row(self):
+        return build_summary_row(
+            family="Testviridae",
+            family_taxid=12345,
+            family_lineage=[],
+            seq_type="nucleotide",
+            region="whole_genome",
+            segment=None,
+            n_species_discovered=12,
+            n_species_with_seqs=10,
+            seqlen_stats={},
+            tree_stats={
+                "500": {"leaves": 10, "tree_tool": "iqtree", "tree_model": "GTR+G",
+                        "tree_options": "--fast", "support_type": "SH_aLRT"},
+                "100": {"leaves": 5, "tree_tool": "iqtree", "tree_model": "GTR+F+I+G4",
+                        "tree_options": "-alrt 1000 -B 1000 --bnni",
+                        "support_type": "UFBoot"},
+            },
+        )
+
+    def test_every_written_key_is_declared(self):
+        undeclared = sorted(set(self._row()) - set(COLUMNS))
+        assert undeclared == [], f"keys written but not in COLUMNS: {undeclared}"
+
+    def test_tree_model_reaches_the_file(self, tmp_path):
+        path = tmp_path / "summary.tsv"
+        write_summary_row(path, self._row())
+        import csv
+        row = list(csv.DictReader(open(path), delimiter="\t"))[0]
+        assert row["tree500_tree_model"] == "GTR+G"
+        assert row["tree100_tree_model"] == "GTR+F+I+G4"
+
+
+# ---------------------------------------------------------------------------
+# Appending to a summary.tsv written by another version: rows must land under
+# the right column names (v1.5.0 inserted four columns mid-list).
+# ---------------------------------------------------------------------------
+
+class TestAppendToOlderHeader:
+    _ADDED = {"tree500_seq_type", "tree500_tree_model",
+              "tree100_seq_type", "tree100_tree_model"}
+
+    def _old_file(self, path):
+        old_cols = [c for c in COLUMNS if c not in self._ADDED] + ["retired_col"]
+        old_row = {c: f"old-{c}" for c in old_cols}
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=old_cols, delimiter="\t")
+            w.writeheader()
+            w.writerow(old_row)
+        return old_row
+
+    def test_new_row_lands_under_right_columns(self, tmp_path):
+        path = tmp_path / "summary.tsv"
+        old_row = self._old_file(path)
+        new_row = {c: f"new-{c}" for c in COLUMNS}
+        write_summary_row(path, new_row)
+        rows = list(csv.DictReader(open(path), delimiter="\t"))
+        assert len(rows) == 2
+        # every value of both rows sits under its own column name
+        for c in COLUMNS:
+            assert rows[1][c] == f"new-{c}"
+            assert rows[0][c] == old_row.get(c, "")
+        # a column only the old file had is kept, blank for the new row
+        assert rows[0]["retired_col"] == "old-retired_col"
+        assert rows[1]["retired_col"] == ""
+
+    def test_matching_header_is_only_appended(self, tmp_path):
+        path = tmp_path / "summary.tsv"
+        write_summary_row(path, {c: "a" for c in COLUMNS})
+        first = path.read_text()
+        write_summary_row(path, {c: "b" for c in COLUMNS})
+        text = path.read_text()
+        assert text.startswith(first)
+        assert text.count("family\t") == 1   # one header line
+
+    def test_second_append_after_upgrade_does_not_rewrite_again(self, tmp_path):
+        path = tmp_path / "summary.tsv"
+        self._old_file(path)
+        write_summary_row(path, {c: "x" for c in COLUMNS})
+        upgraded = path.read_text()
+        write_summary_row(path, {c: "y" for c in COLUMNS})
+        assert path.read_text().startswith(upgraded)

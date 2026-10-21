@@ -236,3 +236,26 @@ class TestFindFamilyDir:
     def test_find_status_file_none_when_no_status(self, tmp_path):
         self._make_dir(tmp_path, "Ebola_3052317", owner="Orthoebolavirus")
         assert cli_mod._find_status_file("Orthoebolavirus", tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# `vfam_trees test`: FastTree is optional since both trees default to IQ-TREE.
+# ---------------------------------------------------------------------------
+
+class TestToolCheckFastTreeOptional:
+    def test_fasttree_not_required(self):
+        assert "FastTree" not in cli_mod.REQUIRED_TOOLS
+        assert "FastTree" in cli_mod.FASTTREE_TOOLS
+
+    def test_missing_fasttree_does_not_fail_the_tool_section(self, tmp_path, monkeypatch):
+        import shutil
+        real_which = shutil.which
+        monkeypatch.setattr(shutil, "which",
+                            lambda name: None if name == "FastTree" else (real_which(name) or f"/fake/{name}"))
+        # Python packages and NCBI connectivity are outside this test; only the
+        # tool sections are checked for FastTree's status line.
+        result = CliRunner().invoke(main, ["test", "-g", str(tmp_path / "missing.yaml")])
+        out = result.output
+        tools = out.split("Configuration:")[0]
+        assert "[MISSING]  FastTree" not in tools
+        assert "[--]  FastTree" in tools

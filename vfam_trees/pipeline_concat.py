@@ -68,7 +68,8 @@ from .summary import (
 )
 from .taxonomy import annotate_tree
 from .tree import (
-    parse_iqtree_partition_models, run_tree, support_type_for, validate_newick,
+    parse_iqtree_partition_models, read_tree_info, run_tree,
+    support_type_for, validate_newick,
 )
 
 log = get_logger(__name__)
@@ -650,7 +651,7 @@ def _run_target_concat(
     tree_output_dir = target_work / "tree"
     tree_output_dir.mkdir(parents=True, exist_ok=True)
     tree_cfg  = family_cfg[f"tree_{label}"]
-    tree_tool = tree_cfg.get("tool", "fasttree" if label == "500" else "iqtree")
+    tree_tool = tree_cfg.get("tool", "iqtree")
     concat_fasta   = target_work / f"concat_{label}.fasta"
     partition_path = target_work / f"partitions_{label}.nex"
 
@@ -709,7 +710,7 @@ def _run_target_concat(
             # Partitioned IQ-TREE: -p partitions.nex -m MFP + AA support flag
             tree_options = (
                 f"-p {partition_path} "
-                + (tree_cfg.get("options_aa", "-B 1000") or "")
+                + (tree_cfg.get("options_aa", "-alrt 1000 -B 1000 --bnni") or "")
             ).strip()
             model_aa = model_nuc = "MFP"
         else:
@@ -844,7 +845,7 @@ def _run_target_concat(
         short_to_display,
     )
     # NEXUS partition file — always emitted in concat mode; used by IQ-TREE
-    # for tree_100 and informative documentation for tree_500 (FastTree)
+    # for tree_100 and informative documentation for tree_500 (single-model)
     if partition_path.exists():
         shutil.copy2(
             partition_path,
@@ -880,7 +881,19 @@ def _run_target_concat(
     )
 
     # 7. Annotate tree with LCA labels and root.
+    # The run record beside the tree names what it actually carries (the
+    # wrapper falls back from UFBoot to SH-aLRT when IQ-TREE aborts in its
+    # bootstrap-consensus step); options provenance follows it.
     support_type = support_type_for(tree_tool, tree_options)
+    tree_info = read_tree_info(tree_output_dir, f"tree_{label}")
+    if tree_info:
+        if tree_info.get("note"):
+            log.warning(
+                "tree_%s carries %s support, not the configured %s: %s.",
+                label, tree_info["support_type"], support_type, tree_info["note"],
+            )
+        support_type = tree_info["support_type"]
+        tree_options = tree_info.get("options", tree_options)
     metadata_for_annotation = [
         {
             "short_id":       gid,
