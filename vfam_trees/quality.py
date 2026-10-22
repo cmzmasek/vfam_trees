@@ -15,6 +15,83 @@ log = get_logger(__name__)
 AMBIGUOUS_NUC = set("RYSWKMBDHVN")
 AMBIGUOUS_AA = set("XBZJOU")
 
+# Residues MAFFT and IQ-TREE accept in a protein alignment: the 20 standard
+# amino acids plus the ambiguity codes B, Z and X.  GenBank translations can
+# carry others — O (pyrrolysine, which is also how some records write an amber
+# read-through codon, e.g. a tombusvirus RdRp), U (selenocysteine), J, or an
+# internal stop "*" — and MAFFT aborts on them ("Alphabet 'O' is unknown").
+_PROTEIN_ALIGNABLE = frozenset("ACDEFGHIKLMNPQRSTVWYBZX")
+
+
+def normalize_protein_sequence(seq: str) -> str:
+    """Return *seq* with residues MAFFT / IQ-TREE reject replaced by ``X``.
+
+    Upper-cases, drops terminal stops and non-letter symbols (gaps), and turns
+    any other non-standard letter or internal ``*`` into ``X``.
+    """
+    out = []
+    for ch in seq.upper().rstrip("*"):
+        if ch in _PROTEIN_ALIGNABLE:
+            out.append(ch)
+        elif ch.isalpha() or ch == "*":
+            out.append("X")
+    return "".join(out)
+
+
+def normalize_protein_records(records: list[SeqRecord]) -> list[str]:
+    """Apply :func:`normalize_protein_sequence` in place.
+
+    Returns the ids of records that had a residue turned into ``X`` (O, U, J,
+    an internal stop …); records that only changed case, lost a terminal stop
+    or gap symbols are normalized too but not reported.
+    """
+    from Bio.Seq import Seq
+    replaced: list[str] = []
+    for rec in records:
+        seq = str(rec.seq)
+        fixed = normalize_protein_sequence(seq)
+        if fixed != seq:
+            if fixed.count("X") > seq.upper().count("X"):
+                replaced.append(rec.id)
+            rec.letter_annotations = {}
+            rec.seq = Seq(fixed)
+    return replaced
+
+
+# Letters of the IUPAC nucleotide alphabet (bases and ambiguity codes).
+_IUPAC_NUC = frozenset("ACGTURYSWKMBDHVN")
+
+
+def sequence_type_mismatch(seq: str, seq_type: str) -> str | None:
+    """Why *seq* cannot be a *seq_type* sequence, or None when it can.
+
+    A protein family rejects a sequence of which at least 90 % of the letters
+    are A, C, G, T, U or N (a nucleotide sequence; A, C, G, T and N are also
+    amino-acid letters, so nothing else would notice).  A nucleotide family
+    rejects one of which more than 10 % of the letters are not IUPAC
+    nucleotide codes (a protein: E, F, I, L, P, Q … make up about a third of
+    a typical protein).
+    """
+    letters = [c for c in seq.upper() if c.isalpha()]
+    if not letters:
+        return None
+    if seq_type == "protein":
+        n_nuc = sum(c in "ACGTUN" for c in letters)
+        if n_nuc >= 0.9 * len(letters):
+            return (
+                f"looks like a nucleotide sequence ({n_nuc} of {len(letters)} "
+                "letters are A/C/G/T/U/N) but this family is analysed as protein"
+            )
+        return None
+    foreign = [c for c in letters if c not in _IUPAC_NUC]
+    if len(foreign) > 0.1 * len(letters):
+        return (
+            f"looks like a protein sequence ({len(foreign)} of {len(letters)} "
+            "letters are not nucleotide codes) but this family is analysed as "
+            "nucleotide"
+        )
+    return None
+
 # Hard-coded absolute minimum lengths (applied even when user sets min_length explicitly)
 MIN_LENGTH_NUC = 200
 MIN_LENGTH_AA = 100

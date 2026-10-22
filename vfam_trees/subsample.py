@@ -377,15 +377,26 @@ def proportional_merge(
             key=lambda sp: (len(non_empty[sp]) / total_reps * target) % 1,
             reverse=True,
         )
-        for sp in fractions:
-            if diff == 0:
+        # One pass moves each species by at most one slot.  That is not enough
+        # when many single-rep species are lifted to the floor of 1 (419
+        # species with 686 reps came out at 550 for a target of 500), so repeat
+        # until the total is exact.  A species never gets more slots than it
+        # has reps.  Always reachable here: species ≤ target < total reps.
+        while diff != 0:
+            moved = False
+            for sp in fractions:
+                if diff == 0:
+                    break
+                if diff > 0 and quotas[sp] < len(non_empty[sp]):
+                    quotas[sp] += 1
+                    diff -= 1
+                    moved = True
+                elif diff < 0 and quotas[sp] > 1:
+                    quotas[sp] -= 1
+                    diff += 1
+                    moved = True
+            if not moved:
                 break
-            if diff > 0:
-                quotas[sp] += 1
-                diff -= 1
-            elif quotas[sp] > 1:
-                quotas[sp] -= 1
-                diff += 1
 
     selected: list[SeqRecord] = []
     n_priority_taken = 0

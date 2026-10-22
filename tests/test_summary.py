@@ -478,3 +478,55 @@ class TestAppendToOlderHeader:
         upgraded = path.read_text()
         write_summary_row(path, {c: "y" for c in COLUMNS})
         assert path.read_text().startswith(upgraded)
+
+
+class TestMarkerCoverageReport:
+    def test_counts_tsv_and_warning(self, tmp_path, caplog):
+        import csv, logging
+        from vfam_trees.summary import report_marker_coverage
+        log = logging.getLogger("vfam_trees.TestFam")
+        entries = [
+            {"species": "B virus", "taxid": 2, "ncbi_records": 9, "status": "no marker"},
+            {"species": "A virus", "taxid": 1, "ncbi_records": 3, "status": "no marker"},
+            {"species": "C virus", "taxid": 3, "ncbi_records": 1, "status": "translated"},
+        ]
+        path = tmp_path / "Fam_species_without_marker.tsv"
+        with caplog.at_level(logging.INFO):
+            counts = report_marker_coverage(entries, path, log, "protein, gene: RT")
+        assert counts == (2, 1)
+        rows = list(csv.DictReader(path.open(), delimiter="\t"))
+        assert [r["species"] for r in rows] == ["A virus", "B virus", "C virus"]
+        warn = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warn) == 1 and "A virus" in warn[0]
+        assert "2 species have NCBI records but none of the analysed protein, gene: RT" in warn[0]
+        # A re-run without such species removes the stale list.
+        assert report_marker_coverage([], path, log, "x") == (0, 0)
+        assert not path.exists()
+
+    def test_too_few_markers_counted_and_named(self, tmp_path, caplog):
+        import logging
+        from vfam_trees.summary import report_marker_coverage
+        log = logging.getLogger("vfam_trees.TestFam")
+        entries = [
+            {"species": "A virus", "taxid": 1, "ncbi_records": 3, "status": "no marker"},
+            {"species": "B virus", "taxid": 2, "ncbi_records": 900,
+             "status": "too few markers"},
+        ]
+        path = tmp_path / "Fam_species_without_marker.tsv"
+        with caplog.at_level(logging.WARNING):
+            counts = report_marker_coverage(entries, path, log, "concatenated markers")
+        assert counts == (2, 0)
+        warn = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warn) == 1
+        assert "1 have none of them, 1 some but no genome with enough" in warn[0]
+        assert "none of the analysed" not in warn[0]
+        assert "too few markers" in path.read_text()
+
+    def test_summary_columns(self):
+        from vfam_trees.summary import COLUMNS, build_summary_row
+        row = build_summary_row("F", 1, [], "protein", "RT", None, 10, 7, {}, {},
+                                n_species_without_marker=2, n_species_marker_translated=1)
+        assert row["species_without_marker"] == 2 and row["species_marker_translated"] == 1
+        assert COLUMNS.index("species_without_marker") == COLUMNS.index("species_with_seqs") + 1
+        blank = build_summary_row("F", 1, [], "protein", "RT", None, 0, 0, {}, {})
+        assert blank["species_without_marker"] == ""

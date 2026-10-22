@@ -25,12 +25,14 @@ def main():
 
     Builds maximum-likelihood phylogenetic trees for one or more viral
     families using sequences downloaded from NCBI. For each family, two
-    trees are produced: a broad 500-sequence tree (IQ-TREE --fast) and a
-    more collapsed 100-sequence tree (IQ-TREE full search with UFBoot).
+    trees are produced: a broad 500-sequence tree (IQ-TREE, --fast for
+    nucleotide, a 50-iteration search for protein) and a more collapsed
+    100-sequence tree (IQ-TREE full search with UFBoot).
 
     \b
     Typical workflow:
-      1. Edit config/global.yaml  (set NCBI email and API key)
+      1. vfam_trees init [--full], then edit config/global.yaml
+         (set NCBI email and API key)
       2. vfam_trees test          (verify all dependencies)
       3. vfam_trees init-configs -f families.txt   (review/edit per-family configs)
       4. vfam_trees run -f families.txt -j 4       (run the pipeline)
@@ -140,17 +142,25 @@ def run(
     quality filter → adaptive per-species clustering → proportional merge
     (RefSeqs preferred) → pre-MSA length-outlier removal →
     align (MAFFT) → trim alignment columns (trimAl) →
-    infer trees (IQ-TREE: --fast for tree_500, full search for tree_100) →
-    iterative post-tree branch-length outlier removal (re-align + re-tree) →
+    infer trees (IQ-TREE: tree_500 --fast for nucleotide, -n 50 for protein;
+    full search for tree_100) →
+    iterative post-tree branch-length outlier removal (re-align + re-tree;
+    rounds checked on quick --fast trees) →
     annotate internal nodes (LCA taxonomy) → write Newick, PhyloXML,
     Auspice v2 JSON (viewable at auspice.us / Nextclade / `auspice view`),
     PDF/PNG tree images, and per-family report.
 
-    For single-marker DNA families and concatenated-marker families, marker
-    proteins are identified by GenBank protein name — or, when a family sets
-    `hmm.enabled`, by HMMER profile homology against curated Pfam-A profiles
-    (more robust for inconsistently-annotated large DNA viruses; requires
-    HMMER on PATH).
+    What is aligned depends on the family. Most RNA-virus families (107)
+    are aligned on the RNA-dependent RNA polymerase (RdRp), the
+    reverse-transcribing families (4) on the reverse transcriptase (RT) and
+    the CRESS-DNA families (23) on the Rep protein: each genome's marker is
+    found by HMMER profile homology against bundled Pfam profiles (the RdRp
+    and RT cut to their domain), so these trees are protein trees. Large DNA
+    viruses use curated marker proteins (single or concatenated), found by
+    GenBank protein name or, where the family sets `hmm.enabled`, by
+    profile homology. Other families use whole genomes (or one segment) as
+    nucleotide. HMMER (hmmscan, hmmpress) must be on PATH for the default
+    family list.
 
     MSA and tree-inference steps are content-hash-checkpointed, so reruns
     skip stages whose inputs and config are unchanged. A cross-family
@@ -176,6 +186,24 @@ def run(
     if dry_run:
         _print_dry_run(family_list, global_config, configs_dir, output_dir, threads)
         sys.exit(0)
+
+    # Checked here so a bad global.yaml stops the run before Snakemake starts
+    # (each family job would fail on it); unknown keys are logged (WARNING).
+    from .config import load_global_config
+    try:
+        global_cfg = load_global_config(global_config)
+    except (FileNotFoundError, ValueError, yaml.YAMLError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    missing = _missing_tools(family_list, configs_dir, global_cfg)
+    if missing:
+        click.echo(
+            "Error: this run needs tools that are not on PATH: "
+            f"{', '.join(missing)}. Run `vfam_trees test` for details.",
+            err=True,
+        )
+        sys.exit(1)
 
     click.echo(f"Families to process: {', '.join(family_list)}")
 
@@ -205,8 +233,28 @@ def run(
         "--printshellcmds",
     ]
 
+    from .provenance import finish_run_record, start_run_record
+    record = start_run_record(
+        output_dir,
+        argv=["vfam_trees", *sys.argv[1:]],
+        families_file=families,
+        families=family_list,
+        options={"cores": cores, "threads": threads, "force": force,
+                 "log_level": log_level.upper()},
+        paths={"global_config": str(global_config.resolve()),
+               "configs_dir": str(configs_dir.resolve()),
+               "output_dir": str(output_dir.resolve())},
+        global_cfg=global_cfg,
+    )
+    click.echo(f"Run record: {record}")
+
     click.echo(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd)
+    exit_code = None
+    try:
+        result = subprocess.run(cmd)
+        exit_code = result.returncode
+    finally:
+        finish_run_record(record, exit_code)
 
     if result.returncode == 0:
         from .report import generate_overview_png
@@ -215,6 +263,34 @@ def run(
         generate_overview_png(output_dir, overview_path)
 
     sys.exit(result.returncode)
+
+
+def _missing_tools(family_list: list[str], configs_dir: Path, global_cfg: dict) -> list[str]:
+    """External tools this run needs that are not on PATH: REQUIRED_TOOLS
+    always, HMMER when a family identifies its marker by HMM (the RdRp and
+    other HMM presets), FastTree when a tree block uses it.  Checked before
+    Snakemake starts, so a missing tool stops the run at once instead of
+    failing each family after its downloads."""
+    import shutil
+    from .config import preview_family_config
+
+    uses_hmm = uses_fasttree = False
+    for family in family_list:
+        try:
+            cfg = preview_family_config(family, configs_dir, global_cfg)
+        except Exception:
+            continue  # a broken family config is reported by that family's job
+        uses_hmm |= bool((cfg.get("hmm") or {}).get("enabled"))
+        uses_fasttree |= any(
+            str((cfg.get(block) or {}).get("tool", "")).lower() == "fasttree"
+            for block in ("tree_500", "tree_100")
+        )
+    needed = list(REQUIRED_TOOLS)
+    if uses_hmm:
+        needed += HMM_TOOLS
+    if uses_fasttree:
+        needed += FASTTREE_TOOLS
+    return [tool for tool in needed if shutil.which(tool) is None]
 
 
 # ---------------------------------------------------------------------------
@@ -351,8 +427,15 @@ ncbi:
   api_key: ""                        # Optional but recommended — get one at:
                                      # https://www.ncbi.nlm.nih.gov/account/
 
-output_dir: results
-log_level: INFO         # DEBUG, INFO, WARNING
+# The output folder and log level are command-line options of
+# `vfam_trees run` (-o, --log-level), not settings in this file.
+
+# Optional external family-annotation TSV.  Must have a 'family' column plus
+# the extra columns to join into summary.tsv (currently: baltimore_class).
+# null → virus_families_annotation.tsv next to this file; relative paths are
+# resolved against this file's directory.  A missing file leaves the columns
+# blank.
+annotation_tsv: null
 
 # Optional shared sequence download cache.
 # Sequences are stored keyed by (taxid, db, region, segment, max_per_species)
@@ -378,13 +461,23 @@ defaults:
   download:
     max_per_species: 300
 
+  # Family presets replace these for most families: RNA-virus families get
+  # the HMM-identified RdRp protein, reverse-transcribing families the RT,
+  # CRESS-DNA families the Rep, large DNA viruses marker proteins, and
+  # segmented families their segment (README: "DNA virus families",
+  # "RNA virus families (RdRp)", "Reverse-transcribing and CRESS-DNA
+  # families").
   sequence:
     type: nucleotide    # nucleotide or protein
     region: whole_genome
     segment: null
+    hmms: []            # HMM profile tokens of the marker (hmm.enabled); set by presets
+    domain_padding: null  # HMM mode: keep the marker's profile hits ± this many
+                          # residues (100 for RdRp and RT); null keeps whole proteins
 
   quality:
     min_length: null    # null = auto (50% of median sequence length)
+    max_length: null    # null = no upper limit
     max_ambiguous: 0.01
     exclude_organisms:
       - synthetic construct
@@ -422,23 +515,26 @@ defaults:
 
   # Column trimming applied between MAFFT and tree inference (both tree_500
   # and tree_100).  Removes poorly-aligned positions that add noise to the
-  # tree.  trimAl's -automated1 adapts its threshold to the alignment and
-  # works for both nucleotide and protein alignments.
+  # tree.  -gt 0.5 keeps columns with at most 50% gaps, for nucleotide and
+  # protein alignments alike.  (-automated1, the default before 1.6.0, keeps
+  # few columns on alignments with many short fragments.)
   msa_trim:
     enabled: true
     tool: trimal
-    options: "-automated1"
+    options: "-gt 0.5"
 
-  # tree_500: IQ-TREE --fast (same wall time as FastTree, clearly better
-  # likelihood); the wrapper auto-adds -alrt 1000 for SH-aLRT support.
+  # tree_500: IQ-TREE; the wrapper auto-adds -alrt 1000 for SH-aLRT support.
   # options_nuc applies to nucleotide runs, options_aa to protein runs
-  # (e.g. large DNA virus families with marker-gene fetches).
+  # (marker proteins, RdRp / RT / Rep).  Nucleotide: --fast (same wall time
+  # as FastTree, clearly better likelihood).  Protein: -n 50, the normal
+  # search stopped after 50 iterations (--fast lands in a different local
+  # optimum on each seed for weak-signal protein sets; ~12x --fast time).
   # FastTree remains available: set tool: fasttree AND options_nuc: "" /
-  # options_aa: "" (IQ-TREE options such as --fast are rejected at load).
+  # options_aa: "" (IQ-TREE options such as --fast and -n are rejected at load).
   tree_500:
     tool: iqtree
     options_nuc: "--fast"
-    options_aa: "--fast"
+    options_aa: "-n 50"
     model_nuc: GTR+G
     model_aa: LG+G
 
@@ -466,11 +562,15 @@ defaults:
 
   # Post-tree branch-length outlier removal (iterative).
   # Drops leaves whose terminal branch length exceeds median + factor × MAD.
+  # quick_check: each round is checked on a quick IQ-TREE --fast tree first;
+  # the configured search runs once that finds nothing to remove (and its
+  # tree is checked as before).  false: every round runs the full search.
   outlier_removal:
     enabled: true
     factor: 20.0
     max_iterations: 3
     min_seqs: 40
+    quick_check: true
 
   # Leaf color inference strategy for sequences that have no formal genus rank
   # in their NCBI lineage.
@@ -519,6 +619,67 @@ defaults:
 """
 
 
+# Appended to GLOBAL_CONFIG_TEMPLATE by `vfam_trees init --full`, so the file
+# lists every setting with its default.  Indented: these blocks continue the
+# `defaults:` mapping that ends GLOBAL_CONFIG_TEMPLATE.
+GLOBAL_CONFIG_TEMPLATE_ADVANCED = """\
+
+  # ---------------------------------------------------------------------
+  # Advanced settings.  Usually left alone or set per family; listed so
+  # this file shows every default of this version.
+  # ---------------------------------------------------------------------
+
+  # Pre-clustering: drop non-RefSeq sequences ≥ threshold identical to a
+  # RefSeq of the same species.  All RefSeqs are kept.
+  refseq_absorption:
+    enabled: true
+    threshold: 0.99
+
+  output:
+    auspice_json: true           # Auspice v2 JSON next to each PhyloXML
+    phyloxml_font_colors: false  # genus colour as style:font_color on PhyloXML tips
+    archaeopteryx_html: true     # {prefix}_tree_{500,100}.html (Archaeopteryx.js page)
+
+  # HMMER profile identification of marker proteins.  Off here; the RdRp,
+  # RT, Rep, Poxviridae and Adenoviridae presets turn it on with their own
+  # settings.
+  hmm:
+    enabled: false
+    database: null               # bundled set name (e.g. RdRp), a directory of .hmm files, or one .hmm file
+    default_evalue: 1.0e-05      # domain E-value gate for profiles without a curated GA
+    use_ga_when_available: true  # prefer each profile's Pfam gathering threshold
+    relative_length_cutoff: 0.5  # minimum fraction of the profile a hit must cover
+    multidomain_overlap_tolerance: 30  # residues adjacent domains of an "A--B" token may overlap
+    best_hit_only: false         # count a protein only if a marker profile is its best hit
+    best_hit_also: []            # other profiles that count as the marker's own for best_hit_only
+    min_protein_length: null     # proteins shorter than this (aa) are never candidates
+    threads: null                # hmmscan --cpu; null → the run's thread count
+
+  # Concatenated multi-marker mode (sequence.region: concatenated); the
+  # Poxviridae, Orthoherpesviridae and other large-DNA-virus presets fill
+  # in the markers.
+  concatenation:
+    proteins: []                 # marker specs: {name, aliases, hmms, length_range, ...}
+    min_fraction: 0.7            # drop genomes with fewer than this fraction of markers
+    source_nuc_min_length_frac: 0.3  # drop proteins whose source record is < this × the longest
+    partition_tree_100: true     # one model per marker in tree_100
+    partition_tree_500: false    # tree_500 is single-model
+
+  # Curator overrides; normally set per family (see README).
+  manual:
+    include: []                  # accessions to force in (bypass QC)
+    include_seq: []              # pasted sequences: {id, organism, sequence}
+    include_fasta_files: []      # FASTA files injected like include_seq
+    exclude: []                  # accessions to drop
+    restrict_to_lineages: []     # only species under these taxa (names or taxids)
+    name: ""                     # display name and output prefix; "" → family name
+
+  # Forced-include sequences from an external database (Pathoplexus);
+  # normally set per family (see README).
+  additional_data_sources: []
+"""
+
+
 @main.command("init")
 @click.option(
     "--global-config", "-g",
@@ -533,16 +694,28 @@ defaults:
     default=False,
     help="Overwrite an existing config file.",
 )
-def init(global_config: Path, force: bool):
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Also list the advanced settings (HMM, concatenation, output, "
+         "manual), so the file shows every default of this version.",
+)
+def init(global_config: Path, force: bool, full: bool):
     """Generate a template global config file.
 
     Creates config/global.yaml (or the path given by --global-config)
-    with all default values and comments explaining each setting.
-    Edit the file — especially ncbi.email — before running the pipeline.
+    with the common default values and comments explaining each setting;
+    --full lists every setting.  Edit the file — especially ncbi.email —
+    before running the pipeline.
+
+    Every run also records the settings it used: see run_records/ in the
+    output folder and <Family>.yaml in each family folder.
 
     \b
     Examples:
       vfam_trees init
+      vfam_trees init --full
       vfam_trees init --force
       vfam_trees init -g /path/to/my_global.yaml
     """
@@ -555,7 +728,9 @@ def init(global_config: Path, force: bool):
         sys.exit(1)
 
     global_config.parent.mkdir(parents=True, exist_ok=True)
-    global_config.write_text(GLOBAL_CONFIG_TEMPLATE)
+    global_config.write_text(
+        GLOBAL_CONFIG_TEMPLATE + (GLOBAL_CONFIG_TEMPLATE_ADVANCED if full else "")
+    )
     click.echo(f"Created: {global_config}")
     click.echo("Edit the file and set ncbi.email before running the pipeline.")
 
@@ -567,7 +742,9 @@ def init(global_config: Path, force: bool):
 REQUIRED_TOOLS = ["mafft", "iqtree2", "mmseqs", "trimal"]
 OPTIONAL_TOOLS = ["cd-hit", "cd-hit-est"]
 FASTTREE_TOOLS = ["FastTree"]  # needed only when a tree block sets tool: fasttree
-HMM_TOOLS = ["hmmscan", "hmmpress"]  # HMMER; needed only when hmm.enabled
+# HMMER: the RNA-virus RdRp presets and the Poxviridae / Adenoviridae presets
+# identify their markers by HMM, so the default family list needs it.
+HMM_TOOLS = ["hmmscan", "hmmpress"]
 REQUIRED_PACKAGES = ["Bio", "click", "yaml", "snakemake", "requests"]
 
 
@@ -586,7 +763,8 @@ def test(global_config: Path):
       - Required external tools (mafft, iqtree2, mmseqs, trimal)
       - Optional tools (cd-hit, cd-hit-est — only needed when clustering.tool: cdhit)
       - FastTree (only needed when tree_500.tool or tree_100.tool is fasttree)
-      - HMMER tools (hmmscan, hmmpress — only needed when hmm.enabled)
+      - HMMER tools (hmmscan, hmmpress — required by the HMM marker presets:
+        the RNA-virus RdRp families, Poxviridae and Adenoviridae)
       - global.yaml exists and has ncbi.email set
       - Live connectivity to NCBI Entrez
 
@@ -648,14 +826,16 @@ def test(global_config: Path):
 
     click.echo("")
 
-    # HMMER (only needed when hmm.enabled — HMM marker identification)
-    click.echo("HMMER tools (only used when hmm.enabled):")
+    # HMMER — required: the RdRp presets (most RNA-virus families) and the
+    # Poxviridae / Adenoviridae presets identify markers by HMM.
+    click.echo("HMMER tools (HMM marker presets: RNA-virus RdRp families, Poxviridae, Adenoviridae):")
     for tool in HMM_TOOLS:
         path = shutil.which(tool)
         if path:
             click.echo(f"  [OK]  {tool}  ({path})")
         else:
-            click.echo(f"  [--]  {tool}  (not found — only needed if hmm.enabled)")
+            click.echo(f"  [MISSING]  {tool}")
+            ok = False
 
     click.echo("")
 

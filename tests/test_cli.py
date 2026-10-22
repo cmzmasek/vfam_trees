@@ -29,10 +29,20 @@ class _FakeCompleted:
 
 
 @pytest.fixture
-def captured_cmd(monkeypatch):
+def captured_cmd(monkeypatch, tmp_path):
     """Patch subprocess.run + sys.exit so the CLI's snakemake invocation
-    is intercepted and the constructed argv can be inspected."""
+    is intercepted and the constructed argv can be inspected.  Runs in
+    tmp_path with a valid config/global.yaml (run checks it before
+    Snakemake starts); tool probing for the run record is stubbed."""
     captured: dict[str, list] = {}
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "config" / "global.yaml").write_text(
+        'ncbi:\n  email: "test@example.org"\n  api_key: "SECRET123"\n'
+    )
+    import vfam_trees.provenance as prov_mod
+    monkeypatch.setattr(prov_mod, "tool_versions", lambda: {"mafft": "7.0"})
+    monkeypatch.setattr(cli_mod, "_missing_tools", lambda *a: [])
 
     def _fake_run(cmd, *args, **kwargs):
         captured["cmd"] = list(cmd)
@@ -259,3 +269,191 @@ class TestToolCheckFastTreeOptional:
         tools = out.split("Configuration:")[0]
         assert "[MISSING]  FastTree" not in tools
         assert "[--]  FastTree" in tools
+
+
+# ---------------------------------------------------------------------------
+# init --full, run records, global config checks
+# ---------------------------------------------------------------------------
+
+def _flat_keys(d: dict, prefix: str = "") -> set[str]:
+    out = set()
+    for k, v in d.items():
+        if isinstance(v, dict) and v:
+            out |= _flat_keys(v, f"{prefix}{k}.")
+        else:
+            out.add(prefix + k)
+    return out
+
+
+class TestInitTemplates:
+    def test_full_template_lists_every_default(self, tmp_path):
+        """`init --full` must show every setting with this version's default:
+        the defaults block equals DEFAULT_FAMILY_CONFIG exactly, and the
+        global-only keys are exactly GLOBAL_SETTINGS_DEFAULTS'."""
+        import yaml
+        from vfam_trees.config import DEFAULT_FAMILY_CONFIG, GLOBAL_SETTINGS_DEFAULTS
+        out = tmp_path / "global.yaml"
+        result = CliRunner().invoke(main, ["init", "--full", "-g", str(out)])
+        assert result.exit_code == 0, result.output
+        cfg = yaml.safe_load(out.read_text())
+        assert cfg["defaults"] == DEFAULT_FAMILY_CONFIG
+        top = {k: v for k, v in cfg.items() if k != "defaults"}
+        assert _flat_keys(top) == _flat_keys(GLOBAL_SETTINGS_DEFAULTS)
+
+    def test_short_template_values_match_the_defaults(self, tmp_path):
+        import yaml
+        from vfam_trees.config import DEFAULT_FAMILY_CONFIG
+        out = tmp_path / "global.yaml"
+        result = CliRunner().invoke(main, ["init", "-g", str(out)])
+        assert result.exit_code == 0, result.output
+        defaults = yaml.safe_load(out.read_text())["defaults"]
+        for block, values in defaults.items():
+            for key, value in values.items():
+                assert DEFAULT_FAMILY_CONFIG[block][key] == value, f"{block}.{key}"
+        assert "hmm" not in defaults  # advanced blocks only with --full
+
+    def test_full_template_changes_no_family_config(self, tmp_path, caplog):
+        """Pinning every default in global.yaml is a no-op: each preset
+        family's config equals the one built from the built-in defaults, and
+        the file raises no unknown-key warning."""
+        import logging
+        from vfam_trees import config as c
+        out = tmp_path / "global.yaml"
+        CliRunner().invoke(main, ["init", "--full", "-g", str(out)])
+        out.write_text(out.read_text().replace("your.email@example.com", "a@b.org"))
+        with caplog.at_level(logging.WARNING):
+            full = c.load_global_config(out)
+        assert full["_unknown_keys"] == []
+        assert "Unknown config key" not in caplog.text
+        families = (set(c.DNA_FAMILIES) | set(c.CONCATENATION_FAMILIES)
+                    | set(c.SEGMENTED_FAMILIES) | set(c.HMM_MARKER_FAMILIES) | {"Geminiviridae"})
+        for fam in sorted(families):
+            a = c._generate_default_family_config(fam, full)
+            b = c._generate_default_family_config(fam, c.make_minimal_global_cfg())
+            assert a == b, fam
+
+
+class TestRunRecord:
+    def _run(self, tmp_path, extra=()):
+        return CliRunner().invoke(main, [
+            "run", "-f", str(_families_file(tmp_path)),
+            "-o", str(tmp_path / "out"), "-j", "1", "-t", "4", *extra,
+        ])
+
+    def test_record_written_and_completed(self, tmp_path, captured_cmd):
+        import yaml
+        from vfam_trees import __version__
+        from vfam_trees.config import DEFAULT_FAMILY_CONFIG
+        result = self._run(tmp_path)
+        assert result.exit_code == 0, result.output
+        records = list((tmp_path / "out" / "run_records").glob("*.yaml"))
+        assert len(records) == 1
+        text = records[0].read_text()
+        assert text.startswith("# vfam_trees run record")
+        rec = yaml.safe_load(text)
+        assert rec["vfam_trees_version"] == __version__
+        assert rec["status"] == "completed" and rec["exit_code"] == 0
+        assert rec["finished"] is not None
+        assert rec["families"] == ["Poxviridae", "Filoviridae"]
+        assert rec["options"] == {"cores": 1, "threads": 4, "force": False,
+                                  "log_level": "INFO"}
+        assert rec["tools"] == {"mafft": "7.0"}
+        assert rec["global_config"]["defaults"] == DEFAULT_FAMILY_CONFIG
+        assert rec["global_config"]["icon"]["size"] == 256
+        # The API key never lands in the results folder.
+        assert "SECRET123" not in text
+        assert rec["global_config"]["ncbi"]["email"] == "test@example.org"
+
+    def test_failed_run_is_recorded(self, tmp_path, captured_cmd, monkeypatch):
+        import yaml
+        monkeypatch.setattr(
+            cli_mod.subprocess, "run",
+            lambda cmd, *a, **k: _FakeCompleted(returncode=3 if cmd[0] == "snakemake" else 0))
+        result = self._run(tmp_path)
+        assert result.exit_code == 3
+        rec = yaml.safe_load(
+            next((tmp_path / "out" / "run_records").glob("*.yaml")).read_text())
+        assert rec["status"] == "failed" and rec["exit_code"] == 3
+
+    def test_interrupted_run_is_recorded(self, tmp_path, captured_cmd, monkeypatch):
+        import yaml
+
+        def _interrupt(cmd, *a, **k):
+            if cmd[0] == "snakemake":  # Ctrl-C while Snakemake runs
+                raise KeyboardInterrupt
+            return _FakeCompleted()
+        monkeypatch.setattr(cli_mod.subprocess, "run", _interrupt)
+        self._run(tmp_path)
+        rec = yaml.safe_load(
+            next((tmp_path / "out" / "run_records").glob("*.yaml")).read_text())
+        assert rec["status"] == "interrupted" and rec["exit_code"] is None
+
+    def test_two_runs_in_the_same_second_keep_both_records(self, tmp_path, captured_cmd):
+        assert self._run(tmp_path).exit_code == 0
+        assert self._run(tmp_path).exit_code == 0
+        assert len(list((tmp_path / "out" / "run_records").glob("*.yaml"))) == 2
+
+    def test_unknown_global_keys_recorded(self, tmp_path, captured_cmd):
+        import yaml
+        (tmp_path / "config" / "global.yaml").write_text(
+            'ncbi:\n  email: "test@example.org"\noutput_dir: results\n'
+            'defaults:\n  length_outlier:\n    hi_mult: 3.0\n'
+        )
+        result = self._run(tmp_path)
+        assert result.exit_code == 0, result.output
+        rec = yaml.safe_load(
+            next((tmp_path / "out" / "run_records").glob("*.yaml")).read_text())
+        assert rec["global_config_unknown_keys"] == [
+            "output_dir", "defaults.length_outlier.hi_mult"]
+
+    def test_bad_global_config_stops_before_snakemake(self, tmp_path, captured_cmd):
+        (tmp_path / "config" / "global.yaml").write_text("ncbi:\n  email: \"\"\n")
+        result = self._run(tmp_path)
+        assert result.exit_code == 1
+        assert "ncbi.email must be set" in result.output
+        assert "cmd" not in captured_cmd
+        assert not (tmp_path / "out" / "run_records").exists()
+
+    def test_dry_run_writes_no_record(self, tmp_path, captured_cmd):
+        self._run(tmp_path, extra=("--dry-run",))
+        assert not (tmp_path / "out" / "run_records").exists()
+
+
+class TestToolPreflight:
+    def _which(self, absent):
+        return lambda tool: None if tool in absent else f"/usr/bin/{tool}"
+
+    def test_hmmer_needed_only_by_hmm_families(self, tmp_path, monkeypatch):
+        import shutil
+        from vfam_trees.config import make_minimal_global_cfg
+        monkeypatch.setattr(shutil, "which", self._which({"hmmscan", "hmmpress"}))
+        g = make_minimal_global_cfg()
+        # Togaviridae: RdRp preset (HMM); Kolmioviridae: whole-genome nucleotide.
+        assert cli_mod._missing_tools(["Togaviridae"], tmp_path, g) == ["hmmscan", "hmmpress"]
+        assert cli_mod._missing_tools(["Kolmioviridae"], tmp_path, g) == []
+        assert not list(tmp_path.iterdir())  # nothing written
+
+    def test_family_file_opting_out_needs_no_hmmer(self, tmp_path, monkeypatch):
+        import shutil
+        from vfam_trees.config import make_minimal_global_cfg
+        monkeypatch.setattr(shutil, "which", self._which({"hmmscan", "hmmpress"}))
+        (tmp_path / "Togaviridae.yaml").write_text(
+            "sequence:\n  type: nucleotide\n  region: whole_genome\nhmm:\n  enabled: false\n")
+        assert cli_mod._missing_tools(["Togaviridae"], tmp_path, make_minimal_global_cfg()) == []
+
+    def test_required_and_fasttree(self, tmp_path, monkeypatch):
+        import shutil
+        from vfam_trees.config import make_minimal_global_cfg
+        monkeypatch.setattr(shutil, "which", self._which({"mafft", "FastTree"}))
+        (tmp_path / "Geminiviridae.yaml").write_text(
+            'tree_500:\n  tool: fasttree\n  options_nuc: ""\n  options_aa: ""\n')
+        assert cli_mod._missing_tools(["Geminiviridae"], tmp_path, make_minimal_global_cfg()) == [
+            "mafft", "FastTree"]
+
+    def test_run_stops_before_snakemake(self, tmp_path, captured_cmd, monkeypatch):
+        monkeypatch.setattr(cli_mod, "_missing_tools", lambda *a: ["hmmscan", "hmmpress"])
+        result = CliRunner().invoke(main, [
+            "run", "-f", str(_families_file(tmp_path)), "-o", str(tmp_path / "out")])
+        assert result.exit_code == 1
+        assert "needs tools that are not on PATH: hmmscan, hmmpress" in result.output
+        assert "cmd" not in captured_cmd

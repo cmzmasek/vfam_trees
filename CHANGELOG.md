@@ -8,6 +8,542 @@ The full per-commit history is in `git log`; this file summarizes only
 changes that affect outputs, configuration, CLI behaviour, or other
 user-visible surface area.
 
+## [1.6.0] — 2026-10-22
+
+Phylogenetic-signal diagnostics for every tree, and 134 families moved from
+whole-genome nucleotide alignment to an HMM-identified marker protein: the
+RdRp for 107 RNA-virus families, the RT for 4 reverse-transcribing families
+and Rep for 23 CRESS-DNA and satellite families. Also: a translation
+fallback and a report for species without the marker, run records and
+`init --full` for provenance, a 50-iteration search for protein tree_500,
+outlier rounds checked on quick trees, trimAl `-gt 0.5`, and repeatable
+MAFFT and IQ-TREE runs. Only templates and presets changed; per-family YAML
+files written by earlier versions keep nucleotide analysis (a warning says
+so), so use a fresh configs directory — and a fresh output directory, or
+each species is downloaded again (see Fixed). A `global.yaml` that sets the
+`msa_trim` or `tree_500` blocks keeps its old values; regenerate it with
+`vfam_trees init --full` or delete those blocks.
+
+### Added
+- **Phylogenetic-signal check** (`signal.py`) on every final tree: median
+  tip-to-tip distance (subs/site), median pairwise identity of the trimmed
+  alignment, core fraction (residues a typical sequence keeps after trimming)
+  and branches at IQ-TREE's 10 subs/site cap, with a verdict `ok` / `weak` /
+  `saturated`. New `summary.tsv` columns `tree{500,100}_signal`,
+  `_patristic_median`, `_identity_median`, `_core_frac`, `_branches_at_cap`;
+  rows in the report PDF; an INFO line per tree and a WARNING with reasons
+  when a tree is not `ok`. Nucleotide: saturated above a median of 1.5
+  subs/site (or a branch at the cap with a median above 0.75), weak above
+  0.75 or below 60 % identity or 25 % core. Protein: 4.0 / 3.0 / 30 %.
+- **RdRp protein marker for 107 RNA-virus families** (`RDRP_FAMILIES`,
+  kingdom Orthornavirae). The RdRp is identified by HMM against a bundled set
+  of 23 Pfam RdRp profiles (`vfam_trees/data/hmms/RdRp/`, accessions verified
+  against InterPro, recipe in `scripts/build_bundled_hmms.sh`), whatever
+  GenBank calls it, and cut to the RdRp domain ± 100 residues. Hit rule for
+  the set: domain E-value ≤ 1e-3, ≥ 20 % profile coverage, no Pfam GA.
+- **Only the family's own kind of RdRp.** Each family's marker tokens are
+  the profiles its own RefSeq RdRps hit (`RDRP_FAMILY_PROFILES`; the four
+  broad palm-domain profiles RdRP_1–RdRP_4 always together), and the new
+  `hmm.best_hit_only` (default `false`, `true` in the RdRp preset) counts a
+  protein only when one of them fits it better than any other profile in the
+  database. This keeps out other viruses filed under the family's taxa: NCBI
+  had about 20 orbivirus and bunyavirus species (taxids 345xxxx, 2025
+  deposits) under *Alphavirus*; their VP1 and L proteins fit Orbi_VP1 /
+  Bunya_RdRp best and had joined the Togaviridae trees (25 of 92 tree_100
+  tips and 15 of 162 tree_500 tips in the first validation run). Whole-genome
+  nucleotide mode took them too. Each species affected gets a WARNING in the
+  family log naming the profile and the accessions left out. Profiles for
+  other domains of the same polymerase count as the family's own
+  (`hmm.best_hit_also`, set by the preset from `RDRP_SIBLING_DOMAINS`): 6 of
+  149 Peribunyaviridae RefSeq L proteins fit the L thumb-ring profile best,
+  and Hantaviridae or Nairoviridae, whose RefSeqs never hit it, would
+  otherwise lose a divergent L as "foreign".
+- **RT protein marker for the reverse-transcribing families and Rep for the
+  CRESS-DNA families** (`HMM_MARKER_FAMILIES`, `RT_FAMILY_PROFILES`,
+  `REP_FAMILIES`; bundled Pfam sets `RT` and `Rep`, accessions verified
+  against InterPro 2026-10-21). Same machinery, hit rule, length floor,
+  opt-out and load-time checks as the RdRp. RefSeq coverage (same test):
+  - RT (`RVT_1`): Caulimoviridae 108/108, Hepadnaviridae 27/27,
+    Metaviridae 2/2, Retroviridae 64/89 — the 25 others have no RT gene
+    (transforming viruses with an onc gene in place of *pol*, endogenous-
+    retrovirus fragments) and are not in the RT tree. Cut to the RT domain
+    ± 100 (~310–370 aa); `RVT_thumb` / `RVT_connect` count only for the
+    best-hit rule, `RVT_2` (Ty1/copia) marks such RTs as foreign.
+    Hepadnaviridae was whole-genome nucleotide.
+  - Rep (`Viral_Rep`, `RNA_helicase`, `Gemini_AL1`, `Gemini_AL1_M`):
+    ≥ 94 % of RefSeq viruses in 22 *Cressdnaviricota* families and
+    Alphasatellitidae; whole proteins (~270–470 aa), every profile selects,
+    no best-hit rule (the profiles separate geminivirus-like from
+    circovirus-like Reps, not families). Circoviridae used a name-based Rep.
+    Smacoviridae keeps it (Pfam: 38/88); Metaxyviridae (no RefSeq proteins),
+    Tolecusatellitidae (no Rep) and Pseudoviridae (no RefSeq proteins) stay
+    as they were.
+  In the 2026-10-20 signal survey 22 of the 24 of these families with a
+  result were saturated (17) or weak (5) as whole-genome nucleotide (tree_100
+  median tip-to-tip distance 0.9–2.7 subs/site); the other two are small
+  (Oomyviridae: 5 near-identical genomes; Redondoviridae: 23).
+- **Translation fallback for HMM markers.** When no annotated protein of a
+  species carries the marker, its nucleotide records (≤ 100, complete
+  genomes first) are translated in six frames and run through the same
+  profiles, best-hit rule and domain cut (`fetch.translated_orfs`,
+  `_translated_marker_genomes`). Recovers genomes whose marker NCBI never
+  annotated: on Retroviridae the galago prosimian foamy virus (12 kb genome,
+  no pol CDS), bat spumavirus 1 (no proteins at all), the *Xenopus* ERV Xen1,
+  and SHIV (70,422 proteins, the first 6000 all env/tat/rev/vpu clones).
+  The record takes its genome's accession and metadata and carries a COMMENT.
+- **Species without the marker are reported** in every pipeline mode: a
+  WARNING in the family log, `<Family>_species_without_marker.tsv`, and
+  `summary.tsv` columns `species_without_marker` / `species_marker_translated`
+  (also in the report PDF). Before, a species with NCBI records but none of
+  the marker or region was logged like one with no data at all ("No
+  sequences found"). In concatenated mode a species whose genomes carry some
+  of the markers, but none as many as `min_fraction` asks for, is listed as
+  `too few markers` (Marseilleviridae: Noumeavirus, 916 NCBI proteins, has 3
+  of the 6 name-matched markers). Costs one record-count query per such species outside
+  HMM mode. In the whole-genome Retroviridae tree_100, 17 of 99 species had no
+  RT protein; 5 of them come back by translation, 11 are acutely transforming
+  or defective viruses with no pol gene.
+- `sequence.domain_padding` (single-marker HMM mode; in the template, default
+  `null`: whole protein): keep only the marker's hits ± that many residues.
+  The span is the run of hits around the best-scoring one; a hit more than
+  500 residues from its neighbours (`markers.MAX_DOMAIN_GAP`; the largest gap
+  between domains of one RefSeq RdRp was 383) is left out, so a stray hit or
+  a second copy in a chimeric record cannot bring back the polyprotein.
+  Cropped records keep their metadata; a GenBank COMMENT records the
+  residues used.
+- `hmm.min_protein_length` (default `null`; 100 in the RdRp preset): proteins
+  shorter than this are left out of the candidates in HMM mode. At 100 aa (the
+  protein QC minimum) no tree changes. The floor is applied after download: an
+  NCBI length clause (`[SLEN]`) would have saved 2–14 % of the records but
+  made every protein search 4–6 s slower.
+- **Run records.** Each `vfam_trees run` writes
+  `<output>/run_records/<start time>.yaml`: version, command line, options,
+  paths, Python / package / external-tool versions (MAFFT, trimAl, IQ-TREE,
+  FastTree, mmseqs, CD-HIT, HMMER), status and exit code (filled in when the
+  run ends), and every global setting the run used (built-in defaults
+  overlaid with `global.yaml`; the NCBI API key is not recorded). The
+  `<Family>.yaml` each family folder already received, its merged settings,
+  now starts with a header naming the version, start time, thread count, the
+  files merged and any keys the version did not read.
+- **`vfam_trees init --full`** writes a global config listing every setting
+  with its default and a comment (the plain template leaves out 29 of the 75
+  per-family settings: the `hmm`, `output`, `manual`, `concatenation` and
+  `refseq_absorption` blocks and a few keys). A test keeps it equal to the
+  built-in defaults. `annotation_tsv`, `sequence.hmms`,
+  `sequence.domain_padding` and `quality.max_length` are now in the plain
+  template too; `sequence.hmms: []` is now in the built-in defaults (the
+  presets set it; no behaviour change).
+
+### Changed
+- **tree_500 on protein alignments is a 50-iteration search (`-n 50`)
+  instead of `--fast`.** On weak-signal protein sets `--fast` lands in a
+  different local optimum on every seed: on 498 Tombusviridae RdRps its five
+  seeds spanned −104,656 to −104,863 log-likelihood and each tree had 6–13
+  splits with SH-aLRT ≥ 95 that a full search contradicts. `-n 50` (IQ-TREE's
+  normal search, stopped after 50 iterations) reaches −104,483 with 4 such
+  splits, as close to the best full search as a second full search is, at
+  ~12× the `--fast` time (a full search is 35–75×). `--fast --runs 5` gains
+  nothing. Nucleotide tree_500 keeps `--fast`. Benchmark below ("tree_500
+  search effort"). `-n` is rejected under `tool: fasttree`, where it means
+  something else (the number of alignments in the input).
+- **Branch-length outlier rounds are checked on a quick tree first**
+  (`outlier_removal.quick_check`, default true). Each round builds an
+  IQ-TREE `--fast` tree (GTR+G / LG+G, no ModelFinder) and removes the
+  outliers found on it; the configured search runs once a quick tree shows
+  nothing more to remove, and its tree is checked exactly as before, so the
+  final tree is always the configured one. Before, tree_100's UFBoot search
+  (10–25 min for a protein family) repeated in every round — four times for
+  Togaviridae — and tree_500's would have with `-n 50`. Measured on
+  Togaviridae with its downloads reused: 92 → 52 min for the family; tree_100
+  one UFBoot search after three quick trees instead of four searches (54 →
+  12 min); tree_500 8 min (two `-n 50` searches, since the first configured
+  tree still had two outliers; 1 min with `--fast` before). The final trees
+  share 145 of 147 and 84 of 88 tips with the old ones, with the same signal
+  verdicts and median support. Not used when the
+  configured tree is FastTree or IQ-TREE `--fast` already. Both pipelines
+  share the round logic (`branch_outliers.outlier_round` /
+  `select_outliers`); the concatenated pipeline's protected-outlier and
+  removal log lines now read like the single-marker ones.
+- **Column trimming keeps columns with at most 50 % gaps (trimAl `-gt
+  0.5`) instead of `-automated1`**, for nucleotide and protein alike. On
+  alignments with many short PCR fragments `-automated1` switches to its
+  strict mode and keeps few columns (Retroviridae RT tree_500: 58 of 657;
+  Circoviridae 104 of 1660), and genera fall apart. On 22 protein and 20
+  nucleotide alignments `-gt 0.5` grouped as many ICTV genera as
+  `-automated1` in every one and more in six (Retroviridae tree_500 9 of 9
+  instead of 4 of 9); tree inference takes ~1.2× as long for protein and
+  ~1.4× for nucleotide. Benchmark below ("Trimming"). The signal check
+  reads the trimmed alignment and its tree, so its verdicts move towards
+  `saturated` (more variable columns are kept); the thresholds are
+  unchanged. A trim that keeps no column now stops with an error naming
+  `msa_trim.options`, instead of one blaming trimAl's output behaviour.
+- HMMER (`hmmscan`, `hmmpress`) is required by the default family list and
+  `vfam_trees test` reports it as such; `vfam_trees run --help` describes
+  the RdRp default.
+- Segmented RNA families on the RdRp preset no longer use a segment keyword:
+  the HMM finds the RdRp on whichever segment carries it (and the log no
+  longer announces one).
+- **Opting out of the RdRp preset is all or nothing.** A family file that
+  sets `sequence.type` other than protein, `sequence.region` other than
+  `RdRp`, or `hmm.enabled: false` gets no part of the preset: it runs on the
+  template under the file's own values (whole-genome nucleotide, with the
+  usual segment for segmented families). Before, a file setting only
+  `sequence.type: nucleotide` (e.g. one written before v1.3) kept the
+  preset's HMM protein fetch and lost its segment: protein records then
+  failed nucleotide QC, and for Hantaviridae every species was skipped. The
+  load warning now names the settings that apply.
+- **Half-edited HMM configs stop at load** with the lines to fix:
+  `hmm.enabled: true` with `sequence.type: nucleotide` (e.g. a v1.6.0 RdRp
+  file with only its type changed, or a pre-v1.3 Adenoviridae file under
+  the hexon HMM preset) would fetch marker proteins and reject them all in
+  nucleotide quality control, and a `sequence.segment` with an HMM protein
+  marker would drop every record (protein titles name no segment). The
+  opt-out warning now reports the segment that will really be used: a
+  v1.6.0-generated file's `segment: null` wins over the usual segment, and
+  the warning says that all segments then go into one alignment and which
+  line to add.
+- **The non-RdRp L domains no longer select or cut a protein.**
+  `L_PA-C-like` and `L_thumb_ring_vir` were marker tokens for
+  Peribunyaviridae, Phenuiviridae and Cruliviridae (their RefSeq L proteins
+  hit them), so a partial L covering only such a domain would have been
+  chosen and cut to it, with no RdRp columns. They now only count for the
+  best-hit rule (`RDRP_NON_CORE_DOMAINS`). Every RefSeq L protein of the
+  three families also hits `Bunya_RdRp`; their cut shrinks from a median of
+  ~1300 to ~900 aa, the RdRp domain ± 100, as for Hantaviridae.
+- `vfam_trees run` checks before Snakemake starts that the external tools
+  the listed families need are on PATH (MAFFT, IQ-TREE, mmseqs, trimAl;
+  HMMER for HMM families; FastTree when a tree block uses it). Before, a
+  run without HMMER downloaded up to 6000 proteins for each RdRp family
+  and then failed it, family after family.
+- **Config keys this version does not read are reported** (WARNING), at any
+  depth and for `global.yaml` as well as family files; before, only unknown
+  top-level keys of family files were. Such keys had silently no effect: the
+  `length_outlier.hi_mult` / `lo_mult` of v1.2.19 and earlier, for instance,
+  survive in older `global.yaml` files and from there in every generated
+  family file, while the filter uses `k`, `min_lo_mult` and `max_hi_mult`.
+  The pipeline repeats the warning in each family log.
+- `output_dir` and `log_level` are no longer in the `global.yaml` template:
+  nothing ever read them (the output folder and log level are `vfam_trees
+  run` options, `-o` and `--log-level`); an existing file gets a warning
+  saying so.
+- `vfam_trees run` reads and checks `global.yaml` before starting Snakemake,
+  so a missing file or missing NCBI email stops the run at once instead of
+  failing every family job.
+
+### Fixed
+- **A lost NCBI connection stalled a run forever.** Biopython opens its
+  connections without a timeout, so a connection that died while the
+  computer slept or moved to another network left the read waiting with no
+  end: a validation run sat for two hours on one, at 0 % CPU. A connection
+  that sends nothing for 180 s now fails (`fetch.NCBI_SOCKET_TIMEOUT`, set
+  by `configure_entrez` unless the process already has a socket timeout),
+  and the usual 5 retries apply. Sleep still pauses a run; keep the computer
+  awake for long runs (macOS: `caffeinate -is vfam_trees run …`).
+- **Repeated runs gave different alignments and trees.** MAFFT's threaded
+  iterative refinement (FFT-NS-i, which `--auto` picks for a few hundred
+  protein sequences, and L-INS-i, the tree_100 protein mode) returns a
+  different alignment on every run: 100 Tombusviridae RdRps, `--thread 8`,
+  three runs, three alignments of 1366–1400 columns. trimAl `-automated1`
+  can magnify that: the same input kept 939 columns in one validation run and
+  441 in the next. IQ-TREE drew a new random seed on every run, too: two
+  `--fast` runs on the same Tombusviridae tree_500 alignment differed in 366
+  of 495 splits. MAFFT now runs with `--threadit 0` (only the refinement on
+  one thread; the alignment is then the same on every run and for any
+  `--threads`, checked with 1, 2, 4 and 8), and IQ-TREE with `-seed 42` (the
+  same tree and support values on every run at the same `--threads`,
+  checked for `--fast` and for the tree_100 search with ModelFinder and
+  UFBoot). Options that set `--threadit` or `-seed` themselves win. Cost:
+  the refinement stage is no longer parallel, about 2× MAFFT time for
+  L-INS-i (100 sequences: 12 → 22 s) and 4× for FFT-NS-i (500 sequences:
+  28 → 110 s), a few minutes per protein family; the nucleotide modes have
+  no refinement stage.
+- **A tree could have more sequences than its target.** When many species
+  have only one or two representatives, each is still given one slot, and the
+  rounded shares then add up to more than the target. The correction took
+  back at most one slot per species in a single pass, which was not enough:
+  Genomoviridae (419 species, 686 representatives) got 550 sequences in
+  tree_500. It now repeats until the total is exact, and never gives a
+  species more slots than it has representatives (which left a tree short
+  when rounding fell below the target). Selections that already hit the
+  target are unchanged (checked on 1,200 random cases). Present since the
+  proportional merge was introduced; tree_100 could overshoot the same way.
+- **Nucleotide sequences in protein trees.** `additional_data_sources`
+  (Pathoplexus genomes) are refused at config load for a family analysed as
+  protein, with a message saying how to switch it to nucleotide; pasted
+  sequences (`include_seq`, `include_fasta_files`) of the other molecule type
+  are a hard error (`quality.sequence_type_mismatch`: ≥ 90 % A/C/G/T/U/N in a
+  protein family, > 10 % non-nucleotide letters in a nucleotide one); and a
+  `manual.include` accession of the other NCBI database is left out with a
+  warning instead of being fetched. A/C/G/T/N are amino-acid letters too, so
+  before this such a genome went into the RdRp alignment as a protected tip.
+  Protein records given by hand are now also cut to the marker domain like
+  fetched ones.
+- **Downloads reused under other settings.** The per-species download kept in
+  an output folder (`_work/species/*/sequences.gb`) was reused whatever the
+  sequence settings, so `--force` on a v1.5.0 output folder aligned its
+  nucleotide genomes as protein without a word. It is now reused only when
+  type, region, segment, HMM marker settings, `max_per_species` and
+  excluded organisms match (recorded beside it in `sequences.key`), and
+  downloaded again otherwise. The alignment checkpoint now also covers the
+  sequences themselves, not only their (per-run) short ids.
+- **Concatenated-marker families ignored `visualization` and `icon`** in
+  `global.yaml` (Poxviridae and the other large-DNA-virus presets): their
+  pipeline read the settings from the family config, which never has them,
+  so tree images always used the built-in line width and icon colours. The
+  fallback values now live in one place (`config.GLOBAL_SETTINGS_DEFAULTS`)
+  for both pipelines.
+- **Re-runs of an older output folder** (`--force`): the per-species
+  download check now also covers the content of the HMM profile set (an
+  edited or added profile changes which protein is chosen and how it is
+  cut), and the folder's taxonomy cache is topped up with the lineages of
+  taxa it lacks. Before, new taxa after a re-download got no lineage (grey,
+  no genus, no LCA vote).
+- **`manual.include` accessions of no NCBI shape** (Pathoplexus ids, which
+  the code expects there) were reported as "protein accessions … left out"
+  in nucleotide families, as were 6-letter WGS accessions and lower-case
+  entries. Only accessions whose shape clearly belongs to the other
+  database are left out now, case-insensitively; 6-letter WGS accessions
+  are also fetched from nuccore.
+- **hmmscan ran on one thread**: `hmm.threads: null` now means the run's
+  `--threads`, as documented.
+- **Parallel families raced on the shared profile database.** All RdRp
+  families use one combined `RdRp` database; with `-j` > 1, two families
+  could build or `hmmpress` it at once and scan half-written indexes
+  (reproduced: errors in 5 of 5 trials with 12 parallel workers, none with
+  the fix). Building and pressing now happen under a file lock.
+- **Protein identity in the signal check** dropped `N` (asparagine) as if it
+  were an unknown base; identity now counts A/C/G/T/U for nucleotides and the
+  20 standard amino acids for proteins, ignoring ambiguity codes and X.
+- **Protein residues MAFFT cannot align.** GenBank translations can carry O
+  (pyrrolysine, and how some records write an amber read-through codon), U,
+  J or an internal stop; MAFFT aborts on them ("Alphabet 'O' is unknown") and
+  IQ-TREE would too. Found in the RdRp validation: one tombusvirus RdRp of
+  500 wrote its read-through position as O and failed the family. Such
+  residues are now written as X (terminal stops and gap symbols dropped) in
+  the copy `msa.run_msa` aligns (`seq_type="protein"`), in the single-marker
+  and concatenation paths alike; the raw FASTA keeps the deposited residues,
+  and the log names the records changed. Quality control already counted
+  them as ambiguous, so which records pass is unchanged.
+
+### Survey behind the change (2026-10-20)
+Earlier results of 127 families (April and October runs) were re-measured
+with the new signal check. Of the 117 families still aligned as whole-genome
+nucleotide in v1.5.0, tree_100 was `saturated` for 84, `weak` for 24 and `ok`
+for 9 (all with 4–23 tips). Median pairwise identity of their trimmed
+alignments was 0.35–0.5 for most, close to what unrelated nucleotide sequence
+reaches.
+
+RdRp coverage was then measured on each family's RefSeq proteins (hmmscan
+with the pipeline's cutoff code). With Pfam GA and 50 % coverage (the
+pipeline default), 78 of 138 Orthornavirae families had ≥ 70 % of their
+RefSeq viruses covered; with the rule above, 107. An audit of the hits gained
+found them RdRps under other names (potyvirus NIb, alphavirus nsP4, bromovirus
+2a, reovirus lambda-3, tombusvirus p86/p88, …) except about 4 in several
+thousand. The 31 families below 70 % stay nucleotide; they are listed with
+their coverage in `config.py`.
+
+### Validation (2026-10-20/21)
+Five families run end to end with fresh configs: tree_100 and tree_500
+verdicts of the v1.5.0 whole-genome nucleotide trees (from the survey) against
+the v1.6.0 RdRp trees. Medians are subs/site; nucleotide and protein
+distances are not on the same scale, which is why the thresholds differ.
+
+| Family | v1.5.0 nucleotide tree_100 / tree_500 | v1.6.0 RdRp tree_100 (median, identity, core) | v1.6.0 RdRp tree_500 |
+|---|---|---|---|
+| Xinmoviridae | saturated (2.01, core 0.29) / saturated | ok (2.28, 0.40, 0.64) | ok |
+| Hantaviridae | saturated (2.07, 3 at cap) / saturated | weak (1.13, 0.73, 1.00; 1 at cap) | weak (1 at cap) |
+| Tombusviridae | saturated (2.49, core 0.11) / saturated | ok (2.04, 0.42, 0.72) | ok (2.87) |
+| Partitiviridae | saturated (3.05) / saturated | weak (3.66, 0.26, 0.54) | weak (3.37) |
+| Togaviridae | saturated (2.21, 3 at cap) / saturated | weak (0.72, 0.78, 0.84; 3 at cap) | weak (3 at cap) |
+
+The v1.6.0 columns are from the rerun after the first round of review
+fixes (2026-10-21), before the fixed MAFFT and IQ-TREE seeds below. The
+first run's verdicts were the same except Hantaviridae tree_500 (ok, no
+branch at the cap) and Tombusviridae tree_500 (weak, 3.04). Both differences
+are run-to-run variation: Tombusviridae tree_100 had the same 100 input
+sequences in both runs, yet trimAl kept 939 columns of the first alignment
+and 441 of the second (median 2.97 → 2.04, core 0.99 → 0.72); see "Repeated
+runs gave different alignments and trees" under Fixed. Hantaviridae also
+had one L protein cut differently (Buffalo Bayou virus QFQ60707.1, 1297 →
+909 aa, now its RdRp domain ± 100 like the rest).
+
+- Hantaviridae's capped branch is Wenling hagfish virus, a RefSeq and the
+  most divergent hantavirus. Togaviridae's three lead to unclassified fungal
+  and termite "alpha-like" viruses NCBI files under the family; the misfiled
+  orbi- and bunyavirus species are all gone (every selected protein fits
+  RdRP_2, the alphavirus nsP4 profile, best). Partitiviridae is deep at the
+  RdRp level too.
+- All 10 PhyloXML files validate against phyloXML 1.20; no IQ-TREE UFBoot
+  abort. Wall time per family 11–93 min with 8 threads, of which tree_100
+  (ModelFinder `TEST`, UFBoot, up to four rounds of outlier removal) took
+  7–52 min.
+- Trimming was benchmarked on the eight alignments of Hantaviridae,
+  Partitiviridae, Tombusviridae and Xinmoviridae (trimAl `-automated1`,
+  `-gappyout`, `-gt 0.5`, none; score: ICTV genera monophyletic among
+  classified tips). The modes agreed in 7 of 8, `-gt 0.5` better in the
+  eighth; with the RT/Rep and nucleotide sets added, `-gt 0.5` became the
+  default (see "Trimming" below).
+
+### RT and Rep validation (2026-10-21/22)
+Seven families run end to end with fresh configs. "Without marker": species
+with NCBI records but no marker protein, even by translation; "translated":
+species found only by translating their genomes.
+
+| Family | Marker | tree_500 / tree_100 tips | Signal 500 / 100 | Without marker | Translated |
+|---|---|---|---|---|---|
+| Caulimoviridae | RT | 489 / 100 | ok / ok | 9 | 3 |
+| Hepadnaviridae | RT | 187 / 98 | ok / ok | 4 | 0 |
+| Retroviridae | RT | 491 / 100 | weak / weak | 87 | 54 |
+| Circoviridae | Rep | 500 / 100 | ok / ok | 55 | 48 |
+| Genomoviridae | Rep | 549 / 100 | ok / ok | 9 | 25 |
+| Geminiviridae | Rep | 500 / 100 | ok / ok | 123 | 28 |
+| Alphasatellitidae | Rep | 494 / 100 | ok / ok | 4 | 6 |
+
+- Genomoviridae's 549 is what led to the `proportional_merge` fix (Fixed,
+  above); it ran before the fix.
+- Species in tree_500, old whole-genome tree → new: Retroviridae 144 → 195
+  (41 by translation), Circoviridae 393 → 500, Caulimoviridae 155 → 197,
+  Hepadnaviridae 52 → 57, Alphasatellitidae 182 → 192, Genomoviridae 471 →
+  421. Species of the old trees lost for want of the marker: Retroviridae 5
+  (Abelson MLV, avian myelocytomatosis virus, murine osteosarcoma virus,
+  LNras*SN, a murine AIDS provirus: no pol), Geminiviridae 10, Circoviridae
+  6, Caulimoviridae 1, the others none.
+- Species without the marker are records that cannot carry it: coat-protein
+  PCR fragments and DNA-B components (most of Geminiviridae's 123), Rep PCR
+  fragments shorter than 100 aa, capsid-only records, PCV2-derived agents,
+  retroviruses without pol, and one caulimovirus genome (PX904244.1) with no
+  RT even among ORFs of ≥ 30 aa.
+- All 14 PhyloXML files validate; no ERROR in any log. The quick outlier
+  check (Retroviridae, the only family run after it was added): tree_500
+  removed 9 sequences over three quick rounds of ~30 s, then one `-n 50`
+  search (8 min); tree_100's quick tree was clean, one UFBoot search
+  (15 min).
+- Marseilleviridae (concatenated, name-based markers) ran end to end too:
+  23 genomes, so no outlier rounds; tree_500 `-n 50` in 45 s. 14 species are
+  missing for lack of markers, among them Noumeavirus, Golden Marseillevirus
+  and three LCMAC genomes (400–900 NCBI proteins each), whose packaging
+  ATPase and RNA polymerase subunits NCBI names differently.
+- Retroviridae is weak because of trimming: trimAl `-automated1` keeps 58 of
+  657 tree_500 columns (Circoviridae 104 of 1660, Genomoviridae 189 of 1217);
+  the larger sets have many short PCR fragments. This led to the trimming
+  change (Changed, above): `-gt 0.5` keeps 328 Retroviridae columns.
+
+### Trimming (2026-10-22)
+The untrimmed alignments of the validation runs (RdRp, RT, Rep) and of the
+v1.4.0 run (whole-genome nucleotide), trimmed with trimAl `-automated1` and
+with `-gt 0.5`; IQ-TREE `--fast -alrt 1000` (LG+G4 / GTR+G4), 2 threads.
+"Genera": ICTV genera with ≥ 2 classified tips that form one clade, of those
+testable. Columns: untrimmed → `-automated1` / `-gt 0.5`.
+
+| Protein | Tree | Columns | Genera | Median SH-aLRT |
+|---|---|---|---|---|
+| Hantaviridae (RdRp) | 500 | 984 → 922 / 923 | 0 / 0 of 5 | 86.6 / 87.1 |
+| | 100 | 963 → 922 / 924 | 0 / 0 of 5 | 96.0 / 95.4 |
+| Partitiviridae (RdRp) | 500 | 1518 → 255 / 416 | 3 / 3 of 5 | 88.8 / 93.8 |
+| | 100 | 876 → 267 / 424 | 4 / 4 of 4 | 91.3 / 92.8 |
+| Tombusviridae (RdRp) | 500 | 2361 → 192 / 468 | 9 / **10** of 15 | 87.3 / 93.3 |
+| | 100 | 1357 → 939 / 596 | 13 / 13 of 14 | 97.3 / 94.9 |
+| Xinmoviridae (RdRp) | 500 | 1336 → 678 / 1000 | 5 / 5 of 8 | 92.0 / 93.4 |
+| | 100 | 1329 → 665 / 1012 | 5 / 5 of 8 | 96.7 / 97.9 |
+| Alphasatellitidae (Rep) | 500 | 603 → 221 / 315 | 5 / **7** of 13 | 78.4 / 85.2 |
+| | 100 | 383 → 225 / 311 | 5 / **6** of 10 | 86.1 / 91.0 |
+| Caulimoviridae (RT) | 500 | 442 → 247 / 339 | 3 / 3 of 8 | 81.3 / 85.0 |
+| | 100 | 427 → 271 / 360 | 5 / 5 of 6 | 87.2 / 93.2 |
+| Circoviridae (Rep) | 500 | 1660 → 104 / 269 | 0 / 0 of 2 | 80.2 / 86.1 |
+| | 100 | 804 → 206 / 281 | 2 / 2 of 2 | 82.7 / 85.2 |
+| Geminiviridae (Rep) | 500 | 829 → 347 / 361 | 6 / 6 of 8 | 87.4 / 88.2 |
+| | 100 | 468 → 347 / 361 | 1 / 1 of 2 | 90.1 / 85.1 |
+| Genomoviridae (Rep) | 500 | 1217 → 189 / 323 | 1 / 1 of 7 | 85.8 / 92.0 |
+| | 100 | 581 → 235 / 324 | 2 / 2 of 5 | 89.7 / 94.3 |
+| Hepadnaviridae (RT) | 500 | 443 → 169 / 325 | 3 / 3 of 4 | 79.8 / 87.2 |
+| | 100 | 453 → 170 / 327 | 2 / 2 of 3 | 84.9 / 91.8 |
+| Retroviridae (RT) | 500 | 657 → 58 / 328 | 4 / **9** of 9 | 62.3 / 81.0 |
+| | 100 | 474 → 304 / 353 | 5 / **7** of 8 | 92.0 / 92.1 |
+
+| Nucleotide | Tree | Columns | Genera | Median SH-aLRT |
+|---|---|---|---|---|
+| Alphasatellitidae | 500 | 5359 → 983 / 1282 | 7 / 7 of 13 | 93.4 / 96.4 |
+| | 100 | 2897 → 492 / 1231 | 11 / 11 of 11 | 89.9 / 98.3 |
+| Deltaflexiviridae | 500 | 12134 → 3362 / 7786 | none testable | 99.8 / 100 |
+| | 100 | 11817 → 3466 / 7724 | none testable | 98.1 / 100 |
+| Hantaviridae | 500 | 9411 → 6506 / 6534 | 1 / 1 of 4 | 100 / 100 |
+| | 100 | 8604 → 6370 / 6535 | 1 / 1 of 4 | 100 / 100 |
+| Hepaciviridae | 500 | 28181 → 6128 / 8945 | 0 / 0 of 2 | 99.9 / 100 |
+| | 100 | 24512 → 2949 / 9027 | 2 / 2 of 2 | 99.7 / 100 |
+| Hepadnaviridae | 500 | 8306 → 2157 / 3097 | 3 / 3 of 4 | 97.1 / 99.2 |
+| | 100 | 7360 → 2174 / 3113 | 3 / 3 of 4 | 98.9 / 100 |
+| Hepeviridae | 500 | 16211 → 5550 / 6961 | 1 / 1 of 6 | 100 / 100 |
+| | 100 | 14797 → 3714 / 7092 | 1 / 1 of 6 | 100 / 100 |
+| Pneumoviridae | 500 | 19834 → 11264 / 14382 | 2 / 2 of 2 | 100 / 100 |
+| | 100 | 19703 → 11634 / 14293 | 2 / 2 of 2 | 100 / 100 |
+| Solemoviridae | 500 | 17821 → 4055 / 5298 | 1 / 1 of 4 | 99.1 / 99.7 |
+| | 100 | 14987 → 3212 / 5351 | 0 / 0 of 3 | 99.5 / 100 |
+| Spinareoviridae | 500 | 7662 → 1951 / 4110 | 5 / **6** of 8 | 92.8 / 98.5 |
+| | 100 | 8222 → 5371 / 3997 | 5 / 5 of 8 | 99.7 / 99.9 |
+| Xinmoviridae | 500 | 23428 → 3083 / 11636 | 3 / 3 of 4 | 99.5 / 100 |
+| | 100 | 26880 → 3581 / 11831 | 3 / 3 of 4 | 99.8 / 100 |
+
+- `-gt 0.5` was never worse on genera and better in 6 of 42. Median
+  SH-aLRT was higher in 19 of 22 protein trees (lower: Geminiviridae
+  tree_100 by 5, Tombusviridae tree_100 by 2.4, Hantaviridae tree_100 by
+  0.6) and higher or equal in every nucleotide tree, where it sits near 100
+  in either mode, so the nucleotide half is a weak test.
+- Tree time over all alignments: protein ×1.22 (RdRp ×1.17, RT/Rep ×1.26),
+  nucleotide ×1.40; the most, Retroviridae tree_500, ×2.6 (21 → 55 s).
+  `-gt 0.5` is not always the larger: Tombusviridae tree_100 and
+  Spinareoviridae nucleotide tree_100 keep fewer columns than with
+  `-automated1`, whose strict/gappyout choice flips between alignments.
+- Signal verdicts on these trees, `-automated1` → `-gt 0.5`: protein
+  Partitiviridae tree_500 and tree_100 and Retroviridae tree_100 weak →
+  saturated, Tombusviridae tree_100 weak → ok and tree_500 ok → weak;
+  nucleotide Hepadnaviridae tree_500 and tree_100, Alphasatellitidae and
+  Solemoviridae tree_100 weak → saturated; the other 32 unchanged. The
+  kept columns are more variable, so the median distance rises; the
+  core-fraction reason (Retroviridae tree_500: 18 % of a typical sequence
+  kept) disappears. These are `--fast` trees, so the pipeline's own
+  verdicts can differ. Verdicts from runs with different trimming are not
+  comparable.
+- trimAl drops sequences that are all gaps after trimming. In both modes
+  that happened once in the 42 alignments (Tombusviridae tree_500, the
+  same sequence).
+
+### tree_500 search effort (2026-10-21)
+The five-family rerun's trimmed tree_500 alignments, Tombusviridae (498 ×
+236 aa) and Hantaviridae (345 × 922 aa), LG+G with `-alrt 1000`, 4 threads
+while other runs used the rest of the machine. Reference: the best full
+search. "Contradicted ≥ 80 / ≥ 95": splits with that SH-aLRT support which
+the reference tree contradicts (incompatible splits). RF: share of splits
+that differ from the reference.
+
+| Tombusviridae | log-likelihood | CPU time | RF | contradicted ≥ 80 / ≥ 95 |
+|---|---|---|---|---|
+| `--fast`, seeds 1–5 | −104,656 … −104,863 | 1.5 min | 26–32 % | 49–57 / 6–13 |
+| `--fast --runs 5` | −104,656 | 10 min | 26 % | 57 / 11 |
+| `-n 20` | −104,584 | 4.4 min | 21 % | 34 / 5 |
+| `-n 50` | −104,483 | 8.3 min | 16 % | 22 / 4 |
+| `-n 100` | −104,474 | 14 min | 12 % | 18 / 3 |
+| full search, seed 2 | −104,451 | 66 min | 13 % | 22 / 0 |
+| full search, seed 1 (reference) | −104,429 | 53 min | — | — |
+
+| Hantaviridae | log-likelihood | CPU time | RF | contradicted ≥ 80 / ≥ 95 |
+|---|---|---|---|---|
+| `--fast`, seeds 1–5 | −53,824 … −53,848 | 1.4–1.8 min | 12–18 % | 6–13 / 0–4 |
+| `-n 20` | −53,805 | 8.5 min | 7 % | 2 / 0 |
+| `-n 50` | −53,805 | 19 min | 8 % | 2 / 0 |
+| `-n 100` | −53,801 | 36 min | 5 % | 1 / 0 |
+| full search, seed 2 | −53,801 | 88 min | 8.5 % | 2 / 0 |
+| full search, seed 1 (reference) | −53,800 | 125 min | — | — |
+
+Genus monophyly was the same in every tree (Tombusviridae 9 of 15 genera;
+Hantaviridae 0 of 5, because of NCBI labels), so `--fast` does not change
+the genus-level picture; the differences are deeper splits. The full
+search's first ~10 iterations already beat every `--fast` run, which is why
+a capped search gets most of the gain. Per family, the eight validation
+families needed 1–3 tree_500 builds (8–75 s each with `--fast`) and 1–4
+tree_100 builds (9–26 min each). `-n 50` alone would have added ~15 min per
+protein family; with the quick outlier check (Changed, above) Togaviridae
+went from 92 to 52 min, `-n 50` included.
+
 ## [1.5.0] — 2026-10-20
 
 Inference defaults from the 2026-10-20 accuracy review (benchmarks below).

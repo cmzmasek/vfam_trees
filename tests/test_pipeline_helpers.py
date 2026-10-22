@@ -460,7 +460,7 @@ def test_nuc_named_region_no_segment_config_warning(tmp_path, caplog, monkeypatc
     monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
     monkeypatch.setattr(pipeline_mod, "load_family_config",
                         lambda f, d, g: (_MINIMAL_FAMILY_CFG, False))
-    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p: None)
+    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p, **k: None)
     monkeypatch.setattr(pipeline_mod, "discover_species", lambda f: [])
 
     with caplog.at_level(logging.WARNING):
@@ -488,7 +488,7 @@ def test_whole_genome_nucleotide_no_warning(tmp_path, caplog, monkeypatch):
     monkeypatch.setattr(pipeline_mod, "load_family_annotations", lambda p: {})
     monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
     monkeypatch.setattr(pipeline_mod, "load_family_config", lambda f, d, g: (cfg, False))
-    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p: None)
+    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p, **k: None)
     monkeypatch.setattr(pipeline_mod, "discover_species", lambda f: [])
 
     with caplog.at_level(logging.WARNING):
@@ -514,7 +514,7 @@ def test_protein_named_region_no_warning(tmp_path, caplog, monkeypatch):
     monkeypatch.setattr(pipeline_mod, "load_family_annotations", lambda p: {})
     monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
     monkeypatch.setattr(pipeline_mod, "load_family_config", lambda f, d, g: (cfg, False))
-    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p: None)
+    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p, **k: None)
     monkeypatch.setattr(pipeline_mod, "discover_species", lambda f: [])
 
     with caplog.at_level(logging.WARNING):
@@ -659,3 +659,290 @@ class TestInjectExternalSequences:
         meta = species_data["Orthoebolavirus zairense"]["metadata"][0]
         assert meta["name_prefix"] == ""
         assert meta["outbreak"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Sequence type of forced-in records, and cropping them to the marker domain
+# ---------------------------------------------------------------------------
+
+_PROTEIN = "MSLEKTFQRIVDGAPWYCHN" * 15          # 300 aa
+
+
+class TestForcedSequenceType:
+    def test_pasted_nucleotide_refused_in_protein_family(self):
+        with pytest.raises(ValueError, match="'g1'.*nucleotide"):
+            _inject_pasted_sequences(
+                {}, set(), [{"id": "g1", "organism": "Ebola virus", "sequence": "ACGT" * 200}],
+                "Filoviridae", seq_type="protein",
+            )
+
+    def test_pasted_protein_refused_in_nucleotide_family(self):
+        with pytest.raises(ValueError, match="'p1'.*protein"):
+            _inject_pasted_sequences(
+                {}, set(), [{"id": "p1", "organism": "X virus", "sequence": _PROTEIN}],
+                "Hantaviridae", seq_type="nucleotide",
+            )
+
+    def test_prepare_maps_records_and_metadata_follows(self):
+        species_data: dict = {}
+        _inject_pasted_sequences(
+            species_data, set(), [{"id": "p1", "organism": "X virus", "sequence": _PROTEIN}],
+            "Togaviridae", seq_type="protein",
+            prepare=lambda recs: [r[100:200] for r in recs],
+        )
+        bucket = species_data["X virus"]
+        assert len(bucket["records"][0].seq) == 100
+        assert bucket["metadata"][0]["length"] == 100
+
+    def test_external_record_of_wrong_type_refused(self):
+        entry = {"id": "PP_1.1", "sequence": "ACGT" * 200, "species": "Zaire ebolavirus"}
+        with pytest.raises(ValueError, match="PP_1.1.*nucleotide"):
+            _inject_external_sequences({}, set(), [entry], "Filoviridae", seq_type="protein")
+
+
+class TestCropForcedProteins:
+    from vfam_trees.pipeline import _crop_forced_proteins as crop
+
+    @staticmethod
+    def _rec(acc, n, hits):
+        rec = SeqRecord(Seq(("ACDEFGHIKL" * (n // 10 + 1))[:n]), id=acc, description=acc)
+        rec.annotations = {"molecule_type": "protein", "hmm_hits": hits}
+        return rec
+
+    @staticmethod
+    def _hit(target, a, b):
+        return {"target": target, "ali_from": a, "ali_to": b, "passing": True,
+                "dom_score": 300.0, "full_score": 300.0}
+
+    marker = {"name": "RdRp", "hmms": ["RdRP_2"], "domain_padding": 100}
+
+    def _ident(self):
+        from vfam_trees.markers import HMMIdentifier
+        return HMMIdentifier({"hmm": {"enabled": True}})
+
+    def test_polyprotein_cropped_like_fetched_ones(self):
+        rec = self._rec("NP_1.1", 2500, [self._hit("RdRP_2", 1901, 2400)])
+        out = type(self).crop([rec], self._ident(), self.marker, "Togaviridae")
+        assert len(out[0].seq) == 700                    # 1801..2500 (2400 + 100)
+        assert "residues 1801-2500 of 2500" in out[0].annotations["comment"]
+
+    def test_protein_without_marker_hit_kept_whole_with_warning(self, caplog):
+        rec = self._rec("QHD_1.1", 400, [])
+        with caplog.at_level(logging.WARNING):
+            out = type(self).crop([rec], self._ident(), self.marker, "Togaviridae")
+        assert out[0] is rec
+        assert "QHD_1.1" in caplog.text and "kept whole" in caplog.text
+
+    def test_no_op_without_cropping_or_hmm(self):
+        rec = self._rec("NP_1.1", 2500, [self._hit("RdRP_2", 1901, 2400)])
+        no_pad = {**self.marker, "domain_padding": None}
+        assert type(self).crop([rec], self._ident(), no_pad, "F")[0] is rec
+        assert type(self).crop([rec], None, self.marker, "F")[0] is rec
+
+
+# ---------------------------------------------------------------------------
+# Per-run download reuse is tied to the sequence settings
+# ---------------------------------------------------------------------------
+
+def test_local_download_reused_only_under_the_same_settings(tmp_path, monkeypatch):
+    import vfam_trees.pipeline as pipeline_mod
+    from Bio import SeqIO as _SeqIO
+
+    calls = []
+
+    def fake_fetch(*, output_gb, seq_type, **kw):
+        calls.append(seq_type)
+        rec = SeqRecord(Seq("ACGT" * 300), id="MN000001.1", name="MN000001",
+                        description="Test virus 1, complete genome")
+        rec.annotations = {"molecule_type": "DNA", "organism": "Test virus 1"}
+        output_gb.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_gb, "w") as fh:
+            _SeqIO.write([rec], fh, "genbank")
+        return 1
+
+    def run(cfg):
+        monkeypatch.setattr(pipeline_mod, "load_family_config", lambda f, d, g: (cfg, False))
+        pipeline_mod.run_family(
+            family="TestVirus", global_config_path=tmp_path / "global.yaml",
+            configs_dir=tmp_path / "configs", output_dir=tmp_path / "results",
+        )
+
+    monkeypatch.setattr(pipeline_mod, "load_global_config",
+                        lambda p: {"ncbi": {"email": "t@t.com", "api_key": None}})
+    monkeypatch.setattr(pipeline_mod, "configure_entrez", lambda email, api_key: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_annotations", lambda p: {})
+    monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
+    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p, **k: None)
+    monkeypatch.setattr(pipeline_mod, "discover_species",
+                        lambda f: [{"name": "Test virus 1", "taxid": 1}])
+    monkeypatch.setattr(pipeline_mod, "fetch_species_sequences", fake_fetch)
+    monkeypatch.setattr(pipeline_mod, "fetch_taxonomy_lineages", lambda ids: {})
+    import vfam_trees.fetch as fetch_mod  # species lineages go through the cache helper
+    monkeypatch.setattr(fetch_mod, "fetch_taxonomy_lineages", lambda ids: {})
+
+    nuc = {**_MINIMAL_FAMILY_CFG,
+           "sequence": {"type": "nucleotide", "region": "whole_genome", "segment": None}}
+    run(nuc)
+    assert calls == ["nucleotide"]
+    run(nuc)                                   # same settings → local copy reused
+    assert calls == ["nucleotide"]
+    run({**nuc, "download": {"max_per_species": 20}})   # other settings → fetched again
+    assert calls == ["nucleotide", "nucleotide"]
+
+    # An output folder from before this key existed is not trusted either.
+    gb_keys = list((tmp_path / "results").rglob("sequences.key"))
+    assert gb_keys
+    for k in gb_keys:
+        k.unlink()
+    run({**nuc, "download": {"max_per_species": 20}})
+    assert calls == ["nucleotide", "nucleotide", "nucleotide"]
+
+
+def test_run_family_records_settings_and_unknown_keys(tmp_path, caplog, monkeypatch):
+    """The family folder gets <prefix>.yaml: the merged settings under a
+    header naming the version, sources and thread count.  Unknown keys found
+    while loading (before the family log existed) are repeated in the log."""
+    import yaml
+    import vfam_trees.pipeline as pipeline_mod
+    from vfam_trees import __version__
+
+    cfg = {**_MINIMAL_FAMILY_CFG,
+           "sequence": {"type": "nucleotide", "region": "whole_genome", "segment": None},
+           "length_outlier": {"enabled": True, "hi_mult": 3.0},
+           "_unknown_keys": ["length_outlier.hi_mult"]}
+    monkeypatch.setattr(pipeline_mod, "load_global_config", lambda p: {
+        "ncbi": {"email": "t@t.com", "api_key": None},
+        "output_dir": "results", "_unknown_keys": ["output_dir"]})
+    monkeypatch.setattr(pipeline_mod, "configure_entrez", lambda email, api_key: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_annotations", lambda p: {})
+    monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_config", lambda f, d, g: (cfg, True))
+    monkeypatch.setattr(pipeline_mod, "discover_species", lambda f: [])
+
+    with caplog.at_level(logging.WARNING):
+        pipeline_mod.run_family(
+            family="TestVirus",
+            global_config_path=tmp_path / "global.yaml",
+            configs_dir=tmp_path / "configs",
+            output_dir=tmp_path / "results",
+            threads=6,
+        )
+
+    text = (tmp_path / "results" / "TestVirus" / "TestVirus.yaml").read_text()
+    header = text.split("\n\n", 1)[0]
+    assert f"Settings vfam_trees {__version__} used for TestVirus" in header
+    assert str(tmp_path / "global.yaml") in header
+    assert "TestVirus.yaml (auto-generated by this run)" in header
+    assert "Threads: 6" in header
+    assert "Not read by this version (no effect): length_outlier.hi_mult." in header
+    saved = yaml.safe_load(text)
+    assert saved["length_outlier"] == {"enabled": True, "hi_mult": 3.0}
+    assert "_unknown_keys" not in saved
+
+    log_text = (tmp_path / "results" / "TestVirus" / "TestVirus.log").read_text()
+    assert "Unknown config key(s) in " + str(tmp_path / "global.yaml") in log_text
+    assert "output_dir (not read: the output folder is set with" in log_text
+    assert "length_outlier.hi_mult" in log_text
+
+
+def test_manual_include_other_db_left_out_but_unknown_ids_fetched(tmp_path, caplog, monkeypatch):
+    """Only accessions whose shape clearly belongs to the other database are
+    left out; a Pathoplexus id (no NCBI shape) is not reported as one."""
+    import vfam_trees.pipeline as pipeline_mod
+    from Bio import SeqIO as _SeqIO
+
+    def fake_fetch(*, output_gb, seq_type, **kw):
+        rec = SeqRecord(Seq("ACGT" * 300), id="MN000001.1", name="MN000001",
+                        description="Test virus 1, complete genome")
+        rec.annotations = {"molecule_type": "DNA", "organism": "Test virus 1"}
+        output_gb.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_gb, "w") as fh:
+            _SeqIO.write([rec], fh, "genbank")
+        return 1
+
+    asked = []
+    monkeypatch.setattr(pipeline_mod, "load_global_config",
+                        lambda p: {"ncbi": {"email": "t@t.com", "api_key": None}})
+    monkeypatch.setattr(pipeline_mod, "configure_entrez", lambda email, api_key: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_annotations", lambda p: {})
+    monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
+    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p, **k: None)
+    monkeypatch.setattr(pipeline_mod, "discover_species",
+                        lambda f: [{"name": "Test virus 1", "taxid": 1}])
+    monkeypatch.setattr(pipeline_mod, "fetch_species_sequences", fake_fetch)
+    monkeypatch.setattr(pipeline_mod, "fetch_accessions_directly",
+                        lambda accs: asked.append(set(accs)) or [])
+    import vfam_trees.fetch as fetch_mod
+    monkeypatch.setattr(fetch_mod, "fetch_taxonomy_lineages", lambda ids: {})
+    cfg = {**_MINIMAL_FAMILY_CFG,
+           "sequence": {"type": "nucleotide", "region": "whole_genome", "segment": None},
+           "manual": {"include": ["YP_009724389.1", "PP_0015K2T.1"]}}
+    monkeypatch.setattr(pipeline_mod, "load_family_config", lambda f, d, g: (cfg, False))
+
+    with caplog.at_level(logging.WARNING):
+        pipeline_mod.run_family(
+            family="TestVirus", global_config_path=tmp_path / "global.yaml",
+            configs_dir=tmp_path / "configs", output_dir=tmp_path / "results",
+        )
+    wrong = [r.message for r in caplog.records if "left out (list the" in r.message]
+    assert len(wrong) == 1
+    assert "YP_009724389.1" in wrong[0] and "PP_0015K2T.1" not in wrong[0]
+    assert asked == [{"PP_0015K2T.1"}]
+
+
+def test_species_without_marker_reported(tmp_path, monkeypatch):
+    """A species NCBI has records for but none of the region is listed (TSV,
+    summary column); a marker translated from nucleotide records is counted."""
+    import csv
+    import vfam_trees.pipeline as pipeline_mod
+    import vfam_trees.fetch as fetch_mod
+    from Bio import SeqIO as _SeqIO
+
+    def fake_fetch(*, taxid, output_gb, **kw):
+        if taxid == 2:
+            return 0                                   # nothing of the region
+        recs = []
+        for k in range(1):   # < 4 sequences: the family stops after download
+            rec = SeqRecord(Seq("ACGT" * 300), id=f"MN00000{taxid}{k}.1",
+                            name=f"MN00000{taxid}{k}", description="Test virus, complete genome")
+            rec.annotations = {"molecule_type": "DNA", "organism": f"Test virus {taxid}"}
+            if taxid == 3:
+                rec.annotations["comment"] = "vfam_trees: RT translated from X:1..900; NCBI has ..."
+            recs.append(rec)
+        output_gb.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_gb, "w") as fh:
+            _SeqIO.write(recs, fh, "genbank")
+        return len(recs)
+
+    monkeypatch.setattr(pipeline_mod, "load_global_config",
+                        lambda p: {"ncbi": {"email": "t@t.com", "api_key": None}})
+    monkeypatch.setattr(pipeline_mod, "configure_entrez", lambda email, api_key: None)
+    monkeypatch.setattr(pipeline_mod, "load_family_annotations", lambda p: {})
+    monkeypatch.setattr(pipeline_mod, "get_family_taxid", lambda f: None)
+    monkeypatch.setattr(pipeline_mod, "_save_config_copy", lambda cfg, p, **k: None)
+    monkeypatch.setattr(pipeline_mod, "discover_species", lambda f: [
+        {"name": "Test virus 1", "taxid": 1}, {"name": "Test virus 2", "taxid": 2},
+        {"name": "Test virus 3", "taxid": 3}])
+    monkeypatch.setattr(pipeline_mod, "fetch_species_sequences", fake_fetch)
+    monkeypatch.setattr(fetch_mod, "fetch_taxonomy_lineages", lambda ids: {})
+    counted = []
+    monkeypatch.setattr(fetch_mod, "count_species_records",
+                        lambda taxid, db, excl: counted.append((taxid, db)) or 12)
+    cfg = {**_MINIMAL_FAMILY_CFG,
+           "sequence": {"type": "nucleotide", "region": "whole_genome", "segment": None}}
+    monkeypatch.setattr(pipeline_mod, "load_family_config", lambda f, d, g: (cfg, False))
+
+    pipeline_mod.run_family(
+        family="TestVirus", global_config_path=tmp_path / "global.yaml",
+        configs_dir=tmp_path / "configs", output_dir=tmp_path / "results",
+        summary_path=tmp_path / "results" / "summary.tsv",
+    )
+    assert counted == [(2, "nuccore")]
+    rows = list(csv.DictReader(
+        (tmp_path / "results" / "TestVirus" / "TestVirus_species_without_marker.tsv").open(),
+        delimiter="\t"))
+    assert [(r["species"], r["status"], r["ncbi_records"]) for r in rows] == [
+        ("Test virus 2", "no marker", "12"), ("Test virus 3", "translated", "1")]
+    summary = list(csv.DictReader((tmp_path / "results" / "summary.tsv").open(), delimiter="\t"))[0]
+    assert summary["species_without_marker"] == "1"
+    assert summary["species_marker_translated"] == "1"

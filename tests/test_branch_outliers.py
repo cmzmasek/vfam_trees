@@ -6,8 +6,12 @@ from __future__ import annotations
 import pytest
 
 from vfam_trees.branch_outliers import (
+    MIN_TREE_LEAVES,
+    QUICK_STAGE,
     branch_length_stats,
     find_branch_length_outliers,
+    outlier_round,
+    select_outliers,
 )
 
 
@@ -99,19 +103,140 @@ class TestFindBranchLengthOutliers:
 
 
 # ---------------------------------------------------------------------------
-# Backward compat: pipeline.py re-exports these as private names
+# Both pipelines make the outlier decision through the shared helpers
 # ---------------------------------------------------------------------------
 
-def test_pipeline_private_aliases_exist():
-    """The single-protein code uses underscore-prefixed names; verify the
-    re-exports are still in place after the extraction.
-    """
-    from vfam_trees.pipeline import (
-        _branch_length_stats,
-        _find_branch_length_outliers,
+def test_pipelines_use_the_shared_round_helpers():
+    from vfam_trees import pipeline, pipeline_concat
+    for mod in (pipeline, pipeline_concat):
+        assert mod.select_outliers is select_outliers
+        assert mod.outlier_round is outlier_round
+
+
+class _Log:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, msg, *a):
+        self.lines.append(("info", msg % a))
+
+    def warning(self, msg, *a):
+        self.lines.append(("warning", msg % a))
+
+
+def _star(tmp_path, name, long_tips=("L0",), n=60):
+    """n ordinary tips (0.05–0.07) plus very long ones (5.0)."""
+    tips = [f"T{i}:{0.05 + 0.0003 * i:.4f}" for i in range(n)]
+    tips += [f"{t}:5.0" for t in long_tips]
+    path = tmp_path / name
+    path.write_text("(" + ",".join(tips) + ");")
+    return path
+
+
+def _select(path, protected=frozenset(), n_current=61, min_seqs=40, log=None, stage=""):
+    return select_outliers(
+        path, 20.0, set(protected), n_current, min_seqs,
+        log=log or _Log(), label="500", iteration=1,
+        display=lambda s: f"<{s}>", noun="sequence", stage=stage,
     )
-    assert _branch_length_stats is branch_length_stats
-    assert _find_branch_length_outliers is find_branch_length_outliers
+
+
+class TestSelectOutliers:
+    def test_removes_long_tips_and_logs_names(self, tmp_path):
+        log = _Log()
+        out = _select(_star(tmp_path, "a.nwk", ("L0", "L1")), n_current=62, log=log)
+        assert out == {"L0", "L1"}
+        removed = [m for lvl, m in log.lines if "removing outlier" in m]
+        assert len(removed) == 2 and "<L0>" in removed[0]
+        assert all(m.startswith("tree_500 iteration 1:") for _, m in log.lines)
+
+    def test_no_outliers_means_stop(self, tmp_path):
+        path = tmp_path / "b.nwk"
+        path.write_text("(" + ",".join(f"T{i}:{0.05 + 0.001 * i}" for i in range(50)) + ");")
+        log = _Log()
+        assert _select(path, log=log) == set()
+        assert "no branch-length outliers" in log.lines[-1][1]
+
+    def test_protected_are_kept_and_warned(self, tmp_path):
+        log = _Log()
+        out = _select(_star(tmp_path, "c.nwk", ("L0",)), protected={"L0"}, log=log)
+        assert out == set()
+        assert any(lvl == "warning" and "<L0>" in m and "KEEPING" in m for lvl, m in log.lines)
+        assert "only protected outliers remain" in log.lines[-1][1]
+
+    def test_min_seqs_stops_removal(self, tmp_path):
+        log = _Log()
+        out = _select(_star(tmp_path, "d.nwk", ("L0", "L1")), n_current=41, min_seqs=40, log=log)
+        assert out == set()
+        assert "would leave only 39 sequences (min_seqs=40)" in log.lines[-1][1]
+
+    def test_stage_tags_every_line(self, tmp_path):
+        log = _Log()
+        _select(_star(tmp_path, "e.nwk"), log=log, stage=QUICK_STAGE)
+        assert log.lines and all(m.startswith(f"tree_500 iteration 1{QUICK_STAGE}:") for _, m in log.lines)
+
+
+class TestOutlierRound:
+    """The quick tree only ever saves the configured search; the final tree is
+    always the configured one, checked the same way."""
+
+    def _builders(self, quick_result, final_result):
+        calls = []
+
+        def build_tree():
+            calls.append("configured")
+            return "configured.nwk"
+
+        def build_quick():
+            calls.append("quick")
+            return "quick.nwk"
+
+        def decide(tf, stage):
+            calls.append(("decide", tf, stage))
+            return set(quick_result if tf == "quick.nwk" else final_result)
+
+        return calls, build_tree, build_quick, decide
+
+    def test_quick_tree_outliers_skip_the_configured_search(self):
+        calls, bt, bq, dec = self._builders({"x"}, set())
+        tree, remove = outlier_round(bt, dec, check=True, n_current=50, build_quick_tree=bq)
+        assert (tree, remove) == (None, {"x"})
+        assert "configured" not in calls
+
+    def test_clean_quick_tree_runs_and_checks_the_configured_tree(self):
+        calls, bt, bq, dec = self._builders(set(), {"y"})
+        tree, remove = outlier_round(bt, dec, check=True, n_current=50, build_quick_tree=bq)
+        assert (tree, remove) == ("configured.nwk", {"y"})
+        assert calls == ["quick", ("decide", "quick.nwk", QUICK_STAGE),
+                         "configured", ("decide", "configured.nwk", "")]
+
+    def test_no_check_builds_only_the_configured_tree(self):
+        calls, bt, bq, dec = self._builders({"x"}, {"y"})
+        tree, remove = outlier_round(bt, dec, check=False, n_current=50, build_quick_tree=bq)
+        assert (tree, remove) == ("configured.nwk", set())
+        assert calls == ["configured"]
+
+    def test_without_quick_builder_behaves_as_before(self):
+        calls, bt, _bq, dec = self._builders({"x"}, {"y"})
+        tree, remove = outlier_round(bt, dec, check=True, n_current=50)
+        assert (tree, remove) == ("configured.nwk", {"y"})
+        assert calls == ["configured", ("decide", "configured.nwk", "")]
+
+    def test_quick_removal_that_would_leave_too_few_falls_through(self):
+        n = MIN_TREE_LEAVES + 1
+        calls, bt, bq, dec = self._builders({"a", "b"}, set())
+        tree, remove = outlier_round(bt, dec, check=True, n_current=n, build_quick_tree=bq)
+        assert tree == "configured.nwk" and remove == set()
+        assert "configured" in calls
+
+    def test_real_trees_quick_then_clean(self, tmp_path):
+        quick = _star(tmp_path, "quick.nwk", ("L0",))
+        final = tmp_path / "final.nwk"
+        final.write_text("(" + ",".join(f"T{i}:{0.05 + 0.0003 * i:.4f}" for i in range(60)) + ");")
+        decide = lambda tf, stage: _select(tf, n_current=61, stage=stage)
+        tree, remove = outlier_round(lambda: final, decide, check=True, n_current=61,
+                                     build_quick_tree=lambda: quick)
+        assert (tree, remove) == (None, {"L0"})
 
 
 # ---------------------------------------------------------------------------

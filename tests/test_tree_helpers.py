@@ -584,3 +584,50 @@ class TestUfbootAbortFallback:
         with pytest.raises(RuntimeError):
             _run(monkeypatch, tmp_path, fake)
         assert len(calls) == 1
+
+
+class TestIqtreeSeed:
+    """A fixed seed makes repeated IQ-TREE runs give the same tree."""
+
+    def test_fixed_seed_by_default(self):
+        from vfam_trees.tree import IQTREE_SEED, _iqtree_cmd
+        cmd = _iqtree_cmd(Path("a.fasta"), Path("p"), "LG+G", "AA", 8,
+                          ["-alrt", "1000", "-B", "1000"])
+        i = cmd.index("-seed")
+        assert cmd[i + 1] == str(IQTREE_SEED)
+        assert cmd[-4:] == ["-alrt", "1000", "-B", "1000"]
+
+    @pytest.mark.parametrize("flag", ["-seed", "--seed"])
+    def test_configured_seed_wins(self, flag):
+        from vfam_trees.tree import _iqtree_cmd
+        cmd = _iqtree_cmd(Path("a.fasta"), Path("p"), None, "AA", 2,
+                          ["--fast", flag, "7"])
+        assert cmd.count("-seed") + cmd.count("--seed") == 1
+        assert cmd[cmd.index(flag) + 1] == "7"
+
+
+class TestQuickTreeSettings:
+    """The tree each outlier round is checked on (outlier_removal.quick_check)."""
+
+    def test_full_search_gets_a_fast_quick_tree(self):
+        from vfam_trees.tree import quick_tree_settings
+        assert quick_tree_settings("iqtree", "-alrt 1000 -B 1000 --bnni", "GTR+G", "LG+G") \
+            == ("--fast", "GTR+G", "LG+G")
+
+    def test_model_finder_is_skipped_in_the_rounds(self):
+        from vfam_trees.tree import quick_tree_settings
+        assert quick_tree_settings("iqtree", "-alrt 1000 -B 1000 --bnni", "MFP", "TEST") \
+            == ("--fast", "GTR+G", "LG+G")
+
+    def test_fixed_models_are_kept(self):
+        from vfam_trees.tree import quick_tree_settings
+        assert quick_tree_settings("iqtree2", "-n 50", "GTR+F+R4", "Q.pfam+G4") \
+            == ("--fast", "GTR+F+R4", "Q.pfam+G4")
+
+    @pytest.mark.parametrize("tool,options", [
+        ("fasttree", ""), ("FastTree", "-spr 4"), ("iqtree", "--fast"), ("iqtree", "-alrt 1000 --fast"),
+    ])
+    def test_no_quick_tree_when_the_configured_one_is_no_slower(self, tool, options):
+        from vfam_trees.tree import quick_tree_settings
+        assert quick_tree_settings(tool, options, "GTR+G", "LG+G") is None
+

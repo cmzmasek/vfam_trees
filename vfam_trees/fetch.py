@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import io
+import json
 import re
+import socket
 import time
 from pathlib import Path
 from typing import Callable, Generator, Iterable, TYPE_CHECKING
 
 from Bio import Entrez, SeqIO
+from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from .logger import get_logger
@@ -21,11 +24,22 @@ FETCH_BATCH_SIZE = 200
 RETRY_DELAY = 10
 MAX_RETRIES = 5
 
+# Seconds a connection to NCBI may go without sending data.  Biopython opens
+# its connections without a timeout, so one that died while the machine slept
+# or changed networks left the read waiting forever (a validation run sat for
+# hours on one).  With a timeout the read fails and the usual retries apply.
+NCBI_SOCKET_TIMEOUT = 180
 
-def configure_entrez(email: str, api_key: str | None = None) -> None:
+
+def configure_entrez(email: str, api_key: str | None = None,
+                     timeout: float = NCBI_SOCKET_TIMEOUT) -> None:
+    """Set the NCBI contact details, and a socket timeout for this process
+    unless one is set already (Biopython's ``urlopen`` uses the default)."""
     Entrez.email = email
     if api_key:
         Entrez.api_key = api_key
+    if socket.getdefaulttimeout() is None:
+        socket.setdefaulttimeout(timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +172,38 @@ def _filter_species(species: list[dict], family: str) -> list[dict]:
     return filtered
 
 
+def cached_taxonomy_lineages(taxids, cache_path: Path) -> dict[str, list[dict]]:
+    """Ranked lineages for *taxids*, kept in *cache_path* (a family's _work).
+
+    Taxids missing from the cache are fetched and added, so a re-run whose
+    downloads changed (other sequence settings, ``--force``) still gets a
+    lineage for every new taxon, instead of reusing the old map as is and
+    leaving the new ones without genus colour or LCA vote.  Taxids NCBI
+    cannot resolve stay absent and are asked for again on the next run.
+    """
+    wanted = {str(t) for t in taxids if t}
+    cached: dict[str, list[dict]] = {}
+    if cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                cached = json.load(f)
+        except (OSError, ValueError) as exc:
+            log.warning("Ignoring unreadable taxonomy cache %s: %s", cache_path, exc)
+    missing = wanted - set(cached)
+    if cached:
+        log.info("Reusing cached ranked taxonomy: %d taxa (%d to fetch)",
+                 len(wanted) - len(missing), len(missing))
+    if missing:
+        log.info("Fetching ranked taxonomy from NCBI for %d unique taxa ...", len(missing))
+        fetched = fetch_taxonomy_lineages(sorted(missing))
+        if fetched:
+            cached.update(fetched)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w") as f:
+                json.dump(cached, f)
+    return cached
+
+
 def fetch_taxonomy_lineages(taxids) -> dict[str, list[dict]]:
     """Fetch ranked lineages for a set of NCBI taxids.
 
@@ -267,6 +313,7 @@ def fetch_species_sequences(
     hmm_identifier: "MarkerIdentifier | None" = None,
     hmm_marker: dict | None = None,
     species_lineage: list[dict] | None = None,
+    report: dict | None = None,
 ) -> int:
     """Fetch GenBank records for a single species.
 
@@ -288,6 +335,10 @@ def fetch_species_sequences(
         output_gb: path to write GenBank flat file
         max_per_species: cap on non-RefSeq sequences (RefSeqs are uncapped)
 
+        report: HMM mode only — filled with ``outcome`` ("selected",
+            "translated", "no_marker" or "no_data"), ``proteins`` and
+            ``nucleotide_records`` (see `_fetch_species_marker_hmm`).
+
     Returns:
         Number of records fetched, or 0 if none found.
     """
@@ -302,6 +353,7 @@ def fetch_species_sequences(
             exclude_organisms=exclude_organisms,
             identifier=hmm_identifier,
             species_lineage=species_lineage,
+            report=report,
         )
     db = "nuccore" if seq_type == "nucleotide" else "protein"
 
@@ -507,12 +559,13 @@ _LOCUS_RE = re.compile(r"^LOCUS\s", re.MULTILINE)
 #                          prefixes are rejected separately below)
 #   - [A-Z]{1,2}\d+        bare GenBank nucleotide (1+5 or 2+6 forms)
 #   - [A-Z]{4}\d+          WGS nucleotide (4+8/9/10 forms)
+#   - [A-Z]{6}\d+          WGS / TSA nucleotide (6+9/10/11 forms, since 2019)
 # Note that 3-letter, no-underscore accessions (e.g. ``ABO61246``) are
 # *protein* GenBank accessions and are deliberately excluded — they have
 # the same shape as a nuccore accession but resolve to the protein db,
 # which makes esummary return an "Otherdb db=protein" batch-aborting error.
 _NUCCORE_ACCESSION_RE = re.compile(
-    r"^(?:[A-Z]{1,4}_\d{3,}|[A-Z]{1,2}\d{3,}|[A-Z]{4}\d{3,})(?:\.\d+)?$"
+    r"^(?:[A-Z]{1,4}_\d{3,}|[A-Z]{1,2}\d{3,}|[A-Z]{4}\d{3,}|[A-Z]{6}\d{3,})(?:\.\d+)?$"
 )
 
 # Known RefSeq *protein* prefixes — any accession with one of these prefixes
@@ -523,10 +576,26 @@ _NUCCORE_ACCESSION_RE = re.compile(
 # "REFSEQ: accession YP_009047263.1").
 _PROTEIN_REFSEQ_PREFIXES = ("NP_", "XP_", "YP_", "AP_", "WP_", "ZP_", "ELP_")
 
+# INSDC protein ids: 3 letters + 5 or 7 digits (ABO61246, QHD43415).
+_PROTEIN_ACCESSION_RE = re.compile(r"^[A-Z]{3}\d{5,7}(?:\.\d+)?$")
+
+
+def accession_db(acc: str) -> str | None:
+    """``"nuccore"`` or ``"protein"`` when the accession's shape clearly
+    belongs to that NCBI database, else None (not an NCBI accession shape,
+    e.g. a Pathoplexus id).  Case-insensitive."""
+    a = acc.strip().upper()
+    if _is_nuccore_accession(a):
+        return "nuccore"
+    if a.startswith(_PROTEIN_REFSEQ_PREFIXES) or _PROTEIN_ACCESSION_RE.match(a):
+        return "protein"
+    return None
+
 
 def _is_nuccore_accession(acc: str) -> bool:
     """Return True if ``acc`` has a valid nuccore-accession shape and is not
-    a known RefSeq protein prefix."""
+    a known RefSeq protein prefix (case-insensitive)."""
+    acc = acc.upper()
     if not _NUCCORE_ACCESSION_RE.match(acc):
         return False
     if acc.startswith(_PROTEIN_REFSEQ_PREFIXES):
@@ -821,7 +890,9 @@ def group_proteins_by_genome(
             genomes: {source_nuc_accession: {marker_name: SeqRecord}}
             stats:   diagnostic counters (n_genomes_found, n_genomes_kept,
                      n_dropped_min_fraction, n_dropped_split_submission,
-                     n_dropped_short_source_nuc).
+                     n_dropped_short_source_nuc, and
+                     n_dropped_partial_markers: the min_fraction drops that
+                     had at least one marker).
 
     The function is pure when ``source_nuc_min_length_frac <= 0`` or a
     non-network ``nuc_length_lookup`` is injected; the default network path
@@ -876,6 +947,7 @@ def group_proteins_by_genome(
 
     genomes: dict[str, dict[str, SeqRecord]] = {}
     n_dropped_min_fraction = 0
+    n_dropped_partial_markers = 0
 
     for src_acc, marker_to_records in bucket.items():
         # Flatten this genome's candidate proteins, then run the identifier
@@ -888,11 +960,14 @@ def group_proteins_by_genome(
             genomes[src_acc] = chosen
         else:
             n_dropped_min_fraction += 1
+            if chosen:
+                n_dropped_partial_markers += 1
 
     stats = {
         "n_genomes_found":              n_genomes_found,
         "n_genomes_kept":               len(genomes),
         "n_dropped_min_fraction":       n_dropped_min_fraction,
+        "n_dropped_partial_markers":    n_dropped_partial_markers,
         "n_dropped_split_submission":   _count_split_submissions(bucket),
         "n_dropped_short_source_nuc":   n_dropped_short_source_nuc,
         "n_orphaned_no_source":         n_orphaned_no_source,
@@ -1019,7 +1094,12 @@ _HMM_MAX_PROTEINS_PER_SPECIES = 6000
 def _build_all_proteins_query(
     taxid: int, exclude_organisms: list[str] | None, refseq_only: bool = False,
 ) -> str:
-    """Entrez protein query for EVERY protein of a species (no name clause)."""
+    """Entrez protein query for EVERY protein of a species (no name clause).
+
+    No length clause: a ``[SLEN]`` range makes NCBI's protein search 4–6 s
+    slower per query (measured 2026-10-21), far more than the short records
+    cost to download, so ``hmm.min_protein_length`` is applied to the
+    downloaded records instead (``_fetch_all_species_proteins``)."""
     base = f"txid{taxid}[Organism:exp]"
     if refseq_only:
         base += " AND refseq[filter]"
@@ -1029,19 +1109,41 @@ def _build_all_proteins_query(
     return base
 
 
+def count_species_records(
+    taxid: int, db: str, exclude_organisms: list[str] | None,
+) -> int:
+    """How many records of *db* NCBI holds for a species (any region, any
+    length; patents and excluded organisms left out).  Tells a species with
+    no data apart from one whose records include none of the analysed
+    marker or region."""
+    query = _build_all_proteins_query(taxid, exclude_organisms)
+    for attempt in range(MAX_RETRIES):
+        try:
+            with Entrez.esearch(db=db, term=query, retmax=0) as handle:
+                return int(Entrez.read(handle)["Count"])
+        except Exception as exc:
+            log.warning("Record count for taxid %s failed (attempt %d): %s",
+                        taxid, attempt + 1, exc)
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY)
+    return 0
+
+
 def _fetch_all_species_proteins(
     taxid: int,
     output_gb: Path,
     exclude_organisms: list[str] | None,
     species_name: str = "",
     max_records: int = _HMM_MAX_PROTEINS_PER_SPECIES,
+    min_length: int | None = None,
 ) -> list[SeqRecord]:
     """Fetch every protein record for a species (no marker-name filter).
 
     RefSeq matches are retrieved in full; non-RefSeq matches top up to
-    ``max_records`` (a safety ceiling on per-species volume).  Writes a GenBank
-    flat file and returns the parsed records — the candidate pool the HMM
-    identifier assigns to markers.
+    ``max_records`` (a safety ceiling on per-species volume).  Writes a
+    GenBank flat file and returns the parsed records — the candidate pool the
+    HMM identifier assigns to markers — without proteins shorter than
+    *min_length* (``hmm.min_protein_length``).
     """
     db = "protein"
     refseq_ids = _search_ids(
@@ -1074,7 +1176,16 @@ def _fetch_all_species_proteins(
     with open(output_gb, "w") as out_f:
         for batch in _batched(final_ids, FETCH_BATCH_SIZE):
             out_f.write(_fetch_batch(db, batch))
-    return list(SeqIO.parse(output_gb, "genbank"))
+    records = list(SeqIO.parse(output_gb, "genbank"))
+    if min_length:
+        kept = [r for r in records if len(r.seq) >= min_length]
+        if len(kept) < len(records):
+            log.debug(
+                "%s: %d protein(s) shorter than %d aa left out",
+                label, len(records) - len(kept), min_length,
+            )
+        records = kept
+    return records
 
 
 def _cap_genomes_refseq_first(
@@ -1110,6 +1221,7 @@ def _fetch_species_genomes_hmm(
     after grouping."""
     all_proteins = _fetch_all_species_proteins(
         taxid, output_dir / ALL_PROTEINS_GB_NAME, exclude_organisms, species_name,
+        min_length=getattr(identifier, "min_protein_length", None),
     )
     n_proteins_fetched = len(all_proteins)
     if all_proteins and hasattr(identifier, "prescan"):
@@ -1139,6 +1251,125 @@ def _fetch_species_genomes_hmm(
     return genomes, stats
 
 
+#: Translation fallback (single-marker HMM mode): at most this many
+#: nucleotide records per species are translated (complete genomes and
+#: sequences first), and ORFs keep the marker hits ± this many residues when
+#: the marker itself is kept whole (Rep), so translated non-coding stretches
+#: around the gene do not enter the alignment.
+_FALLBACK_MAX_NUC_RECORDS = 100
+_FALLBACK_ORF_PADDING = 100
+_FALLBACK_MIN_ORF_AA = 100
+
+
+def _fetch_species_nucleotide_records(
+    taxid: int, exclude_organisms: list[str] | None,
+    max_records: int = _FALLBACK_MAX_NUC_RECORDS,
+) -> list[SeqRecord]:
+    """Nucleotide GenBank records of a species for the translation fallback:
+    all of them when there are at most *max_records*, else complete genomes
+    and sequences first.  One esearch when the species has none."""
+    base = _build_all_proteins_query(taxid, exclude_organisms)
+    ids = _search_ids("nuccore", base, max_records + 1)
+    if len(ids) > max_records:
+        complete = _search_ids(
+            "nuccore",
+            base + ' AND ("complete genome"[Title] OR "complete sequence"[Title])',
+            max_records,
+        )
+        seen = set(complete)
+        ids = complete + [i for i in ids if i not in seen]
+    ids = ids[:max_records]
+    if not ids:
+        return []
+    text = "".join(_fetch_batch("nuccore", batch) for batch in _batched(ids, FETCH_BATCH_SIZE))
+    return list(SeqIO.parse(io.StringIO(text), "genbank"))
+
+
+def translated_orfs(record: SeqRecord, min_aa: int = _FALLBACK_MIN_ORF_AA) -> list[SeqRecord]:
+    """Stop-to-stop open reading frames of a nucleotide *record* in all six
+    frames (standard genetic code), at least *min_aa* residues, as protein
+    records that keep the record's organism, taxonomy and ``source``
+    qualifiers and carry a CDS ``coded_by`` "<accession>:<start>..<end>"
+    (``complement(...)`` on the minus strand), so they group, label and link
+    like annotated proteins of that genome.  A start codon is not required:
+    the marker hits decide what is kept."""
+    from Bio.SeqFeature import FeatureLocation, SeqFeature
+
+    acc = record.id
+    nuc = record.seq.upper()
+    n = len(nuc)
+    source = next((f for f in record.features if f.type == "source"), None)
+    out: list[SeqRecord] = []
+    for strand, seq in ((1, nuc), (-1, nuc.reverse_complement())):
+        for frame in range(3):
+            usable = ((n - frame) // 3) * 3
+            if usable < 3 * min_aa:
+                continue
+            aa = str(seq[frame:frame + usable].translate())
+            pos = 0
+            for piece in aa.split("*"):
+                if len(piece) >= min_aa:
+                    s0 = frame + 3 * pos             # 0-based, on this strand
+                    e0 = s0 + 3 * len(piece)
+                    start, end = (s0 + 1, e0) if strand == 1 else (n - e0 + 1, n - s0)
+                    loc = f"{acc}:{start}..{end}"
+                    coded_by = loc if strand == 1 else f"complement({loc})"
+                    orf = SeqRecord(
+                        Seq(piece), id=f"{acc}_orf{len(out) + 1}",
+                        name=record.name[:16], description=f"ORF {coded_by}",
+                    )
+                    orf.annotations = {
+                        k: record.annotations[k] for k in ("organism", "taxonomy", "source")
+                        if k in record.annotations
+                    }
+                    orf.annotations["molecule_type"] = "protein"
+                    if source is not None:
+                        orf.features.append(SeqFeature(
+                            FeatureLocation(0, len(piece)), type="source",
+                            qualifiers=dict(source.qualifiers),
+                        ))
+                    orf.features.append(SeqFeature(
+                        FeatureLocation(0, len(piece)), type="CDS",
+                        qualifiers={"coded_by": [coded_by]},
+                    ))
+                    out.append(orf)
+                pos += len(piece) + 1
+    return out
+
+
+def _translated_marker_genomes(
+    taxid: int,
+    species_name: str,
+    marker: dict,
+    identifier: "MarkerIdentifier",
+    exclude_organisms: list[str] | None,
+    species_lineage: list[dict] | None,
+    report: dict,
+) -> dict[str, dict[str, SeqRecord]]:
+    """Translation fallback: the species' nucleotide records, translated
+    (`translated_orfs`) and run through the same HMM selection (tokens,
+    best-hit rule, longest satisfying ORF per genome).  For genomes whose
+    marker NCBI never annotated as a protein (e.g. foamy-virus and
+    endogenous-retrovirus genomes without a pol CDS, bat spumavirus records
+    with no protein at all)."""
+    records = _fetch_species_nucleotide_records(taxid, exclude_organisms)
+    report["nucleotide_records"] = len(records)
+    min_aa = getattr(identifier, "min_protein_length", None) or _FALLBACK_MIN_ORF_AA
+    orfs = [o for r in records for o in translated_orfs(r, min_aa)]
+    if not orfs:
+        return {}
+    if hasattr(identifier, "prescan"):
+        identifier.prescan(orfs)
+    genomes, _stats = group_proteins_by_genome(
+        proteins_by_marker={"__all__": orfs},
+        marker_set=[marker],
+        species_lineage=species_lineage,
+        min_fraction=1.0,
+        identifier=identifier,
+    )
+    return genomes
+
+
 def _fetch_species_marker_hmm(
     taxid: int,
     species_name: str,
@@ -1148,32 +1379,92 @@ def _fetch_species_marker_hmm(
     exclude_organisms: list[str] | None,
     identifier: "MarkerIdentifier",
     species_lineage: list[dict] | None,
+    report: dict | None = None,
 ) -> int:
     """Single-marker HMM fetch: fetch all species proteins, HMM-assign the one
     marker per genome, and write the selected proteins to ``output_gb`` — which
     is re-parsed downstream exactly like the name-based path.  Returns the count
-    written."""
+    written.
+
+    When no annotated protein of the species carries the marker, its
+    nucleotide records are translated and searched the same way
+    (`_translated_marker_genomes`).  *report* (optional) receives
+    ``proteins``, ``nucleotide_records`` (None unless the fallback ran) and
+    ``outcome``: "selected", "translated", "no_marker" (NCBI has records,
+    none with the marker) or "no_data"."""
+    report = report if report is not None else {}
+    report.update(proteins=0, nucleotide_records=None, outcome="no_data")
     all_proteins = _fetch_all_species_proteins(
         taxid, output_gb.parent / f"{output_gb.stem}_allprot.gb",
         exclude_organisms, species_name,
+        min_length=getattr(identifier, "min_protein_length", None),
     )
-    if not all_proteins:
-        return 0
-    if hasattr(identifier, "prescan"):
-        identifier.prescan(all_proteins)
-    genomes, _stats = group_proteins_by_genome(
-        proteins_by_marker={"__all__": all_proteins},
-        marker_set=[marker],
-        species_lineage=species_lineage,
-        min_fraction=1.0,  # the single marker must be present, else drop genome
-        identifier=identifier,
-    )
-    genomes = _cap_genomes_refseq_first(genomes, max_per_species)
+    report["proteins"] = len(all_proteins)
     name = marker["name"]
+    genomes: dict[str, dict[str, SeqRecord]] = {}
+    if all_proteins:
+        if hasattr(identifier, "prescan"):
+            identifier.prescan(all_proteins)
+        genomes, _stats = group_proteins_by_genome(
+            proteins_by_marker={"__all__": all_proteins},
+            marker_set=[marker],
+            species_lineage=species_lineage,
+            min_fraction=1.0,  # the single marker must be present, else drop genome
+            identifier=identifier,
+        )
+        if getattr(identifier, "best_hit_only", False):
+            _log_foreign_marker_genomes(
+                species_name, name, all_proteins, set(genomes),
+                identifier.best_hit_profiles(marker.get("hmms") or []),
+            )
+    translated = False
+    if not any(name in g for g in genomes.values()):
+        genomes = _translated_marker_genomes(
+            taxid, species_name, marker, identifier, exclude_organisms,
+            species_lineage, report,
+        )
+        translated = bool(genomes)
+    genomes = _cap_genomes_refseq_first(genomes, max_per_species)
     selected = [g[name] for g in genomes.values() if name in g]
     if not selected:
-        log.info("%s: HMM found no %r marker in any genome.", species_name, name)
+        if report["proteins"] or report.get("nucleotide_records"):
+            report["outcome"] = "no_marker"
+            log.info(
+                "%s: no %r marker in NCBI's %d protein and %d nucleotide record(s) "
+                "(translated too).", species_name, name, report["proteins"],
+                report.get("nucleotide_records") or 0,
+            )
         return 0
+    padding = marker.get("domain_padding")
+    if translated:
+        # One ORF per genome: name it after its genome, and keep only the
+        # marker region (the ORF runs stop to stop).
+        for rec in selected:
+            coded_by = next(
+                (q for f in rec.features if f.type == "CDS"
+                 for q in f.qualifiers.get("coded_by", [])), "",
+            )
+            acc = rec.id.rsplit("_orf", 1)[0]
+            rec.id = acc
+            rec.name = acc.split(".")[0][:16]
+            organism = rec.annotations.get("organism", "")
+            rec.description = f"{name}, translated from {coded_by}" + (
+                f" [{organism}]" if organism else "")
+            rec.annotations["comment"] = (
+                f"vfam_trees: {name} translated from {coded_by}; NCBI has no "
+                "annotated protein with it."
+            )
+        if padding is None:
+            padding = _FALLBACK_ORF_PADDING
+        log.info(
+            "%s: %r found in %d genome(s) only by translating their nucleotide "
+            "sequence (no annotated protein carries it).", species_name, name, len(selected),
+        )
+    if padding is not None:
+        # Keep only the marker domain (e.g. the RdRp of a polyprotein).
+        from .markers import crop_to_marker_domain
+        selected = [crop_to_marker_domain(r, marker.get("hmms") or [], int(padding))
+                    for r in selected]
     output_gb.parent.mkdir(parents=True, exist_ok=True)
     for rec in selected:
         rec.annotations.setdefault("molecule_type", "protein")
@@ -1183,7 +1474,49 @@ def _fetch_species_marker_hmm(
         "%s: HMM-selected marker %r in %d/%d genome(s)",
         species_name, name, len(selected), len(genomes),
     )
+    report["outcome"] = "translated" if translated else "selected"
     return len(selected)
+
+
+def _log_foreign_marker_genomes(
+    species_name: str,
+    marker_name: str,
+    proteins: list[SeqRecord],
+    kept_genomes: set[str],
+    own_profiles: set[str],
+) -> None:
+    """Warn about genomes that got no marker because their proteins fit a
+    profile outside *own_profiles* best (``hmm.best_hit_only``; the marker's
+    tokens plus ``hmm.best_hit_also``).
+
+    In practice these are other viruses filed under this taxon: on 2026-10-20
+    NCBI had orbivirus VP1 and bunyavirus L proteins under Alphavirus species,
+    which hit Orbi_VP1 / Bunya_RdRp best.  Reads hits cached on the records.
+    """
+    from collections import Counter
+    from .markers import foreign_best_hit
+
+    foreign: dict[str, set[str]] = {}
+    for rec in proteins:
+        src = _source_nuc_accession(rec)
+        if not src or src in kept_genomes:
+            continue
+        best = foreign_best_hit(rec, own_profiles)
+        if best:
+            foreign.setdefault(src, set()).add(best)
+    if not foreign:
+        return
+    counts = Counter(p for profiles in foreign.values() for p in profiles)
+    accessions = sorted(foreign)
+    log.warning(
+        "%s: left out %d genome(s) whose proteins fit %s best rather than a %r "
+        "profile of this family (%s) — probably another kind of virus filed "
+        "under this taxon: %s",
+        species_name, len(foreign),
+        ", ".join(f"{p} ({n})" for p, n in counts.most_common()),
+        marker_name, ", ".join(sorted(own_profiles)),
+        ", ".join(accessions[:5]) + (f" … (+{len(accessions) - 5})" if len(accessions) > 5 else ""),
+    )
 
 
 def load_proteins_from_marker_dir(

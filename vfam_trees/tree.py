@@ -69,6 +69,31 @@ def is_model_finder_spec(model: str) -> bool:
     return root in {"TEST", "TESTONLY", "TESTNEW", "TESTNEWONLY", "MF", "MFP"}
 
 
+# Options of the quick tree that branch-length outlier rounds are checked on
+# (outlier_removal.quick_check): the outliers are the same as on the
+# configured tree, at a fraction of the cost of a full or UFBoot search.
+QUICK_TREE_OPTIONS = "--fast"
+QUICK_TREE_MODELS = {"nucleotide": "GTR+G", "protein": "LG+G"}
+
+
+def quick_tree_settings(
+    tool: str, options: str, model_nuc: str, model_aa: str,
+) -> tuple[str, str, str] | None:
+    """Return ``(options, model_nuc, model_aa)`` for the quick tree the
+    outlier rounds are checked on, or None when the configured tree is no
+    slower (FastTree, or IQ-TREE already run with ``--fast``).  A ModelFinder
+    model (TEST, MFP …) becomes GTR+G / LG+G, so the rounds skip it."""
+    if tool.lower().replace("-", "").replace("_", "") == "fasttree":
+        return None
+    if QUICK_TREE_OPTIONS in (options or "").split():
+        return None
+    return (
+        QUICK_TREE_OPTIONS,
+        QUICK_TREE_MODELS["nucleotide"] if is_model_finder_spec(model_nuc) else model_nuc,
+        QUICK_TREE_MODELS["protein"] if is_model_finder_spec(model_aa) else model_aa,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Branch-support flags — the single classifier every decision below uses
 # ---------------------------------------------------------------------------
@@ -446,6 +471,12 @@ def _run_fasttree(
 # IQ-TREE
 # ---------------------------------------------------------------------------
 
+# IQ-TREE draws a new random seed on every run, so the same alignment gave a
+# different tree and support values each time.  With a fixed seed the run is
+# repeatable at the same thread count (-T).  Options that set -seed win.
+IQTREE_SEED = 42
+
+
 def _iqtree_cmd(
     alignment_fasta: Path,
     out_prefix: Path,
@@ -460,6 +491,8 @@ def _iqtree_cmd(
     if model:
         cmd += ["-m", model]
     cmd += ["--seqtype", seqtype_flag, "-T", str(threads), "--redo"]
+    if not any(p in ("-seed", "--seed") for p in options_parts):
+        cmd += ["-seed", str(IQTREE_SEED)]
     return cmd + list(options_parts)
 
 
@@ -561,9 +594,10 @@ def _run_iqtree(
     described = options or ""      # the same, in config terms, for provenance
     note = ""
 
-    log.info("Running IQ-TREE (model=%s, %s)", model, " ".join(run_parts))
-    result = _run_cmd(_iqtree_cmd(alignment_fasta, out_prefix, model, seqtype_flag,
-                                  threads, run_parts))
+    cmd = _iqtree_cmd(alignment_fasta, out_prefix, model, seqtype_flag, threads, run_parts)
+    log.info("Running IQ-TREE (model=%s, %s; seed %s)", model, " ".join(run_parts),
+             _option_value(cmd, "-seed") or _option_value(cmd, "--seed"))
+    result = _run_cmd(cmd)
 
     if (
         result.returncode != 0

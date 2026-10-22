@@ -14,6 +14,8 @@ from .datasources import (
     SOURCE_FETCHERS,
 )
 from .logger import get_logger
+from .quality import MIN_LENGTH_AA
+from .trim import DEFAULT_TRIM_OPTIONS
 
 log = get_logger(__name__)
 
@@ -82,23 +84,21 @@ SEGMENTED_FAMILIES: dict[str, str] = {
 # DNA virus families and their optimal search strategy.
 # "region" is used with "<region>"[Protein Name] OR "<region>"[Gene] for
 # protein markers, or a title-based "complete genome" search when set to
-# whole_genome.  Nearly all families use a conserved marker protein — the
-# only whole-genome default remaining is Hepadnaviridae (~3.2 kb dsDNA),
-# whose overlapping-ORF architecture makes whole-genome nucleotide
-# alignment workable at family scale.
+# whole_genome.  Nearly all families use a conserved marker protein.
+# Circoviridae and Hepadnaviridae moved to the HMM-identified Rep and RT
+# markers (HMM_MARKER_FAMILIES) in v1.6.0.
 DNA_FAMILIES: dict[str, dict] = {
     # ---- Small ssDNA / dsDNA families: marker-protein approach ----
     # CRESS-DNA families — ambisense organisation (Rep and Cap on opposite
     # strands around the origin of replication) makes whole-genome
     # alignment unreliable; Rep is the ICTV species-demarcation marker.
-    "Circoviridae":       {"sequence": {"region": "Rep", "type": "protein"}},          # ~2 kb ssDNA circular
+    # The others are on the HMM-identified Rep (REP_FAMILIES); Smacoviridae
+    # keeps the name-based Rep because Pfam finds its Rep in only 43 % of
+    # RefSeq viruses (38/88, 2026-10-21).
     "Smacoviridae":       {"sequence": {"region": "Rep", "type": "protein"}},          # ~2.3 kb ssDNA circular
     # Anelloviridae — ORF1 (capsid) is the standard phylogenetic marker;
     # ORF2/ORF3 are hypervariable and make whole-genome alignment poor.
     "Anelloviridae":      {"sequence": {"region": "ORF1", "type": "protein"}},         # ~2–4 kb ssDNA circular
-    # Hepadnaviridae — small enough (3.2 kb) with heavily overlapping ORFs
-    # that whole-genome nucleotide alignment still works at family scale.
-    "Hepadnaviridae":     {"sequence": {"region": "whole_genome"}},                    # ~3.2 kb partial dsDNA
     # Parvoviridae — NS1 (replicase) is ICTV's recommended phylogenetic
     # marker; conserved enough to align across Parvovirinae/Densovirinae.
     "Parvoviridae":       {"sequence": {"region": "NS1", "type": "protein"}},          # ~5 kb ssDNA linear
@@ -166,6 +166,350 @@ DNA_FAMILIES: dict[str, dict] = {
     "Pithoviridae":       {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~600 kb amoebal
     "Medusaviridae":      {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~380 kb amoebal
 }
+
+
+# RNA-virus families (kingdom Orthornavirae) — RdRp protein marker.
+#
+# Whole-genome nucleotide alignment is saturated at family scale for most RNA
+# viruses: a 2026-10-20 survey of earlier results found a median tip-to-tip
+# distance above 1.5 subs/site in 84 of 117 nucleotide families (signal.py,
+# CHANGELOG 1.6.0), i.e. their deep structure was noise.  The RNA-dependent
+# RNA polymerase is the one protein every Orthornavirae member encodes and the
+# standard family-level marker.  It is found by HMM homology against the
+# bundled Pfam RdRp set ("RdRp", 23 profiles) whatever GenBank calls the
+# protein (NIb, nsP4, 2a, lambda-3, L, PB1, polyprotein, …), and cut to the
+# RdRp domain ± RDRP_DOMAIN_PADDING residues, so whole polyproteins do not
+# dominate the alignment with variable regions.
+#
+# Hit rule (hmm block below): domain E-value <= 1e-3 and >= 20% profile
+# coverage, no Pfam GA.  Every profile in the set is an RdRp, so the looser
+# rule costs little: on 2026-10-20 RefSeq proteins it raised the families with
+# >= 70% of viruses covered from 78 to 107 of 138, and an audit of the extra
+# hits found them all RdRps under other names except ~4 in several thousand.
+#
+# Families listed here had >= 70% of their RefSeq viruses covered.  The other
+# Orthornavirae families stay nucleotide (RefSeq viruses covered / total;
+# 0/0 = no RefSeq proteins) — their RdRps are too divergent for Pfam:
+# Alphaormycoviridae 0/0, Alphatetraviridae 4/6, Alvernaviridae 0/1,
+# Amnoonviridae 0/1, Aspiviridae 0/6, Betaormycoviridae 0/0,
+# Deltaormycoviridae 0/0, Discoviridae 3/5, Dumbiviridae 0/7, Euroniviridae
+# 2/3, Gammaormycoviridae 0/0, Hypoviridae 5/30, Konkoviridae 0/0,
+# Medioniviridae 1/2, Mesoniviridae 10/15, Mononiviridae 0/1, Mycoalphaviridae
+# 0/0, Mypoviridae 0/1, Narnaviridae 5/15, Ourmiaviridae 3/12, Phasmaviridae
+# 10/33, Qinviridae 3/8, Quambiviridae 0/4, Rhizouliviridae 0/5,
+# Splipalmiviridae 0/0, Tosoviridae 0/1, Trimbiviridae 0/5, Tulasviridae 1/2,
+# Unambiviridae 0/4, Wupedeviridae 0/1, Yueviridae 0/2
+# Not here by design: reverse-transcribing families (Pararnavirae; no RdRp;
+# they are on the RT marker, RT_FAMILY_PROFILES), Kolmioviridae (deltaviruses;
+# host polymerase), satellites and viroids.
+RDRP_HMM_TOKENS: list[str] = [
+    "RdRP_1", "RdRP_2", "RdRP_3", "RdRP_4", "RdRP_5", "Mononeg_RNA_pol",
+    "Bunya_RdRp", "Birna_RdRp_palm", "Arena_RNA_pol", "Flu_PB1", "Flavi_NS5",
+    "Flavi_NS5_thumb", "RNA_replicase_B", "Mitovir_RNA_pol", "Orbi_VP1",
+    "CoV_RPol_N", "Permu_RdRp_palm", "RNA-dir_pol_phytoreovirus",
+    "Seadorna_RNAP", "CPV_RdRP_pol_dom", "Luteo_P1-P2", "L_thumb_ring_vir",
+    "L_PA-C-like",
+]
+RDRP_DOMAIN_PADDING = 100
+
+# The profiles each family's own RdRps hit (RDRP_FAMILY_PROFILES) are the
+# family's marker tokens, and the preset turns on hmm.best_hit_only: a
+# protein whose best-scoring profile in the whole set is not one of them is a
+# different kind of RdRp and is left out.  This is what catches records filed
+# under the wrong taxon; on 2026-10-20 NCBI had ~20 orbivirus and bunyavirus
+# species (taxids 345xxxx) under Alphavirus, whose VP1 / L proteins hit
+# Orbi_VP1 / Bunya_RdRp best and would otherwise have joined the Togaviridae
+# tree (whole-genome nucleotide mode took them too).  The lists are every
+# profile with a passing hit on the family's RefSeq RdRps in the coverage
+# test (below), in order of how many viruses they hit.  RdRP_1–RdRP_4 are
+# broad palm-domain profiles that overlap heavily (picornavirus RefSeqs hit
+# all four), so a family with any of them gets all four (RDRP_PALM): telling
+# them apart is not reliable from a family's few RefSeqs, and it keeps
+# divergent metagenomic members of small families.  In the validation runs
+# the rule left out the 29 misfiled Togaviridae genomes and nothing else
+# (0 of ~8,600 genomes in Hantaviridae, Partitiviridae, Tombusviridae,
+# Xinmoviridae).
+RDRP_PALM: tuple[str, ...] = ("RdRP_1", "RdRP_2", "RdRP_3", "RdRP_4")
+
+RDRP_FAMILY_PROFILES: dict[str, tuple[str, ...]] = {
+    'Aliusviridae': ('Mononeg_RNA_pol',),
+    'Alphaflexiviridae': RDRP_PALM,
+    'Alternaviridae': RDRP_PALM,
+    'Amalgaviridae': RDRP_PALM,
+    'Ambiguiviridae': RDRP_PALM,
+    'Arenaviridae': ('Arena_RNA_pol', 'Bunya_RdRp'),
+    'Arteriviridae': RDRP_PALM,
+    'Artiviridae': RDRP_PALM,
+    'Artoviridae': ('Mononeg_RNA_pol',),
+    'Astroviridae': RDRP_PALM,
+    'Barnaviridae': RDRP_PALM,
+    'Benyviridae': RDRP_PALM,
+    'Betaflexiviridae': RDRP_PALM,
+    'Birnaviridae': ('Birna_RdRp_palm', 'Permu_RdRp_palm', *RDRP_PALM),
+    'Blumeviridae': ('RNA_replicase_B', 'Mitovir_RNA_pol'),
+    'Bornaviridae': ('Mononeg_RNA_pol',),
+    'Botourmiaviridae': ('Mitovir_RNA_pol',),
+    'Botybirnaviridae': RDRP_PALM,
+    'Bromoviridae': RDRP_PALM,
+    'Caliciviridae': RDRP_PALM,
+    'Carmotetraviridae': RDRP_PALM,
+    'Chrysoviridae': RDRP_PALM,
+    'Chuviridae': ('Mononeg_RNA_pol',),
+    'Closteroviridae': RDRP_PALM,
+    'Coronaviridae': ('CoV_RPol_N', *RDRP_PALM),
+    'Cremegaviridae': RDRP_PALM,
+    'Crepuscuviridae': ('Mononeg_RNA_pol',),
+    'Cruliviridae': ('Bunya_RdRp', 'L_thumb_ring_vir'),
+    'Curvulaviridae': RDRP_PALM,
+    'Deltaflexiviridae': RDRP_PALM,
+    'Dicistroviridae': RDRP_PALM,
+    'Endornaviridae': RDRP_PALM,
+    'Filoviridae': ('Mononeg_RNA_pol',),
+    'Fimoviridae': ('Bunya_RdRp',),
+    'Flaviviridae': ('Flavi_NS5', 'Flavi_NS5_thumb', *RDRP_PALM),
+    'Fusagraviridae': RDRP_PALM,
+    'Fusariviridae': RDRP_PALM,
+    'Gammaflexiviridae': RDRP_PALM,
+    'Giardiaviridae': RDRP_PALM,
+    'Gresnaviridae': RDRP_PALM,
+    'Hadakaviridae': RDRP_PALM,
+    'Hantaviridae': ('Bunya_RdRp', 'Flu_PB1'),
+    'Hepaciviridae': RDRP_PALM,
+    'Hepeviridae': RDRP_PALM,
+    'Iflaviridae': RDRP_PALM,
+    'Inseviridae': RDRP_PALM,
+    'Kitaviridae': RDRP_PALM,
+    'Lebotiviridae': RDRP_PALM,
+    'Leishbuviridae': ('Bunya_RdRp',),
+    'Lispiviridae': ('Mononeg_RNA_pol',),
+    'Marnaviridae': RDRP_PALM,
+    'Matonaviridae': RDRP_PALM,
+    'Mayoviridae': RDRP_PALM,
+    'Megabirnaviridae': RDRP_PALM,
+    'Megatotiviridae': RDRP_PALM,
+    'Mitoviridae': ('Mitovir_RNA_pol', 'RNA_replicase_B'),
+    'Monocitiviridae': RDRP_PALM,
+    'Mymonaviridae': ('Mononeg_RNA_pol',),
+    'Myriaviridae': ('Mononeg_RNA_pol',),
+    'Nairoviridae': ('Bunya_RdRp',),
+    'Nanghoshaviridae': RDRP_PALM,
+    'Nanhypoviridae': RDRP_PALM,
+    'Natareviridae': ('Mononeg_RNA_pol',),
+    'Nodaviridae': RDRP_PALM,
+    'Noraviridae': RDRP_PALM,
+    'Nyamiviridae': ('Mononeg_RNA_pol',),
+    'Olifoviridae': RDRP_PALM,
+    'Ootiviridae': RDRP_PALM,
+    'Orthomyxoviridae': ('Flu_PB1', 'Bunya_RdRp'),
+    'Orthototiviridae': RDRP_PALM,
+    'Parahypoviridae': RDRP_PALM,
+    'Paramyxoviridae': ('Mononeg_RNA_pol',),
+    'Partitiviridae': RDRP_PALM,
+    'Peribunyaviridae': ('Bunya_RdRp', 'L_thumb_ring_vir', 'Mononeg_RNA_pol'),
+    'Permutotetraviridae': ('Permu_RdRp_palm', 'Birna_RdRp_palm'),
+    'Pestiviridae': ('Flavi_NS5_thumb', 'Flavi_NS5', *RDRP_PALM),
+    'Phenuiviridae': ('Bunya_RdRp', 'L_PA-C-like', 'Flu_PB1'),
+    'Phlegiviridae': RDRP_PALM,
+    'Picobirnaviridae': ('Mitovir_RNA_pol', *RDRP_PALM),
+    'Picornaviridae': RDRP_PALM,
+    'Pistolviridae': RDRP_PALM,
+    'Pneumoviridae': ('Mononeg_RNA_pol',),
+    'Polycipiviridae': RDRP_PALM,
+    'Polymycoviridae': RDRP_PALM,
+    'Potyviridae': RDRP_PALM,
+    'Pseudototiviridae': ('Permu_RdRp_palm', *RDRP_PALM),
+    'Quadriviridae': RDRP_PALM,
+    'Rhabdoviridae': ('Mononeg_RNA_pol',),
+    'Roniviridae': RDRP_PALM,
+    'Secoviridae': ('Permu_RdRp_palm', *RDRP_PALM),
+    'Sedoreoviridae': ('Orbi_VP1', 'Seadorna_RNAP', 'RNA-dir_pol_phytoreovirus', *RDRP_PALM),
+    'Sinhaliviridae': RDRP_PALM,
+    'Solemoviridae': RDRP_PALM,
+    'Solinviviridae': RDRP_PALM,
+    'Spiciviridae': RDRP_PALM,
+    'Spinareoviridae': ('CPV_RdRP_pol_dom', 'RdRP_5', *RDRP_PALM),
+    'Steitzviridae': ('RNA_replicase_B', 'Mitovir_RNA_pol'),
+    'Sunviridae': ('Mononeg_RNA_pol',),
+    'Tobaliviridae': RDRP_PALM,
+    'Tobaniviridae': ('CoV_RPol_N', *RDRP_PALM),
+    'Togaviridae': RDRP_PALM,
+    'Tombusviridae': ('Luteo_P1-P2', *RDRP_PALM),
+    'Tospoviridae': ('Bunya_RdRp',),
+    'Tymoviridae': RDRP_PALM,
+    'Virgaviridae': RDRP_PALM,
+    'Xinmoviridae': ('Mononeg_RNA_pol',),
+    'Yadokariviridae': RDRP_PALM,
+}
+
+RDRP_FAMILIES: frozenset[str] = frozenset(RDRP_FAMILY_PROFILES)
+
+# Profiles for other domains of the same polymerase as a family profile
+# (hmm.best_hit_also).  A protein whose best hit is one of these is still the
+# family's own kind of RdRp, so best_hit_only must not leave it out: 6 of 149
+# Peribunyaviridae RefSeq L proteins fit L_thumb_ring_vir better than
+# Bunya_RdRp, while Hantaviridae and Nairoviridae RefSeqs never hit it, so a
+# divergent hanta- or nairovirus L could otherwise be dropped as "foreign".
+RDRP_SIBLING_DOMAINS: dict[str, tuple[str, ...]] = {
+    "Bunya_RdRp": ("L_PA-C-like", "L_thumb_ring_vir"),       # bunyavirus L
+    "Arena_RNA_pol": ("L_PA-C-like", "L_thumb_ring_vir"),    # arenavirus L
+    "Flavi_NS5": ("Flavi_NS5_thumb",),                       # flavivirus NS5
+    "Flavi_NS5_thumb": ("Flavi_NS5",),
+}
+
+# Sibling domains outside the RdRp core (L_PA-C-like, L_thumb_ring_vir).
+# They never become marker tokens, even where a family's RefSeq L proteins
+# hit them (Peribunyaviridae, Phenuiviridae, Cruliviridae): a token selects
+# and crops on its own, so a partial L covering only such a domain would
+# enter the alignment cut to it, with no RdRp columns.  They only count for
+# best_hit_only (best_hit_also).  Checked 2026-10-21 on the coverage scan:
+# every RefSeq L protein of those families also hits Bunya_RdRp (151, 154
+# and 3 proteins), and the median cut shrinks from ~1300 to ~900 aa (the
+# Bunya_RdRp domain ± 100).
+RDRP_NON_CORE_DOMAINS: frozenset[str] = frozenset(
+    s for sibs in RDRP_SIBLING_DOMAINS.values() for s in sibs
+) - frozenset(RDRP_SIBLING_DOMAINS)
+
+# Proteins shorter than this are never marker candidates in RdRp mode
+# (hmm.min_protein_length).  Equal to quality.MIN_LENGTH_AA: a shorter protein
+# yields a shorter cropped domain, which quality control drops anyway, so the
+# floor changes no tree.  It is applied to the downloaded records, not in the
+# NCBI query: a [SLEN] clause made each protein search 4-6 s slower
+# (2026-10-21), against 2-14 % fewer records to download.  A higher floor
+# would also drop partial RdRp deposits (3-8 % of the selected proteins were
+# < 200 aa).
+RDRP_MIN_PROTEIN_LENGTH = MIN_LENGTH_AA
+
+
+# ---------------------------------------------------------------------------
+# Reverse-transcriptase and Rep markers (v1.6.0)
+# ---------------------------------------------------------------------------
+# The same approach for the two groups without an RdRp whose whole-genome
+# trees were saturated or weak in the 2026-10-20 signal survey.  Bundled
+# Pfam sets "RT" and "Rep" (names verified against InterPro 2026-10-21); hit
+# rule, length floor and opt-out as for the RdRp.  Coverage of RefSeq
+# viruses under that rule (2026-10-21, scratch coverage test):
+#
+# RT (reverse-transcribing viruses, Pararnavirae): RVT_1 in Caulimoviridae
+# 108/108, Hepadnaviridae 27/27, Metaviridae 2/2, Retroviridae 64/89 — every
+# uncovered retrovirus has no RT gene (transforming viruses with an onc gene
+# in place of pol, endogenous-retrovirus fragments), so they leave the tree.
+# The RT is cut to its domain ± 100 aa, as Gag-Pol, the hepadnavirus P
+# protein and caulimovirus polyproteins are 800-1850 aa.  RVT_thumb and
+# RVT_connect (other domains of the same RT) only count for best_hit_only;
+# RVT_2 (Ty1/copia RT) is in the set so such a protein is recognised as
+# foreign.  Pseudoviridae (0 RefSeq proteins) stays as it was.
+RT_HMM_TOKENS: list[str] = ["RVT_1", "RVT_2", "RVT_thumb", "RVT_connect"]
+RT_FAMILY_PROFILES: dict[str, tuple[str, ...]] = {
+    "Caulimoviridae": ("RVT_1",),
+    "Hepadnaviridae": ("RVT_1",),
+    "Metaviridae": ("RVT_1",),
+    "Retroviridae": ("RVT_1",),
+}
+RT_SIBLING_DOMAINS: tuple[str, ...] = ("RVT_thumb", "RVT_connect")
+
+# Rep (CRESS-DNA viruses, Cressdnaviricota, and Alphasatellitidae, whose
+# satellites encode a circovirus-like Rep): >= 94 % of RefSeq viruses in all
+# 23 families.  Two kinds of Rep: geminivirus-like (Gemini_AL1 / AL1_M best;
+# Geminiviridae, Genomoviridae, Geplanaviridae) and circovirus-like
+# (Viral_Rep + SF3 helicase; the rest), but the profiles do not tell families
+# apart, so every Rep profile is a token and best_hit_only is off.  Rep
+# proteins are ~270-470 aa: kept whole (no cut).  Not here: Smacoviridae
+# (38/88; its name-based Rep preset stays), Metaxyviridae (no RefSeq
+# proteins), Tolecusatellitidae (betasatellites encode no Rep).
+REP_HMM_TOKENS: list[str] = ["Viral_Rep", "RNA_helicase", "Gemini_AL1", "Gemini_AL1_M"]
+REP_FAMILIES: frozenset[str] = frozenset({
+    "Adamaviridae", "Alphasatellitidae", "Amesuviridae", "Anicreviridae",
+    "Bacilladnaviridae", "Circoviridae", "Draupnirviridae", "Endolinaviridae",
+    "Gandrviridae", "Geminiviridae", "Genomoviridae", "Geplanaviridae",
+    "Kanorauviridae", "Kirkoviridae", "Mahapunaviridae", "Nanoviridae",
+    "Naryaviridae", "Nenyaviridae", "Oomyviridae", "Ouroboviridae",
+    "Pecoviridae", "Redondoviridae", "Vilyaviridae",
+})
+
+#: Every family on an HMM-identified marker preset → the marker (also the
+#: bundled profile set's name and the ``sequence.region`` it runs under).
+HMM_MARKER_FAMILIES: dict[str, str] = {
+    **{f: "RdRp" for f in RDRP_FAMILIES},
+    **{f: "RT" for f in RT_FAMILY_PROFILES},
+    **{f: "Rep" for f in REP_FAMILIES},
+}
+
+
+def _hmm_marker_preset(
+    marker: str, tokens: list[str], *, padding: int | None,
+    best_hit_only: bool, also: list[str],
+) -> dict:
+    """Config overrides for one HMM-identified marker (shared hit rule)."""
+    return {
+        "sequence": {
+            "type": "protein",
+            "region": marker,
+            "segment": None,   # the HMM finds the marker on whichever segment carries it
+            "hmms": list(tokens),
+            "domain_padding": padding,
+        },
+        "hmm": {
+            "enabled": True,
+            "database": marker,
+            "use_ga_when_available": False,
+            "default_evalue": 1.0e-3,
+            "relative_length_cutoff": 0.2,
+            "best_hit_only": best_hit_only,
+            "best_hit_also": list(also),
+            "min_protein_length": RDRP_MIN_PROTEIN_LENGTH,
+        },
+    }
+
+
+def rdrp_preset(family: str) -> dict:
+    """Config overrides that put *family* (in RDRP_FAMILIES) on the
+    HMM-identified RdRp marker, restricted to the family's own profiles."""
+    profiles = RDRP_FAMILY_PROFILES[family]
+    tokens = [p for p in profiles if p not in RDRP_NON_CORE_DOMAINS] or list(profiles)
+    siblings = sorted((
+        {s for p in tokens for s in RDRP_SIBLING_DOMAINS.get(p, ())}
+        | (set(profiles) - set(tokens))
+    ) - set(tokens))
+    return _hmm_marker_preset(
+        "RdRp", tokens, padding=RDRP_DOMAIN_PADDING, best_hit_only=True, also=siblings,
+    )
+
+
+def hmm_marker_preset(family: str) -> dict:
+    """The preset of a family in HMM_MARKER_FAMILIES (RdRp, RT or Rep)."""
+    marker = HMM_MARKER_FAMILIES[family]
+    if marker == "RdRp":
+        return rdrp_preset(family)
+    if marker == "RT":
+        return _hmm_marker_preset(
+            "RT", list(RT_FAMILY_PROFILES[family]), padding=RDRP_DOMAIN_PADDING,
+            best_hit_only=True, also=list(RT_SIBLING_DOMAINS),
+        )
+    return _hmm_marker_preset(
+        "Rep", REP_HMM_TOKENS, padding=None, best_hit_only=False, also=[],
+    )
+
+
+def hmm_marker_opt_out(file_cfg: dict | None, marker: str) -> bool:
+    """True when a family file chooses its own analysis instead of its HMM
+    marker preset (*marker*: RdRp, RT or Rep): a ``sequence.type`` other than
+    protein, a ``sequence.region`` other than *marker*, or
+    ``hmm.enabled: false``.
+
+    The preset is then not applied at all, so the family gets the template
+    (and SEGMENTED_FAMILIES segment) underneath the file's own values — never
+    a mix such as nucleotide type with the preset's HMM protein fetch.  A
+    v1.5.0 file (whole-genome nucleotide, hmm off) therefore runs as it did.
+    """
+    file_seq = (file_cfg or {}).get("sequence") or {}
+    file_hmm = (file_cfg or {}).get("hmm") or {}
+    seq_type = file_seq.get("type")
+    region = file_seq.get("region")
+    return (
+        (seq_type is not None and seq_type != "protein")
+        or (region is not None and region != marker)
+        or file_hmm.get("enabled") is False
+    )
 
 
 # Curated multi-marker presets for large DNA virus families where single-
@@ -598,6 +942,14 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "type": "nucleotide",
         "region": "whole_genome",
         "segment": None,   # set automatically for known segmented families
+        # HMM profile tokens of the single marker (hmm.enabled); set by the
+        # RdRp, RT, Rep and Adenoviridae presets.  Empty: no profile gate.
+        "hmms": [],
+        # HMM single-marker mode (hmm.enabled with sequence.hmms tokens, set by
+        # the RdRp, RT, Rep and Adenoviridae presets): keep only the span of the
+        # marker's profile hits ± this many residues (e.g. the RdRp of a
+        # polyprotein); null keeps whole proteins.
+        "domain_padding": None,
     },
     "quality": {
         "min_length": None,
@@ -641,17 +993,21 @@ DEFAULT_FAMILY_CONFIG: dict = {
     "msa_trim": {
         "enabled": True,
         "tool": "trimal",
-        "options": "-automated1",
+        "options": DEFAULT_TRIM_OPTIONS,
     },
     "tree_500": {
-        # IQ-TREE --fast: same wall time as FastTree with a clearly better
-        # likelihood (2026-10 benchmark, see CHANGELOG 1.5.0).  The wrapper
-        # adds -alrt 1000, so the tree carries SH-aLRT support.  FastTree is
-        # still available: tool: fasttree with options_nuc / options_aa set
-        # to "" (config validation rejects IQ-TREE options under FastTree).
+        # Nucleotide: IQ-TREE --fast, same wall time as FastTree with a
+        # clearly better likelihood (CHANGELOG 1.5.0); a full search gained
+        # nothing there.  Protein: -n 50, IQ-TREE's normal search stopped
+        # after 50 iterations — --fast lands in a different local optimum on
+        # each seed for weak-signal protein sets, -n 50 comes as close to the
+        # full search as a second full search does (CHANGELOG 1.6.0).  The
+        # wrapper adds -alrt 1000, so the tree carries SH-aLRT support.
+        # FastTree is still available: tool: fasttree with options_nuc /
+        # options_aa set to "" (config validation rejects IQ-TREE options).
         "tool": "iqtree",
         "options_nuc": "--fast",
-        "options_aa": "--fast",
+        "options_aa": "-n 50",
         "model_nuc": "GTR+G",
         "model_aa": "LG+G",
     },
@@ -716,6 +1072,11 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "factor": 20.0,
         "max_iterations": 3,
         "min_seqs": 40,
+        # Check each round on a quick IQ-TREE --fast tree first; the
+        # configured (slower) search runs once that finds nothing to remove,
+        # and its tree is checked as before.  Off: every round runs the
+        # configured search.
+        "quick_check": True,
     },
     "labeling": {
         # Python-style format string controlling leaf labels in PhyloXML
@@ -855,6 +1216,16 @@ DEFAULT_FAMILY_CONFIG: dict = {
     #                   cover (in HMM-model coordinates), in [0, 1].
     #   multidomain_overlap_tolerance: residues two adjacent domains of a
     #                   multidomain "A--B" token may overlap (cleavage-site slack).
+    #   best_hit_only:  a protein counts only when its best-scoring profile in
+    #                   the database is one of the marker's tokens, so a protein
+    #                   that merely cross-hits a token while another profile
+    #                   fits it better is left out (on in the RdRp preset).
+    #   best_hit_also:  profiles that also count as the marker's own for
+    #                   best_hit_only without being tokens (other domains of
+    #                   the same protein, e.g. the L thumb-ring domain).
+    #   min_protein_length: proteins shorter than this (aa) are left out of
+    #                   the downloaded candidates in HMM mode; null → no floor
+    #                   (100 in the RdRp preset).
     #   threads:        hmmscan --cpu; null → use the run's thread count.
     "hmm": {
         "enabled": False,
@@ -863,18 +1234,106 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "use_ga_when_available": True,
         "relative_length_cutoff": 0.5,
         "multidomain_overlap_tolerance": 30,
+        "best_hit_only": False,
+        "best_hit_also": [],
+        "min_protein_length": None,
         "threads": None,
     },
 }
 
 
+# Settings read from global.yaml outside its ``defaults:`` block, with the
+# values the pipeline uses when a key is absent.  Single source of truth for
+# those fallbacks (``global_settings``), the unknown-key check and the run
+# record (``effective_global_config``).
+GLOBAL_SETTINGS_DEFAULTS: dict = {
+    "ncbi": {"email": "", "api_key": ""},
+    # null → virus_families_annotation.tsv next to global.yaml
+    "annotation_tsv": None,
+    "cache": {"dir": None, "ttl_days": None},
+    "visualization": {"branch_linewidth": 0.5},
+    "icon": {"size": 256, "bg_color": "#EAF3F2", "branch_color": "#000000"},
+}
+
+# Keys older templates wrote that nothing reads, with where the setting lives.
+RETIRED_GLOBAL_KEYS: dict[str, str] = {
+    "output_dir": "the output folder is set with `vfam_trees run -o`",
+    "log_level": "the log level is set with `vfam_trees run --log-level` "
+                 "(or --verbose / --quiet)",
+}
+
+
+def global_settings(global_cfg: dict, block: str) -> dict:
+    """One global.yaml block (``visualization``, ``icon``, ``cache``, ``ncbi``)
+    with every key present: the file's values over GLOBAL_SETTINGS_DEFAULTS."""
+    return {**GLOBAL_SETTINGS_DEFAULTS[block], **((global_cfg or {}).get(block) or {})}
+
+
+def unknown_config_keys(cfg: dict, reference: dict, prefix: str = "") -> list[str]:
+    """Dotted paths of keys in *cfg* that *reference* does not have.
+
+    Recurses into blocks whose reference is a non-empty mapping; list values
+    (marker specs, sources) are not checked.  Keys starting with "_" are
+    internal and skipped."""
+    found: list[str] = []
+    for key, value in (cfg or {}).items():
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        if key not in reference:
+            found.append(prefix + key)
+        elif isinstance(value, dict) and isinstance(reference[key], dict) and reference[key]:
+            found.extend(unknown_config_keys(value, reference[key], f"{prefix}{key}."))
+    return found
+
+
+def unknown_keys_message(path: Path | str, keys: list[str]) -> str:
+    """WARNING text for keys a config file sets that this version ignores."""
+    parts = []
+    for key in keys:
+        hint = RETIRED_GLOBAL_KEYS.get(key)
+        parts.append(f"{key} (not read: {hint})" if hint else key)
+    return (
+        f"Unknown config key(s) in {path}: {', '.join(parts)}. This version "
+        "does not read them, so they have no effect; remove them, or check the "
+        "spelling against `vfam_trees init --full`."
+    )
+
+
+def _global_reference() -> dict:
+    return {**GLOBAL_SETTINGS_DEFAULTS, "defaults": DEFAULT_FAMILY_CONFIG}
+
+
 def load_global_config(path: Path) -> dict:
+    """Read and validate global.yaml.  Keys this version does not know are
+    logged (WARNING) and kept in ``cfg["_unknown_keys"]`` so the pipeline can
+    repeat them in each family log."""
     if not path.exists():
         raise FileNotFoundError(f"Global config not found: {path}")
     with open(path) as f:
-        cfg = yaml.safe_load(f)
+        cfg = yaml.safe_load(f) or {}
     _validate_global_config(cfg)
+    unknown = unknown_config_keys(cfg, _global_reference())
+    if unknown:
+        log.warning(unknown_keys_message(path, unknown))
+    cfg["_unknown_keys"] = unknown
     return cfg
+
+
+def effective_global_config(global_cfg: dict, redact: bool = True) -> dict:
+    """Every global setting a run uses: GLOBAL_SETTINGS_DEFAULTS and the
+    template (``defaults:``) overlaid with the file's values.  Unknown keys
+    are kept as given (they are flagged elsewhere); ``ncbi.api_key`` is
+    replaced by a marker when *redact* so a results folder can be shared.
+    Family presets and family files are applied later, per family."""
+    cfg = {k: v for k, v in (global_cfg or {}).items() if not str(k).startswith("_")}
+    out = copy.deepcopy(GLOBAL_SETTINGS_DEFAULTS)
+    _deep_update(out, {k: v for k, v in cfg.items() if k != "defaults"})
+    defaults = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    _deep_update(defaults, cfg.get("defaults") or {})
+    out["defaults"] = defaults
+    if redact and out.get("ncbi", {}).get("api_key"):
+        out["ncbi"]["api_key"] = "<set, not recorded>"
+    return out
 
 
 def _validate_global_config(cfg: dict) -> None:
@@ -894,9 +1353,6 @@ def _validate_global_config(cfg: dict) -> None:
         raise ValueError(
             f"global.yaml: ncbi.email does not look like a valid email address: '{email}'"
         )
-
-
-_KNOWN_FAMILY_CONFIG_KEYS = frozenset(DEFAULT_FAMILY_CONFIG.keys())
 
 
 def _validate_concatenation_block(cfg: dict, family: str) -> None:
@@ -995,14 +1451,15 @@ _NULLABLE_NUMERIC_FIELDS: tuple = (
 
 
 # Options only one of the two tree tools understands.  Each list holds
-# spellings the other tool does not have, so a hit is always a mistake —
-# typically a tool switched without clearing the options inherited from the
-# template (whose options_nuc / options_aa keys always win over a bare
-# legacy ``options`` key).
+# spellings the other tool does not have or reads differently (IQ-TREE's -n
+# is the number of search iterations, FastTree's the number of alignments in
+# the input), so a hit is always a mistake — typically a tool switched
+# without clearing the options inherited from the template (whose
+# options_nuc / options_aa keys always win over a bare legacy ``options`` key).
 _IQTREE_ONLY_OPTIONS = frozenset({
     "--fast", "-alrt", "--alrt", "-abayes", "--abayes", "-lbp", "--lbp",
     "-B", "--ufboot", "-bb", "-b", "--boot", "--bnni", "-m", "-T", "-p",
-    "-te", "--tree-fix", "--seqtype", "--prefix", "-s",
+    "-te", "--tree-fix", "--seqtype", "--prefix", "-s", "-n",
 })
 _FASTTREE_ONLY_OPTIONS = frozenset({
     "-gtr", "-gamma", "-wag", "-lg", "-cat", "-nocat", "-spr", "-mlacc",
@@ -1020,7 +1477,9 @@ def _validate_tree_blocks(cfg: dict, family: str) -> None:
     protein and concatenated runs, else ``options_nuc``; the legacy bare
     ``options`` key when neither is set), mirroring
     ``pipeline._resolve_tree_options``.  Raises ``ValueError`` at load time
-    instead of failing after the fetch and alignment.
+    instead of failing after the fetch and alignment.  Also checks
+    ``outlier_removal.quick_check`` (a boolean), which picks the tree the
+    outlier rounds are checked on.
     """
     seq = cfg.get("sequence") or {}
     protein = seq.get("type") == "protein" or seq.get("region") == "concatenated"
@@ -1048,10 +1507,16 @@ def _validate_tree_blocks(cfg: dict, family: str) -> None:
             raise ValueError(
                 f"{family}: {block_name}.tool is {block.get('tool')!r} but "
                 f"{block_name}.{used_key} has {other} option(s) {' '.join(bad)}, "
-                f"which {_TREE_TOOLS[tool]} rejects. When switching tools, set "
+                f"which {_TREE_TOOLS[tool]} rejects or reads differently. When switching tools, set "
                 f"{block_name}.options_nuc and {block_name}.options_aa as well "
                 f"(\"\" for none)."
             )
+    quick = (cfg.get("outlier_removal") or {}).get("quick_check", True)
+    if not isinstance(quick, bool):
+        raise ValueError(
+            f"{family}: outlier_removal.quick_check must be true or false "
+            f"(got {quick!r})."
+        )
 
 
 def _validate_numeric_fields(cfg: dict, family: str) -> None:
@@ -1289,6 +1754,15 @@ def _validate_manual_block(cfg: dict, family: str) -> None:
             )
         cleaned_files.append(stripped)
 
+    from .quality import sequence_type_mismatch  # local: keeps config import light
+    seq_type = (cfg.get("sequence") or {}).get("type", "nucleotide")
+    for i, entry in enumerate(cleaned_fasta):
+        problem = sequence_type_mismatch(entry["sequence"], seq_type)
+        if problem:
+            raise ValueError(
+                f"{family}: manual.include_seq[{i}] ({entry['id']!r}) {problem}."
+            )
+
     if cleaned_fasta or cleaned_files:
         region = (cfg.get("sequence") or {}).get("region", "")
         if region == "concatenated":
@@ -1452,13 +1926,24 @@ def _validate_additional_data_sources(cfg: dict, family: str) -> None:
         })
 
     if cleaned:
-        region = (cfg.get("sequence") or {}).get("region", "")
+        seq_cfg = cfg.get("sequence") or {}
+        region = seq_cfg.get("region", "")
         if region == "concatenated":
             raise ValueError(
                 f"{family}: additional_data_sources are not supported when "
                 "sequence.region is 'concatenated' — outbreak nucleotide "
                 "sequences cannot be split into the configured marker proteins.  "
                 "Remove the additional_data_sources entries or switch the region."
+            )
+        if seq_cfg.get("type") == "protein":
+            marker = HMM_MARKER_FAMILIES.get(family)
+            preset = f" (its HMM-identified {marker} marker preset)" if marker else ""
+            raise ValueError(
+                f"{family}: additional_data_sources inject nucleotide genomes, "
+                f"but this family is analysed as protein{preset}.  For an "
+                f"outbreak tree set sequence.type: nucleotide and hmm.enabled: "
+                f"false in {family}.yaml (plus sequence.region / segment as "
+                "needed), or remove the additional_data_sources entries."
             )
     cfg["additional_data_sources"] = cleaned
 
@@ -1518,6 +2003,26 @@ def _validate_hmm_block(cfg: dict, family: str) -> None:
             "non-negative integer."
         )
 
+    best_only = raw.get("best_hit_only", False)
+    if not isinstance(best_only, bool):
+        raise ValueError(f"{family}: hmm.best_hit_only must be a boolean.")
+
+    also = raw.get("best_hit_also") or []
+    if not isinstance(also, list) or not all(
+        isinstance(a, str) and a.strip() for a in also
+    ):
+        raise ValueError(
+            f"{family}: hmm.best_hit_also must be a list of profile names."
+        )
+
+    min_len = raw.get("min_protein_length")
+    if min_len is not None and (
+        isinstance(min_len, bool) or not isinstance(min_len, int) or min_len <= 0
+    ):
+        raise ValueError(
+            f"{family}: hmm.min_protein_length must be null or a positive integer."
+        )
+
     threads = raw.get("threads")
     if threads is not None and (
         isinstance(threads, bool) or not isinstance(threads, int) or threads <= 0
@@ -1552,6 +2057,12 @@ def _validate_hmm_block(cfg: dict, family: str) -> None:
                 raise ValueError(f"{family}: {where} token {tok!r}: {exc}") from exc
 
     _check_tokens((cfg.get("sequence") or {}).get("hmms"), "sequence.hmms")
+    padding = (cfg.get("sequence") or {}).get("domain_padding")
+    if padding is not None and (isinstance(padding, bool) or not isinstance(padding, int) or padding < 0):
+        raise ValueError(
+            f"{family}: sequence.domain_padding must be null (keep whole proteins) "
+            f"or a non-negative integer (residues kept on each side of the marker domain)."
+        )
     proteins = ((cfg.get("concatenation") or {}).get("proteins")) or []
     for i, spec in enumerate(proteins):
         if isinstance(spec, dict):
@@ -1564,24 +2075,33 @@ def _validate_hmm_block(cfg: dict, family: str) -> None:
         "use_ga_when_available": use_ga,
         "relative_length_cutoff": float(rel),
         "multidomain_overlap_tolerance": int(tol),
+        "best_hit_only": best_only,
+        "best_hit_also": [a.strip() for a in also],
+        "min_protein_length": min_len,
         "threads": threads,
     }
 
 
-def _warn_unknown_keys(cfg: dict, path: Path) -> None:
-    """Warn about top-level keys in a user config that are not recognised."""
-    unknown = [
-        k for k in cfg
-        if not k.startswith("_") and k not in _KNOWN_FAMILY_CONFIG_KEYS
-    ]
+def _warn_unknown_keys(cfg: dict, path: Path) -> list[str]:
+    """Warn about keys in a family config file that this version does not
+    read, at any depth (e.g. a retired ``length_outlier.hi_mult``).  Returns
+    their dotted paths."""
+    unknown = unknown_config_keys(cfg, DEFAULT_FAMILY_CONFIG)
     if unknown:
-        log.warning(
-            "Unknown config key(s) in %s: %s — these will be ignored. "
-            "Known keys: %s",
-            path,
-            ", ".join(sorted(unknown)),
-            ", ".join(sorted(_KNOWN_FAMILY_CONFIG_KEYS)),
-        )
+        log.warning(unknown_keys_message(path, unknown))
+    return unknown
+
+
+def preview_family_config(family: str, configs_dir: Path, global_cfg: dict) -> dict:
+    """The merged config a run would use for *family*, without writing a
+    file, warning or validating (for checks made before a run starts, such
+    as which external tools it needs)."""
+    path = configs_dir / f"{family}.yaml"
+    if path.exists():
+        with open(path) as f:
+            file_cfg = yaml.safe_load(f) or {}
+        return _merge_with_defaults(file_cfg, global_cfg, family)
+    return _generate_default_family_config(family, global_cfg)
 
 
 def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tuple[dict, bool]:
@@ -1593,9 +2113,12 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
     if config_path.exists():
         with open(config_path) as f:
             file_cfg = yaml.safe_load(f) or {}
-        _warn_unknown_keys(file_cfg, config_path)
-        _warn_smart_default_conflicts(family, file_cfg, config_path)
+        unknown = _warn_unknown_keys(file_cfg, config_path)
         cfg = _merge_with_defaults(file_cfg, global_cfg, family)
+        _validate_sequence_mode(cfg, family, config_path)
+        _warn_smart_default_conflicts(family, file_cfg, config_path, merged=cfg)
+        # Repeated in the family log by the pipeline (logging is set up later).
+        cfg["_unknown_keys"] = unknown
         _validate_numeric_fields(cfg, family)
         _validate_tree_blocks(cfg, family)
         _validate_concatenation_block(cfg, family)
@@ -1605,6 +2128,7 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
         return cfg, False
     else:
         cfg = _generate_default_family_config(family, global_cfg)
+        _validate_sequence_mode(cfg, family, config_path)
         _validate_numeric_fields(cfg, family)
         _validate_tree_blocks(cfg, family)
         _validate_concatenation_block(cfg, family)
@@ -1621,7 +2145,49 @@ def load_family_config(family: str, configs_dir: Path, global_cfg: dict) -> tupl
         return cfg, True
 
 
-def _warn_smart_default_conflicts(family: str, file_cfg: dict, config_path: Path) -> None:
+def _validate_sequence_mode(cfg: dict, family: str, config_path: Path | None = None) -> None:
+    """Reject HMM settings that cannot work with the rest of the merged config.
+
+    HMM marker identification selects protein records, so it cannot run with
+    ``sequence.type: nucleotide`` (the run would fetch proteins, then reject
+    them all as too ambiguous for nucleotide QC), nor with a
+    ``sequence.segment`` (the segment filter matches record titles, and
+    protein titles name no segment, so every record would be dropped).  Both
+    arise when a family file generated with the RdRp preset is edited only
+    partly, e.g. just its ``sequence.type``.
+    """
+    if not (cfg.get("hmm") or {}).get("enabled"):
+        return
+    seq = cfg.get("sequence") or {}
+    where = config_path.name if config_path else f"{family}.yaml"
+    seg = SEGMENTED_FAMILIES.get(family)
+    to_nucleotide = (
+        "sequence.type: nucleotide, sequence.region: whole_genome, hmm.enabled: false"
+        + (f" (and sequence.segment: {seg!r} for that segment)" if seg else "")
+    )
+    if seq.get("type") == "nucleotide":
+        raise ValueError(
+            f"{family}: hmm.enabled is true but sequence.type is nucleotide. HMM "
+            "marker identification works on proteins only, so the run would fetch "
+            f"{seq.get('region')!r} proteins and then reject them all in "
+            f"nucleotide quality control. For whole genomes set {to_nucleotide} "
+            f"in {where}; for the HMM protein marker set sequence.type: protein "
+            f"(or delete {where} to regenerate it)."
+        )
+    if seq.get("segment"):
+        raise ValueError(
+            f"{family}: sequence.segment is {seq['segment']!r}, but {family} runs on "
+            f"an HMM-identified protein marker ({seq.get('region')!r}), found on "
+            "whichever segment carries it. Protein titles name no segment, so "
+            "every record would be dropped. Remove sequence.segment from "
+            f"{where}, or for that segment as nucleotide set sequence.type: "
+            "nucleotide, sequence.region: whole_genome, hmm.enabled: false."
+        )
+
+
+def _warn_smart_default_conflicts(
+    family: str, file_cfg: dict, config_path: Path, merged: dict | None = None,
+) -> None:
     """Warn when a config file overrides a CONCATENATION_FAMILIES, DNA_FAMILIES,
     or SEGMENTED_FAMILIES setting.  Concat presets are the most specific so
     they're checked first; the DNA_FAMILIES check is suppressed when the
@@ -1650,6 +2216,48 @@ def _warn_smart_default_conflicts(family: str, file_cfg: dict, config_path: Path
                     family, config_path.name, file_region, expected_region, config_path.name,
                 )
 
+    marker = HMM_MARKER_FAMILIES.get(family)
+    if marker:
+        if not hmm_marker_opt_out(file_cfg, marker):
+            return  # the marker preset clears the segment; no segment check
+        file_seq = file_cfg.get("sequence") or {}
+        file_hmm = file_cfg.get("hmm") or {}
+        # Report what will run (*merged*): a file's `segment: null` (as in a
+        # file generated with the marker preset) wins over the usual segment.
+        if merged is None:
+            merged = _merge_with_defaults(file_cfg, make_minimal_global_cfg(), family)
+        result = merged.get("sequence") or {}
+        segment = result.get("segment")
+        expected = SEGMENTED_FAMILIES.get(family)
+        if segment:
+            seg_text = f", segment {segment!r}"
+        elif expected and result.get("type") == "nucleotide":
+            seg_text = (
+                f", no segment: all of its segments go into one alignment; add "
+                f"sequence.segment: {expected!r} to {config_path.name} for that "
+                "segment alone"
+            )
+        else:
+            seg_text = ""
+        chosen = [
+            f"{key}={value!r}" for key, value in (
+                ("sequence.type", file_seq.get("type")),
+                ("sequence.region", file_seq.get("region")),
+                ("hmm.enabled", file_hmm.get("enabled")),
+            ) if value is not None
+        ]
+        log.warning(
+            "%s: %s sets %s, so the recommended HMM-identified %s protein "
+            "marker is not used: the file's own settings apply on top of the "
+            "template defaults (sequence type %s, region %s%s). Whole-genome "
+            "nucleotide alignment is saturated at family scale for most of the "
+            "families on this marker. If this is a file from an earlier "
+            "version, delete %s and re-run to regenerate.",
+            family, config_path.name, ", ".join(chosen), marker,
+            result.get("type"), result.get("region"), seg_text,
+            config_path.name,
+        )
+
     expected_segment = SEGMENTED_FAMILIES.get(family)
     if expected_segment:
         file_segment = (file_cfg.get("sequence") or {}).get("segment")
@@ -1676,9 +2284,12 @@ def _merge_with_defaults(cfg: dict, global_cfg: dict, family: str = "") -> dict:
 
 
 def _apply_smart_defaults(family: str, cfg: dict, file_cfg: dict | None = None) -> None:
-    """Apply CONCATENATION_FAMILIES, DNA_FAMILIES, and SEGMENTED_FAMILIES as
-    smart defaults in-place.  Precedence: concat > single-protein DNA
-    overrides; segmentation is orthogonal and always applied when relevant.
+    """Apply CONCATENATION_FAMILIES, DNA_FAMILIES, HMM_MARKER_FAMILIES and
+    SEGMENTED_FAMILIES as smart defaults in-place.  Precedence: concat >
+    single-protein DNA overrides; HMM_MARKER_FAMILIES (disjoint from both)
+    puts a family on its HMM-identified marker (RdRp, RT or Rep) with no
+    segment, unless the family file opts out (`hmm_marker_opt_out`);
+    otherwise segmentation is orthogonal and applied when relevant.
 
     *file_cfg* is the user's family config dict (before it is merged).  When
     provided, "Auto-configured" log messages are suppressed for any value the
@@ -1686,9 +2297,14 @@ def _apply_smart_defaults(family: str, cfg: dict, file_cfg: dict | None = None) 
     default is actually taking effect.
     """
     _file_seq = (file_cfg or {}).get("sequence") or {}
+    # The marker preset applies unless the family file chooses its own
+    # analysis (hmm_marker_opt_out); it then clears the segment, so none is
+    # auto-configured.
+    marker = HMM_MARKER_FAMILIES.get(family)
+    marker_on = marker is not None and not hmm_marker_opt_out(file_cfg, marker)
 
     segment = SEGMENTED_FAMILIES.get(family)
-    if segment and not cfg["sequence"].get("segment"):
+    if segment and not marker_on and not cfg["sequence"].get("segment"):
         cfg["sequence"]["segment"] = segment
         if not _file_seq.get("segment"):
             log.info("Auto-configured segment '%s' for segmented family %s", segment, family)
@@ -1723,6 +2339,17 @@ def _apply_smart_defaults(family: str, cfg: dict, file_cfg: dict | None = None) 
                 log.info("Auto-configured DNA family %s: whole-genome search", family)
             else:
                 log.info("Auto-configured DNA family %s: marker gene '%s'", family, region)
+
+    if marker_on:
+        preset = hmm_marker_preset(family)
+        _deep_update(cfg, preset)
+        if not _file_seq.get("type") and not _file_seq.get("region"):
+            padding = preset["sequence"]["domain_padding"]
+            log.info(
+                "Auto-configured %s: %s protein marker (HMM-identified, %s)",
+                family, marker,
+                f"{marker} domain ± {padding} aa" if padding is not None else "whole protein",
+            )
 
 
 def _generate_default_family_config(family: str, global_cfg: dict) -> dict:

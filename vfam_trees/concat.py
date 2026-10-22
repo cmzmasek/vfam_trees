@@ -19,6 +19,7 @@ from Bio.SeqRecord import SeqRecord
 
 from .logger import get_logger
 from .quality import log_mad_cutoffs
+from .trim import DEFAULT_TRIM_OPTIONS
 from .subsample import (
     absorb_into_refseqs,
     adaptive_cluster_species,
@@ -451,7 +452,7 @@ def align_and_trim_markers(
     msa_options: str = "--auto",
     trim_enabled: bool = True,
     trim_tool: str = "trimal",
-    trim_options: str = "-automated1",
+    trim_options: str = DEFAULT_TRIM_OPTIONS,
     threads: int = 1,
 ) -> dict[str, dict[str, SeqRecord]]:
     """Per-marker MSA + trim, returning aligned records keyed by genome_id.
@@ -493,7 +494,8 @@ def align_and_trim_markers(
             SeqIO.write(records_for_marker, f, "fasta")
 
         aln_fasta = marker_dir / "aln.fasta"
-        run_msa(raw_fasta, aln_fasta, tool=msa_tool, options=msa_options, threads=threads)
+        run_msa(raw_fasta, aln_fasta, tool=msa_tool, options=msa_options,
+                threads=threads, seq_type="protein")
 
         # Count MAFFT output columns for the per-marker progress line.
         aln_cols_pre = next(

@@ -10,6 +10,11 @@ from vfam_trees.config import (
     CONCATENATION_FAMILIES,
     DEFAULT_FAMILY_CONFIG,
     DNA_FAMILIES,
+    RDRP_DOMAIN_PADDING,
+    RDRP_FAMILIES,
+    RDRP_FAMILY_PROFILES,
+    RDRP_HMM_TOKENS,
+    RDRP_PALM,
     SEGMENTED_FAMILIES,
     _apply_smart_defaults,
     _deep_update,
@@ -55,7 +60,7 @@ def test_auto_configured_segment_logged_when_file_is_silent(caplog):
     import logging
     cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
     with caplog.at_level(logging.INFO, logger="vfam_trees.config"):
-        _apply_smart_defaults("Hantaviridae", cfg, file_cfg={})
+        _apply_smart_defaults("Phasmaviridae", cfg, file_cfg={})
     assert any("Auto-configured segment" in r.getMessage() for r in caplog.records)
 
 
@@ -64,8 +69,18 @@ def test_auto_configured_segment_suppressed_when_file_overrides_it(caplog):
     cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
     file_cfg = {"sequence": {"segment": "segment S"}}
     with caplog.at_level(logging.INFO, logger="vfam_trees.config"):
-        _apply_smart_defaults("Hantaviridae", cfg, file_cfg=file_cfg)
+        _apply_smart_defaults("Phasmaviridae", cfg, file_cfg=file_cfg)
     assert not any("Auto-configured segment" in r.getMessage() for r in caplog.records)
+
+
+def test_rdrp_family_logs_no_segment(caplog):
+    # The RdRp preset clears the segment, so none is announced.
+    import logging
+    cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    with caplog.at_level(logging.INFO, logger="vfam_trees.config"):
+        _apply_smart_defaults("Hantaviridae", cfg, file_cfg={})
+    assert not any("Auto-configured segment" in r.getMessage() for r in caplog.records)
+    assert cfg["sequence"]["segment"] is None
 
 
 def test_auto_configured_dna_marker_logged_when_file_is_silent(caplog):
@@ -114,30 +129,183 @@ def test_apply_smart_defaults_dna_family():
     assert cfg["sequence"]["region"] == "hexon"
 
 
-def test_apply_smart_defaults_whole_genome_dna():
+def test_apply_smart_defaults_family_without_preset_keeps_whole_genome():
+    # Kolmioviridae (deltaviruses) is in no preset: template whole genome.
     cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
-    _apply_smart_defaults("Hepadnaviridae", cfg)
+    _apply_smart_defaults("Kolmioviridae", cfg)
     assert cfg["sequence"]["region"] == "whole_genome"
+    assert cfg["sequence"]["type"] == "nucleotide"
 
 
+# Phasmaviridae: segmented, and not on the RdRp preset (its RdRps are too
+# divergent for the Pfam set), so it keeps nucleotide segment-L analysis.
 def test_apply_smart_defaults_segmented():
     cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
     cfg["sequence"]["segment"] = None
-    _apply_smart_defaults("Hantaviridae", cfg)
-    assert cfg["sequence"]["segment"] == SEGMENTED_FAMILIES["Hantaviridae"]
+    _apply_smart_defaults("Phasmaviridae", cfg)
+    assert cfg["sequence"]["segment"] == SEGMENTED_FAMILIES["Phasmaviridae"]
 
 
 def test_apply_smart_defaults_segmented_does_not_overwrite_explicit():
     cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
     cfg["sequence"]["segment"] = "custom_segment"
-    _apply_smart_defaults("Hantaviridae", cfg)
+    _apply_smart_defaults("Phasmaviridae", cfg)
     assert cfg["sequence"]["segment"] == "custom_segment"
 
 
-def test_apply_smart_defaults_rna_family_unchanged():
+def test_apply_smart_defaults_rna_family_off_the_rdrp_preset_unchanged():
+    cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    _apply_smart_defaults("Narnaviridae", cfg)
+    assert cfg["sequence"]["region"] == "whole_genome"
+    assert cfg["hmm"]["enabled"] is False
+
+
+def test_apply_smart_defaults_rdrp_family():
     cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
     _apply_smart_defaults("Flaviviridae", cfg)
-    assert cfg["sequence"]["region"] == "whole_genome"
+    assert cfg["sequence"]["type"] == "protein"
+    assert cfg["sequence"]["region"] == "RdRp"
+    assert cfg["sequence"]["hmms"] == list(RDRP_FAMILY_PROFILES["Flaviviridae"])
+    assert cfg["sequence"]["domain_padding"] == RDRP_DOMAIN_PADDING
+    assert cfg["hmm"]["enabled"] is True and cfg["hmm"]["database"] == "RdRp"
+    assert cfg["hmm"]["best_hit_only"] is True
+
+
+def test_rdrp_preset_clears_the_segment():
+    # Segmented RNA families are on SEGMENTED_FAMILIES for nucleotide mode;
+    # the HMM finds the RdRp on whichever segment carries it.
+    cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+    _apply_smart_defaults("Hantaviridae", cfg)
+    assert "Hantaviridae" in SEGMENTED_FAMILIES
+    assert cfg["sequence"]["segment"] is None
+    assert cfg["sequence"]["region"] == "RdRp"
+
+
+class TestRdrpOptOut:
+    """A family file that chooses its own analysis gets no RdRp preset at
+    all — never a mix of nucleotide type with the preset's HMM protein fetch."""
+
+    def test_type_nucleotide_alone_restores_nucleotide_with_segment(self):
+        # e.g. the repo's pre-v1.3 configs/Hantaviridae.yaml: no hmm block.
+        merged = _merge_with_defaults(
+            {"sequence": {"type": "nucleotide"}}, MINIMAL_GLOBAL, "Hantaviridae")
+        assert merged["sequence"]["type"] == "nucleotide"
+        assert merged["sequence"]["region"] == "whole_genome"
+        assert merged["sequence"]["segment"] == SEGMENTED_FAMILIES["Hantaviridae"]
+        assert merged["hmm"]["enabled"] is False
+        assert not merged["sequence"].get("hmms")
+
+    def test_hmm_disabled_alone_opts_out(self):
+        merged = _merge_with_defaults({"hmm": {"enabled": False}}, MINIMAL_GLOBAL, "Filoviridae")
+        assert merged["sequence"]["type"] == "nucleotide"
+        assert merged["sequence"]["region"] == "whole_genome"
+        assert merged["hmm"]["enabled"] is False
+
+    def test_v150_snapshot_runs_as_before(self):
+        snapshot = {"sequence": {"type": "nucleotide", "region": "whole_genome",
+                                 "segment": "segment L"},
+                    "hmm": {"enabled": False, "database": None}}
+        merged = _merge_with_defaults(snapshot, MINIMAL_GLOBAL, "Hantaviridae")
+        assert merged["sequence"]["segment"] == "segment L"
+        assert merged["hmm"]["enabled"] is False
+
+    def test_v160_file_keeps_the_preset(self):
+        file_cfg = {"sequence": {"type": "protein", "region": "RdRp"},
+                    "hmm": {"enabled": True}}
+        merged = _merge_with_defaults(file_cfg, MINIMAL_GLOBAL, "Hantaviridae")
+        assert merged["hmm"]["database"] == "RdRp"
+        assert merged["sequence"]["segment"] is None
+
+    def test_unrelated_overrides_keep_the_preset(self):
+        merged = _merge_with_defaults({"download": {"max_per_species": 50}},
+                                      MINIMAL_GLOBAL, "Togaviridae")
+        assert merged["sequence"]["type"] == "protein"
+        assert merged["hmm"]["enabled"] is True
+
+    def test_warning_names_what_runs(self, caplog, tmp_path):
+        import logging
+        path = tmp_path / "Hantaviridae.yaml"
+        with caplog.at_level(logging.WARNING):
+            _warn_smart_default_conflicts(
+                "Hantaviridae", {"sequence": {"type": "nucleotide"}}, path)
+        assert "sequence type nucleotide, region whole_genome" in caplog.text
+        assert repr(SEGMENTED_FAMILIES["Hantaviridae"]) in caplog.text
+        assert "keeps whole-sequence" not in caplog.text
+
+    def test_no_warning_for_a_preset_file(self, caplog, tmp_path):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            _warn_smart_default_conflicts(
+                "Hantaviridae", {"sequence": {"type": "protein", "region": "RdRp"}},
+                tmp_path / "Hantaviridae.yaml")
+        assert caplog.text == ""
+
+
+class TestRdrpPresetExtras:
+    def test_sibling_domains_count_for_best_hit(self):
+        cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+        _apply_smart_defaults("Nairoviridae", cfg)
+        assert cfg["sequence"]["hmms"] == ["Bunya_RdRp"]
+        assert cfg["hmm"]["best_hit_also"] == ["L_PA-C-like", "L_thumb_ring_vir"]
+
+    def test_no_siblings_listed_twice(self):
+        cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+        _apply_smart_defaults("Flaviviridae", cfg)   # has both NS5 profiles already
+        assert cfg["hmm"]["best_hit_also"] == []
+
+    def test_min_protein_length(self):
+        cfg = copy.deepcopy(DEFAULT_FAMILY_CONFIG)
+        _apply_smart_defaults("Togaviridae", cfg)
+        assert cfg["hmm"]["min_protein_length"] == 100
+        assert DEFAULT_FAMILY_CONFIG["hmm"]["min_protein_length"] is None
+
+    def test_template_documents_domain_padding(self):
+        assert "domain_padding" in DEFAULT_FAMILY_CONFIG["sequence"]
+        assert DEFAULT_FAMILY_CONFIG["sequence"]["domain_padding"] is None
+
+    def test_new_hmm_keys_validated(self):
+        for bad in ({"best_hit_also": "L_PA-C-like"}, {"best_hit_also": [""]},
+                    {"min_protein_length": 0}, {"min_protein_length": True}):
+            cfg = {"hmm": {"enabled": False, **bad}}
+            with pytest.raises(ValueError):
+                _validate_hmm_block(cfg, "X")
+        cfg = {"hmm": {"enabled": False, "best_hit_also": [" L_PA-C-like "],
+                       "min_protein_length": 150}}
+        _validate_hmm_block(cfg, "X")
+        assert cfg["hmm"]["best_hit_also"] == ["L_PA-C-like"]
+        assert cfg["hmm"]["min_protein_length"] == 150
+
+
+class TestInjectionTypeChecks:
+    def test_external_sources_refused_for_protein_family(self):
+        cfg = _merge_with_defaults(
+            {"additional_data_sources": [{"source": "pathoplexus", "organism": "ebola-zaire"}]},
+            MINIMAL_GLOBAL, "Filoviridae")
+        with pytest.raises(ValueError, match="analysed as protein.*RdRp marker preset"):
+            _validate_additional_data_sources(cfg, "Filoviridae")
+
+    def test_external_sources_fine_for_nucleotide_opt_out(self):
+        cfg = _merge_with_defaults(
+            {"sequence": {"type": "nucleotide"}, "hmm": {"enabled": False},
+             "additional_data_sources": [{"source": "pathoplexus", "organism": "ebola-zaire"}]},
+            MINIMAL_GLOBAL, "Filoviridae")
+        _validate_additional_data_sources(cfg, "Filoviridae")
+        assert cfg["additional_data_sources"][0]["organism"] == "ebola-zaire"
+
+    def test_pasted_nucleotide_refused_for_protein_family(self):
+        cfg = _merge_with_defaults(
+            {"manual": {"include_seq": [{"id": "x1", "organism": "Ebola virus",
+                                         "sequence": "ACGT" * 100}]}},
+            MINIMAL_GLOBAL, "Filoviridae")
+        with pytest.raises(ValueError, match=r"include_seq\[0\].*nucleotide"):
+            _validate_manual_block(cfg, "Filoviridae")
+
+    def test_pasted_protein_fine_for_protein_family(self):
+        cfg = _merge_with_defaults(
+            {"manual": {"include_seq": [{"id": "x1", "organism": "Ebola virus",
+                                         "sequence": "MSLEKTFQRIVDGAPWYCHN" * 10}]}},
+            MINIMAL_GLOBAL, "Filoviridae")
+        _validate_manual_block(cfg, "Filoviridae")
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +377,20 @@ def test_load_existing_config_applies_dna_override(tmp_path):
     (cfg_dir / "Adenoviridae.yaml").write_text(
         yaml.dump({"sequence": {"type": "nucleotide", "region": "whole_genome", "segment": None}})
     )
+    # The preset turns on HMM (hexon); with the file's nucleotide type that
+    # would fetch hexon proteins and reject them all in nucleotide QC, so
+    # loading stops and says how to switch the family to nucleotide.
+    with pytest.raises(ValueError, match="hmm.enabled: false"):
+        load_family_config("Adenoviridae", cfg_dir, MINIMAL_GLOBAL)
+    (cfg_dir / "Adenoviridae.yaml").write_text(yaml.dump({
+        "sequence": {"type": "nucleotide", "region": "whole_genome", "segment": None},
+        "hmm": {"enabled": False},
+    }))
     cfg, auto = load_family_config("Adenoviridae", cfg_dir, MINIMAL_GLOBAL)
     assert auto is False
     # Smart default (hexon) sits between DEFAULT and user file in priority;
     # user file explicitly said whole_genome, so whole_genome wins — but a
     # warning should have been issued (tested separately).
-    # The important thing: the function does not crash.
     assert cfg["sequence"]["type"] == "nucleotide"
 
 
@@ -231,9 +407,9 @@ def test_load_missing_config_auto_generates_with_dna_region(tmp_path):
 def test_load_missing_config_auto_generates_segment(tmp_path):
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    cfg, auto = load_family_config("Hantaviridae", cfg_dir, MINIMAL_GLOBAL)
+    cfg, auto = load_family_config("Phasmaviridae", cfg_dir, MINIMAL_GLOBAL)
     assert auto is True
-    assert cfg["sequence"]["segment"] == SEGMENTED_FAMILIES["Hantaviridae"]
+    assert cfg["sequence"]["segment"] == SEGMENTED_FAMILIES["Phasmaviridae"]
 
 
 # ---------------------------------------------------------------------------
@@ -1601,8 +1777,9 @@ class TestHmmPresets:
         assert all(t for t in toks)  # every marker is HMM-gated
 
     def test_non_hmm_family_defaults_off(self):
-        cfg = _generate_default_family_config("Circoviridae", make_minimal_global_cfg())
-        _validate_hmm_block(cfg, "Circoviridae")
+        # Smacoviridae: name-based Rep (DNA_FAMILIES), no HMM.
+        cfg = _generate_default_family_config("Smacoviridae", make_minimal_global_cfg())
+        _validate_hmm_block(cfg, "Smacoviridae")
         assert cfg["hmm"]["enabled"] is False
         assert cfg["hmm"]["database"] is None
 
@@ -1612,11 +1789,13 @@ class TestHmmPresets:
 # ---------------------------------------------------------------------------
 
 class TestInferenceDefaults:
-    def test_tree_500_is_iqtree_fast(self):
+    def test_tree_500_is_iqtree_fast_nuc_capped_search_aa(self):
+        # --fast for nucleotide; a 50-iteration search for protein, where
+        # --fast lands in a different local optimum on every seed.
         t5 = DEFAULT_FAMILY_CONFIG["tree_500"]
         assert t5["tool"] == "iqtree"
         assert t5["options_nuc"].split() == ["--fast"]
-        assert t5["options_aa"].split() == ["--fast"]
+        assert t5["options_aa"].split() == ["-n", "50"]
 
     def test_tree_100_full_search_with_both_supports(self):
         t1 = DEFAULT_FAMILY_CONFIG["tree_100"]
@@ -1648,7 +1827,7 @@ class TestInferenceDefaults:
 # ---------------------------------------------------------------------------
 
 class TestValidateTreeBlocks:
-    def _cfg(self, override, family="Xinmoviridae"):
+    def _cfg(self, override, family="Testviridae"):
         return _merge_with_defaults(copy.deepcopy(override), make_minimal_global_cfg(), family)
 
     def test_defaults_pass(self):
@@ -1659,32 +1838,32 @@ class TestValidateTreeBlocks:
         # The template's options_nuc ("--fast") wins over anything else, so
         # switching only the tool used to crash FastTree per family.
         with pytest.raises(ValueError, match=r"tree_500.*--fast.*FastTree rejects"):
-            _validate_tree_blocks(self._cfg({"tree_500": {"tool": "fasttree"}}), "Xinmoviridae")
+            _validate_tree_blocks(self._cfg({"tree_500": {"tool": "fasttree"}}), "Testviridae")
 
     def test_old_style_fasttree_block_rejected(self):
         cfg = self._cfg({"tree_500": {"tool": "fasttree", "options": ""}})
         with pytest.raises(ValueError, match="options_nuc"):
-            _validate_tree_blocks(cfg, "Xinmoviridae")
+            _validate_tree_blocks(cfg, "Testviridae")
 
     def test_fasttree_with_cleared_options_passes(self):
         cfg = self._cfg({"tree_500": {"tool": "fasttree", "options_nuc": "", "options_aa": ""}})
-        _validate_tree_blocks(cfg, "Xinmoviridae")
+        _validate_tree_blocks(cfg, "Testviridae")
 
     def test_fasttree_own_options_pass(self):
         cfg = self._cfg({"tree_500": {"tool": "fasttree",
                                       "options_nuc": "-spr 4 -mlacc 2 -slownni",
                                       "options_aa": ""}})
-        _validate_tree_blocks(cfg, "Xinmoviridae")
+        _validate_tree_blocks(cfg, "Testviridae")
 
     def test_iqtree_with_fasttree_options_rejected(self):
         cfg = self._cfg({"tree_100": {"options_nuc": "-gtr -gamma"}})
         with pytest.raises(ValueError, match=r"tree_100.*-gtr -gamma.*IQ-TREE rejects"):
-            _validate_tree_blocks(cfg, "Xinmoviridae")
+            _validate_tree_blocks(cfg, "Testviridae")
 
     def test_only_the_options_key_in_use_is_checked(self):
-        # Nucleotide family: options_aa is never used, so it is not checked.
+        # Nucleotide family (no preset): options_aa is never used, so it is not checked.
         cfg = self._cfg({"tree_500": {"tool": "fasttree", "options_nuc": ""}})
-        _validate_tree_blocks(cfg, "Xinmoviridae")
+        _validate_tree_blocks(cfg, "Testviridae")
         # Protein family: options_aa is the one in use.
         with pytest.raises(ValueError, match="options_aa"):
             _validate_tree_blocks(
@@ -1694,9 +1873,353 @@ class TestValidateTreeBlocks:
 
     def test_unknown_tool_rejected(self):
         with pytest.raises(ValueError, match="must be 'iqtree' or 'fasttree'"):
-            _validate_tree_blocks(self._cfg({"tree_100": {"tool": "raxml"}}), "Xinmoviridae")
+            _validate_tree_blocks(self._cfg({"tree_100": {"tool": "raxml"}}), "Testviridae")
 
     def test_load_family_config_runs_the_check(self, tmp_path):
         (tmp_path / "Xinmoviridae.yaml").write_text("tree_500:\n  tool: fasttree\n")
         with pytest.raises(ValueError, match="FastTree rejects"):
             load_family_config("Xinmoviridae", tmp_path, make_minimal_global_cfg())
+
+    def test_fasttree_with_iqtree_iteration_count_rejected(self):
+        # FastTree's -n is the number of alignments in the input, not iterations.
+        cfg = self._cfg({"tree_500": {"tool": "fasttree", "options_nuc": ""}}, "Circoviridae")
+        with pytest.raises(ValueError, match=r"tree_500\.options_aa.*-n.*FastTree rejects or reads differently"):
+            _validate_tree_blocks(cfg, "Circoviridae")
+
+    def test_quick_check_defaults_on(self):
+        cfg = self._cfg({})
+        assert cfg["outlier_removal"]["quick_check"] is True
+        _validate_tree_blocks(self._cfg({"outlier_removal": {"quick_check": False}}), "Testviridae")
+
+    @pytest.mark.parametrize("bad", ["yes", 1, None])
+    def test_quick_check_must_be_boolean(self, bad):
+        cfg = self._cfg({"outlier_removal": {"quick_check": bad}})
+        with pytest.raises(ValueError, match="outlier_removal.quick_check must be true or false"):
+            _validate_tree_blocks(cfg, "Testviridae")
+
+
+# ---------------------------------------------------------------------------
+# RDRP_FAMILIES — RNA-virus families on the HMM-identified RdRp marker
+# ---------------------------------------------------------------------------
+
+class TestRdrpPreset:
+    def test_disjoint_from_other_presets(self):
+        assert not RDRP_FAMILIES & set(DNA_FAMILIES)
+        assert not RDRP_FAMILIES & set(CONCATENATION_FAMILIES)
+
+    def test_tokens_are_the_bundled_profiles(self, tmp_path):
+        from vfam_trees.hmm.database import parse_ga_cutoffs, resolve_database_path
+        db = resolve_database_path("RdRp", cache_dir=tmp_path)
+        names = set(parse_ga_cutoffs(db))
+        assert set(RDRP_HMM_TOKENS) == names
+        assert len(names) == 23
+
+    def test_every_rdrp_family_config_validates(self):
+        for fam in sorted(RDRP_FAMILIES):
+            cfg = _merge_with_defaults({}, make_minimal_global_cfg(), fam)
+            _validate_hmm_block(cfg, fam)
+            _validate_tree_blocks(cfg, fam)
+            assert cfg["sequence"]["type"] == "protein", fam
+            assert cfg["hmm"]["use_ga_when_available"] is False
+            assert cfg["hmm"]["default_evalue"] == pytest.approx(1e-3)
+            assert cfg["hmm"]["relative_length_cutoff"] == pytest.approx(0.2)
+            assert cfg["hmm"]["best_hit_only"] is True
+            from vfam_trees.config import RDRP_NON_CORE_DOMAINS
+            tokens = [p for p in RDRP_FAMILY_PROFILES[fam] if p not in RDRP_NON_CORE_DOMAINS]
+            assert tokens, fam  # every family keeps a core RdRp profile
+            assert cfg["sequence"]["hmms"] == tokens, fam
+            # The non-core L domains still count as the family's own for best_hit_only.
+            assert set(RDRP_FAMILY_PROFILES[fam]) - set(tokens) <= set(cfg["hmm"]["best_hit_also"])
+
+    def test_non_core_l_domains_never_select(self):
+        """L_PA-C-like / L_thumb_ring_vir select and crop nothing: a partial L
+        covering only such a domain would enter the alignment cut to it."""
+        from vfam_trees.config import RDRP_NON_CORE_DOMAINS, rdrp_preset
+        assert RDRP_NON_CORE_DOMAINS == {"L_PA-C-like", "L_thumb_ring_vir"}
+        for fam, tokens in (("Peribunyaviridae", ["Bunya_RdRp", "Mononeg_RNA_pol"]),
+                            ("Phenuiviridae", ["Bunya_RdRp", "Flu_PB1"]),
+                            ("Cruliviridae", ["Bunya_RdRp"])):
+            preset = rdrp_preset(fam)
+            assert preset["sequence"]["hmms"] == tokens, fam
+            assert preset["hmm"]["best_hit_also"] == ["L_PA-C-like", "L_thumb_ring_vir"], fam
+
+    def test_family_profiles_are_bundled_profiles(self):
+        assert set(RDRP_FAMILY_PROFILES) == RDRP_FAMILIES
+        used = set()
+        for fam, profiles in RDRP_FAMILY_PROFILES.items():
+            assert profiles, fam
+            assert len(set(profiles)) == len(profiles), fam
+            assert set(profiles) <= set(RDRP_HMM_TOKENS), fam
+            used.update(profiles)
+        # Every bundled profile serves some family, so a foreign RdRp is
+        # recognised by its best hit whatever family it was filed under.
+        assert used == set(RDRP_HMM_TOKENS)
+
+    def test_palm_profiles_come_as_a_group(self):
+        for fam, profiles in RDRP_FAMILY_PROFILES.items():
+            palm = set(profiles) & set(RDRP_PALM)
+            assert palm in (set(), set(RDRP_PALM)), fam
+
+    def test_foreign_kinds_excluded(self):
+        # The misfiled orbivirus / bunyavirus records seen under Alphavirus.
+        assert "Orbi_VP1" not in RDRP_FAMILY_PROFILES["Togaviridae"]
+        assert "Bunya_RdRp" not in RDRP_FAMILY_PROFILES["Togaviridae"]
+        assert RDRP_FAMILY_PROFILES["Rhabdoviridae"] == ("Mononeg_RNA_pol",)
+
+    def test_best_hit_only_off_by_default_and_validated(self):
+        cfg = _merge_with_defaults({}, make_minimal_global_cfg(), "Testviridae")
+        _validate_hmm_block(cfg, "Testviridae")
+        assert cfg["hmm"]["best_hit_only"] is False
+        cfg["hmm"]["best_hit_only"] = "yes"
+        with pytest.raises(ValueError, match="best_hit_only"):
+            _validate_hmm_block(cfg, "Testviridae")
+
+    def test_user_file_wins_and_is_warned_about(self, tmp_path, caplog):
+        import logging
+        (tmp_path / "Hantaviridae.yaml").write_text(
+            "sequence:\n  type: nucleotide\n  region: whole_genome\n  segment: segment L\n"
+            "hmm:\n  enabled: false\n"
+        )
+        with caplog.at_level(logging.WARNING):
+            cfg, auto = load_family_config("Hantaviridae", tmp_path, make_minimal_global_cfg())
+        assert auto is False
+        assert cfg["sequence"]["type"] == "nucleotide" and cfg["hmm"]["enabled"] is False
+        assert cfg["sequence"]["segment"] == "segment L"
+        assert any("RdRp" in r.getMessage() for r in caplog.records)
+
+    def test_domain_padding_validated(self):
+        cfg = _merge_with_defaults({}, make_minimal_global_cfg(), "Flaviviridae")
+        cfg["sequence"]["domain_padding"] = -5
+        with pytest.raises(ValueError, match="domain_padding"):
+            _validate_hmm_block(cfg, "Flaviviridae")
+        cfg["sequence"]["domain_padding"] = None
+        _validate_hmm_block(cfg, "Flaviviridae")
+
+
+class TestUnknownKeys:
+    def test_nested(self):
+        from vfam_trees.config import unknown_config_keys, DEFAULT_FAMILY_CONFIG
+        cfg = {"length_outlier": {"k": 5.0, "hi_mult": 3.0}, "tree_100": {"tool": "iqtree"},
+               "bogus": 1, "_family": "X",
+               "concatenation": {"proteins": [{"name": "A", "anything": 1}]}}
+        assert unknown_config_keys(cfg, DEFAULT_FAMILY_CONFIG) == [
+            "length_outlier.hi_mult", "bogus"]
+
+    def test_family_file_nested_key_warns_and_is_kept(self, tmp_path, caplog):
+        import logging
+        (tmp_path / "Geminiviridae.yaml").write_text(
+            "length_outlier:\n  hi_mult: 3.0\n  lo_mult: 0.333\n")
+        with caplog.at_level(logging.WARNING):
+            cfg, _ = load_family_config("Geminiviridae", tmp_path, make_minimal_global_cfg())
+        assert cfg["_unknown_keys"] == ["length_outlier.hi_mult", "length_outlier.lo_mult"]
+        assert "length_outlier.hi_mult, length_outlier.lo_mult" in caplog.text
+        assert cfg["length_outlier"]["k"] == 5.0  # the real settings still apply
+
+    def test_generated_files_of_every_preset_family_load_cleanly(self, tmp_path, caplog):
+        """Presets may only set keys the template knows (sequence.hmms was
+        missing), or every generated family file would warn on reload."""
+        import logging
+        from vfam_trees import config as c
+        fams = (set(c.DNA_FAMILIES) | set(c.CONCATENATION_FAMILIES)
+                | set(c.SEGMENTED_FAMILIES) | set(c.HMM_MARKER_FAMILIES))
+        g = make_minimal_global_cfg()
+        for fam in sorted(fams):
+            load_family_config(fam, tmp_path, g)  # generates the file
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            for fam in sorted(fams):
+                cfg, auto = load_family_config(fam, tmp_path, g)
+                assert not auto and cfg["_unknown_keys"] == [], fam
+        assert "Unknown config key" not in caplog.text
+
+    def test_global_retired_keys_explained(self, tmp_path, caplog):
+        import logging
+        from vfam_trees.config import load_global_config
+        p = tmp_path / "global.yaml"
+        p.write_text('ncbi:\n  email: "a@b.org"\noutput_dir: results\nlog_level: INFO\n'
+                     "icon:\n  colour: red\ndefaults:\n  quality:\n    min_len: 5\n")
+        with caplog.at_level(logging.WARNING):
+            cfg = load_global_config(p)
+        assert cfg["_unknown_keys"] == [
+            "output_dir", "log_level", "icon.colour", "defaults.quality.min_len"]
+        assert "output_dir (not read: the output folder is set with `vfam_trees run -o`)" in caplog.text
+        assert "log_level (not read: the log level is set with" in caplog.text
+
+    def test_clean_global_has_no_unknown_keys(self, tmp_path, caplog):
+        import logging
+        from vfam_trees.config import load_global_config
+        p = tmp_path / "global.yaml"
+        p.write_text('ncbi:\n  email: "a@b.org"\n  api_key: ""\nannotation_tsv: null\n'
+                     "cache:\n  dir: ~/.vfam_cache\n  ttl_days: 90\n")
+        with caplog.at_level(logging.WARNING):
+            assert load_global_config(p)["_unknown_keys"] == []
+        assert "Unknown config key" not in caplog.text
+
+
+class TestGlobalSettings:
+    def test_fills_missing_keys(self):
+        from vfam_trees.config import global_settings
+        assert global_settings({}, "icon") == {
+            "size": 256, "bg_color": "#EAF3F2", "branch_color": "#000000"}
+        assert global_settings({"icon": {"size": 64}}, "icon")["size"] == 64
+        assert global_settings({"cache": None}, "cache") == {"dir": None, "ttl_days": None}
+
+    def test_effective_global_config(self):
+        from vfam_trees.config import effective_global_config, DEFAULT_FAMILY_CONFIG
+        g = {"ncbi": {"email": "a@b.org", "api_key": "K"}, "_unknown_keys": [],
+             "defaults": {"targets": {"max_500": 300}, "length_outlier": {"hi_mult": 3.0}}}
+        eff = effective_global_config(g)
+        assert eff["ncbi"] == {"email": "a@b.org", "api_key": "<set, not recorded>"}
+        assert eff["visualization"] == {"branch_linewidth": 0.5}
+        assert eff["defaults"]["targets"] == {"max_500": 300, "max_100": 100}
+        assert eff["defaults"]["length_outlier"]["hi_mult"] == 3.0  # kept as given
+        assert eff["defaults"]["hmm"] == DEFAULT_FAMILY_CONFIG["hmm"]
+        assert "_unknown_keys" not in eff
+        assert g["ncbi"]["api_key"] == "K"  # caller's dict untouched
+        assert effective_global_config({"ncbi": {"api_key": ""}})["ncbi"]["api_key"] == ""
+
+
+class TestHmmSequenceMode:
+    """Code review 2026-10-21: partly edited RdRp files must not run as a mix
+    of nucleotide settings and the HMM protein fetch."""
+
+    def _generated(self, tmp_path, fam):
+        load_family_config(fam, tmp_path, make_minimal_global_cfg())
+        return yaml.safe_load((tmp_path / f"{fam}.yaml").read_text())
+
+    def test_only_type_nucleotide_is_refused_with_instructions(self, tmp_path):
+        cfg = self._generated(tmp_path, "Filoviridae")
+        cfg["sequence"]["type"] = "nucleotide"
+        (tmp_path / "Filoviridae.yaml").write_text(yaml.safe_dump(cfg))
+        with pytest.raises(ValueError) as exc:
+            load_family_config("Filoviridae", tmp_path, make_minimal_global_cfg())
+        msg = str(exc.value)
+        assert "sequence.region: whole_genome, hmm.enabled: false" in msg
+        assert "Filoviridae.yaml" in msg
+
+    def test_segmented_family_instructions_name_the_segment(self, tmp_path):
+        (tmp_path / "Hantaviridae.yaml").write_text(
+            "sequence:\n  type: nucleotide\nhmm:\n  enabled: true\n")
+        with pytest.raises(ValueError, match="sequence.segment: 'segment L'"):
+            load_family_config("Hantaviridae", tmp_path, make_minimal_global_cfg())
+
+    def test_segment_with_hmm_marker_is_refused(self, tmp_path):
+        (tmp_path / "Hantaviridae.yaml").write_text("sequence:\n  segment: segment M\n")
+        with pytest.raises(ValueError, match="Protein titles name no segment"):
+            load_family_config("Hantaviridae", tmp_path, make_minimal_global_cfg())
+
+    def test_full_opt_out_warning_states_the_real_segment(self, tmp_path, caplog):
+        import logging
+        cfg = self._generated(tmp_path, "Hantaviridae")
+        cfg["sequence"].update(type="nucleotide", region="whole_genome")
+        cfg["hmm"]["enabled"] = False
+        (tmp_path / "Hantaviridae.yaml").write_text(yaml.safe_dump(cfg))
+        with caplog.at_level(logging.WARNING):
+            merged, _ = load_family_config("Hantaviridae", tmp_path, make_minimal_global_cfg())
+        assert merged["sequence"]["segment"] is None       # the file's null wins
+        assert "no segment: all of its segments go into one alignment" in caplog.text
+        assert "add sequence.segment: 'segment L'" in caplog.text
+        assert "segment 'segment L'" not in caplog.text.replace("sequence.segment: 'segment L'", "")
+
+    def test_full_opt_out_with_segment(self, tmp_path, caplog):
+        import logging
+        (tmp_path / "Hantaviridae.yaml").write_text(
+            "sequence:\n  type: nucleotide\n  region: whole_genome\n  segment: segment L\n"
+            "hmm:\n  enabled: false\n")
+        with caplog.at_level(logging.WARNING):
+            merged, _ = load_family_config("Hantaviridae", tmp_path, make_minimal_global_cfg())
+        assert merged["sequence"]["segment"] == "segment L"
+        assert "region whole_genome, segment 'segment L')" in caplog.text
+
+    def test_generated_configs_never_trip_the_check(self, tmp_path):
+        from vfam_trees import config as c
+        fams = (set(c.DNA_FAMILIES) | set(c.CONCATENATION_FAMILIES)
+                | set(c.SEGMENTED_FAMILIES) | set(c.HMM_MARKER_FAMILIES))
+        for fam in sorted(fams):
+            c._validate_sequence_mode(
+                c._generate_default_family_config(fam, make_minimal_global_cfg()), fam)
+
+    def test_preview_writes_nothing(self, tmp_path):
+        from vfam_trees.config import preview_family_config
+        cfg = preview_family_config("Togaviridae", tmp_path, make_minimal_global_cfg())
+        assert cfg["hmm"]["enabled"] is True
+        assert not list(tmp_path.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# RT and Rep markers (v1.6.0): reverse-transcribing and CRESS-DNA families
+# ---------------------------------------------------------------------------
+
+def _bundled_names(marker):
+    from vfam_trees.hmm import BUNDLED_HMMS_DIR
+    names = set()
+    for f in (BUNDLED_HMMS_DIR / marker).glob("*.hmm"):
+        names |= {l.split()[1] for l in f.read_text().splitlines() if l.startswith("NAME")}
+    return names
+
+
+class TestRtRepMarkers:
+    def test_bundled_sets_match_the_token_lists(self):
+        from vfam_trees.config import RT_HMM_TOKENS, REP_HMM_TOKENS
+        assert _bundled_names("RT") == set(RT_HMM_TOKENS)
+        assert _bundled_names("Rep") == set(REP_HMM_TOKENS)
+
+    def test_marker_families_are_disjoint_from_other_presets(self):
+        from vfam_trees.config import (
+            HMM_MARKER_FAMILIES, RT_FAMILY_PROFILES, REP_FAMILIES)
+        assert not set(HMM_MARKER_FAMILIES) & set(DNA_FAMILIES)
+        assert not set(HMM_MARKER_FAMILIES) & set(CONCATENATION_FAMILIES)
+        assert not RDRP_FAMILIES & set(RT_FAMILY_PROFILES)
+        assert not RDRP_FAMILIES & REP_FAMILIES
+        assert not set(RT_FAMILY_PROFILES) & REP_FAMILIES
+        assert len(HMM_MARKER_FAMILIES) == len(RDRP_FAMILIES) + 4 + 23
+
+    def test_rt_preset(self):
+        cfg = _merge_with_defaults({}, make_minimal_global_cfg(), "Retroviridae")
+        seq = cfg["sequence"]
+        assert (seq["type"], seq["region"], seq["segment"]) == ("protein", "RT", None)
+        assert seq["hmms"] == ["RVT_1"] and seq["domain_padding"] == 100
+        assert cfg["hmm"]["database"] == "RT" and cfg["hmm"]["enabled"] is True
+        assert cfg["hmm"]["best_hit_only"] is True
+        assert cfg["hmm"]["best_hit_also"] == ["RVT_thumb", "RVT_connect"]
+        assert cfg["hmm"]["use_ga_when_available"] is False
+
+    def test_rep_preset_keeps_whole_proteins(self):
+        for fam in ("Geminiviridae", "Circoviridae", "Alphasatellitidae"):
+            cfg = _merge_with_defaults({}, make_minimal_global_cfg(), fam)
+            assert cfg["sequence"]["type"] == "protein" and cfg["sequence"]["region"] == "Rep", fam
+            assert cfg["sequence"]["hmms"] == ["Viral_Rep", "RNA_helicase", "Gemini_AL1", "Gemini_AL1_M"]
+            assert cfg["sequence"]["domain_padding"] is None
+            assert cfg["hmm"]["database"] == "Rep" and cfg["hmm"]["best_hit_only"] is False
+
+    def test_moved_from_dna_presets(self):
+        # Circoviridae was a name-based Rep, Hepadnaviridae whole genome.
+        assert _merge_with_defaults({}, MINIMAL_GLOBAL, "Hepadnaviridae")["sequence"]["region"] == "RT"
+        assert _merge_with_defaults({}, MINIMAL_GLOBAL, "Circoviridae")["hmm"]["enabled"] is True
+        smaco = _merge_with_defaults({}, MINIMAL_GLOBAL, "Smacoviridae")
+        assert smaco["sequence"]["region"] == "Rep" and smaco["hmm"]["enabled"] is False
+
+    def test_every_marker_family_config_validates(self):
+        from vfam_trees.config import HMM_MARKER_FAMILIES, _validate_sequence_mode
+        for fam, marker in sorted(HMM_MARKER_FAMILIES.items()):
+            cfg = _merge_with_defaults({}, make_minimal_global_cfg(), fam)
+            _validate_hmm_block(cfg, fam)
+            _validate_sequence_mode(cfg, fam)
+            assert cfg["sequence"]["region"] == marker == cfg["hmm"]["database"], fam
+            used = set(cfg["sequence"]["hmms"]) | set(cfg["hmm"]["best_hit_also"])
+            assert used <= _bundled_names(marker), fam
+
+    def test_opt_out(self):
+        from vfam_trees.config import hmm_marker_opt_out
+        assert hmm_marker_opt_out({"sequence": {"region": "RdRp"}}, "RT")
+        assert not hmm_marker_opt_out({"sequence": {"region": "RT"}}, "RT")
+        cfg = _merge_with_defaults(
+            {"sequence": {"type": "nucleotide", "region": "whole_genome"}, "hmm": {"enabled": False}},
+            MINIMAL_GLOBAL, "Geminiviridae")
+        assert cfg["sequence"]["type"] == "nucleotide" and cfg["sequence"]["hmms"] == []
+
+    def test_bundled_databases_resolve(self, tmp_path):
+        from vfam_trees.hmm import resolve_database_path, parse_ga_cutoffs
+        for marker, n in (("RT", 4), ("Rep", 4)):
+            db = resolve_database_path(marker, cache_dir=tmp_path)
+            assert len(parse_ga_cutoffs(db)) == n

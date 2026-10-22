@@ -261,3 +261,39 @@ def test_ensure_pressed_invokes_hmmpress_when_missing(tmp_path):
     p = _write_mini_hmm(tmp_path / "mini.hmm")
     with pytest.raises(HMMDatabaseError, match="hmmpress failed"):
         ensure_pressed(p)
+
+
+@pytest.mark.skipif(shutil.which("hmmpress") is None or shutil.which("hmmscan") is None,
+                    reason="HMMER not on PATH")
+def test_parallel_build_and_press_of_a_shared_database(tmp_path):
+    """Families running in parallel share one combined database; building,
+    pressing and scanning it from several workers at once must work, and
+    leave one complete, pressed file and no partial files.  (Without the
+    lock, hmmscan failed in every such trial: indexes rewritten mid-scan.)"""
+    import concurrent.futures
+    import subprocess
+
+    src = tmp_path / "RdRpLike"
+    src.mkdir()
+    bundled = Path(__file__).resolve().parent.parent / "vfam_trees" / "data" / "hmms" / "RdRp"
+    for name in ("RdRP_1.hmm", "RdRP_2.hmm", "Bunya_RdRp.hmm"):
+        shutil.copy(bundled / name, src / name)
+    cache = tmp_path / "cache"
+
+    def worker(_):
+        db = resolve_database_path(str(src), cache_dir=cache)
+        ensure_pressed(db)
+        scan = subprocess.run(
+            ["hmmscan", "--cpu", "1", "-o", "/dev/null", str(db), "-"],
+            input=">q\nMKLAVGDDGLTGSKLLWEEAAKRLG\n", capture_output=True, text=True,
+        )
+        assert scan.returncode == 0, scan.stderr
+        return db
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        dbs = list(pool.map(worker, range(16)))
+    assert len(set(dbs)) == 1
+    db = dbs[0]
+    assert has_press_index(db) and not is_press_index_stale(db)
+    assert profile_count(db) == 3
+    assert not list(db.parent.glob("*.partial"))

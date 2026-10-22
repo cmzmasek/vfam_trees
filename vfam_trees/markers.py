@@ -14,7 +14,9 @@ CONCAT_DESIGN.md §3.1 for the schema.  An HMM-gated spec additionally carries
 """
 from __future__ import annotations
 
+import hashlib
 import re
+from pathlib import Path
 from typing import Protocol
 
 from Bio.SeqRecord import SeqRecord
@@ -24,6 +26,7 @@ from .hmm import (
     get_ga_cutoffs,
     parse_hmm_token,
     passes_cutoffs,
+    resolve_database_path,
     scan_proteins,
 )
 from .logger import get_logger
@@ -99,7 +102,8 @@ class NameMatchIdentifier:
 
 
 def annotate_hmm_hits(
-    records: list[SeqRecord], cfg: dict, *, force: bool = False
+    records: list[SeqRecord], cfg: dict, *, force: bool = False,
+    ga_cutoffs: dict | None = None,
 ) -> None:
     """Batch-scan protein ``records`` against the configured HMM DB once and
     cache passing-annotated hits on each record's ``annotations["hmm_hits"]``.
@@ -113,6 +117,9 @@ def annotate_hmm_hits(
     Mutates each record in place; relies on HMMER being on PATH and the
     database resolving (raises `HMMScanError` / `HMMDatabaseError` otherwise —
     HMM identification is authoritative when enabled, so failures surface).
+    *ga_cutoffs* (from `HMMIdentifier`, parsed once per run) saves re-reading
+    the database; without it they are parsed here, and only when
+    ``hmm.use_ga_when_available`` is on.
     """
     to_scan = [
         r for r in records
@@ -121,10 +128,11 @@ def annotate_hmm_hits(
     if not to_scan:
         return
     hcfg = cfg.get("hmm", {}) or {}
-    ga_cutoffs = get_ga_cutoffs(cfg)
     default_evalue = float(hcfg.get("default_evalue", 1.0e-5))
     rel_len = float(hcfg.get("relative_length_cutoff", 0.5))
     use_ga = bool(hcfg.get("use_ga_when_available", True))
+    if ga_cutoffs is None:
+        ga_cutoffs = get_ga_cutoffs(cfg) if use_ga else {}
 
     # Index by a synthetic id so duplicate accessions can't collide as keys.
     idx_to_rec = {f"R{i:07d}": r for i, r in enumerate(to_scan)}
@@ -153,6 +161,13 @@ class HMMIdentifier:
     Hits are computed once per genome (or in bulk beforehand via
     `annotate_hmm_hits` / `prescan`) and cached on each record's annotations,
     so repeated `identify` calls over the same records do not rescan.
+
+    With ``hmm.best_hit_only`` a protein must also fit one of the spec's
+    profiles better than any other profile in the database (`best_passing_target`),
+    so a protein that only cross-hits a token — e.g. an orbivirus VP1 weakly
+    hitting a palm-domain RdRp profile — is not taken as the marker.  Profiles
+    in ``hmm.best_hit_also`` (other domains of the same protein) count as the
+    spec's own for that test.
     """
 
     #: Lets the fetcher detect HMM mode (all-proteins fetch) without importing
@@ -163,14 +178,65 @@ class HMMIdentifier:
         self._cfg = cfg or {}
         hcfg = self._cfg.get("hmm", {}) or {}
         self._overlap_tol = int(hcfg.get("multidomain_overlap_tolerance", 30))
+        self._best_hit_only = bool(hcfg.get("best_hit_only", False))
+        self._best_hit_also = frozenset(hcfg.get("best_hit_also") or ())
+        self._min_protein_length = hcfg.get("min_protein_length")
+        self._use_ga = bool(hcfg.get("use_ga_when_available", True))
+        self._ga_cutoffs: dict | None = None      # parsed once, when needed
+        self._db_fingerprint: str | None = None
         self._name_fallback = NameMatchIdentifier()
+
+    def _annotate(self, records: list[SeqRecord]) -> None:
+        """`annotate_hmm_hits` with GA cutoffs parsed once per identifier,
+        and only when there is something to scan."""
+        if all(_HMM_HITS_KEY in (r.annotations or {}) for r in records):
+            return
+        if self._ga_cutoffs is None:
+            self._ga_cutoffs = get_ga_cutoffs(self._cfg) if self._use_ga else {}
+        annotate_hmm_hits(records, self._cfg, ga_cutoffs=self._ga_cutoffs)
+
+    def database_fingerprint(self) -> str:
+        """First 16 hex digits of the sha256 of the profile database's
+        content (``hmm.database`` resolved; a directory set is its sorted
+        concatenation).  Independent of install path and file times, so it
+        changes exactly when a profile is added, removed or edited."""
+        if self._db_fingerprint is None:
+            hcfg = self._cfg.get("hmm", {}) or {}
+            cache_dir = self._cfg.get("cache_dir")   # as hmm.runner resolves it
+            db_path = resolve_database_path(
+                hcfg.get("database"),
+                cache_dir=Path(cache_dir).expanduser() if cache_dir else None,
+            )
+            self._db_fingerprint = hashlib.sha256(db_path.read_bytes()).hexdigest()[:16]
+        return self._db_fingerprint
+
+    @property
+    def best_hit_only(self) -> bool:
+        """Whether a marker protein must fit one of its spec's profiles best."""
+        return self._best_hit_only
+
+    @property
+    def min_protein_length(self) -> int | None:
+        """Shortest protein kept as a candidate (``hmm.min_protein_length``)."""
+        return self._min_protein_length
+
+    def best_hit_profiles(self, tokens: list[str]) -> set[str]:
+        """Profiles a protein's best hit may be on for *tokens*' marker under
+        ``best_hit_only``: the tokens' own profiles plus ``hmm.best_hit_also``."""
+        return token_profile_names(tokens) | self._best_hit_also
+
+    def crop(self, records: list[SeqRecord], tokens: list[str], padding: int) -> list[SeqRecord]:
+        """Scan *records* (if not yet scanned) and cut each to its marker
+        domain ± *padding* (`crop_to_marker_domain`)."""
+        self._annotate(records)
+        return [crop_to_marker_domain(r, tokens, padding) for r in records]
 
     def prescan(self, proteins: list[SeqRecord]) -> None:
         """Batch-scan ``proteins`` once so later per-genome `identify` calls read
         cached hits instead of rescanning (one hmmscan per species, not per
         genome).  Safe to call repeatedly — already-annotated records are
         skipped."""
-        annotate_hmm_hits(proteins, self._cfg)
+        self._annotate(proteins)
 
     def identify(
         self,
@@ -180,7 +246,7 @@ class HMMIdentifier:
     ) -> dict[str, SeqRecord]:
         if not proteins:
             return {}
-        annotate_hmm_hits(proteins, self._cfg)
+        self._annotate(proteins)
         subfamily = _subfamily_from_lineage(species_lineage)
         result: dict[str, SeqRecord] = {}
         for marker in marker_set:
@@ -205,10 +271,65 @@ class HMMIdentifier:
                 p.annotations.get(_HMM_HITS_KEY) or [], tokens, self._overlap_tol,
             )
         ]
+        if self._best_hit_only:
+            names = self.best_hit_profiles(tokens)
+            satisfying = [
+                p for p in satisfying
+                if best_passing_target(p.annotations.get(_HMM_HITS_KEY) or []) in names
+            ]
         if not satisfying:
             return None
         # Longest satisfying protein wins; lowest accession breaks ties.
         return sorted(satisfying, key=lambda p: (-len(p.seq), p.id or ""))[0]
+
+
+def token_profile_names(tokens: list[str]) -> set[str]:
+    """Every profile name used in *tokens* (multidomain tokens split);
+    malformed tokens are skipped (config validation reports them)."""
+    names: set[str] = set()
+    for token in tokens or []:
+        try:
+            names.update(parse_hmm_token(token))
+        except ValueError:
+            continue
+    return names
+
+
+def marker_hits(record: SeqRecord, tokens: list[str]) -> list[dict]:
+    """*record*'s passing hits (cached by `annotate_hmm_hits`) on the profiles
+    named in *tokens*: the hits `crop_to_marker_domain` cuts by.  Empty when
+    the record was not scanned or has no such hit."""
+    names = token_profile_names(tokens)
+    return [
+        h for h in (record.annotations.get(_HMM_HITS_KEY) or [])
+        if h.get("passing") and h.get("target") in names
+    ]
+
+
+def best_passing_target(hits: list[dict]) -> str | None:
+    """The profile that fits a protein best among its passing hits: highest
+    full-sequence bit score, domain score breaking ties.  None without a
+    passing hit."""
+    passing = [h for h in hits or [] if h.get("passing")]
+    if not passing:
+        return None
+    best = max(
+        passing,
+        key=lambda h: (h.get("full_score") or 0.0, h.get("dom_score") or 0.0),
+    )
+    return best.get("target")
+
+
+def foreign_best_hit(record: SeqRecord, own_profiles: set[str]) -> str | None:
+    """The best-fitting profile of *record* when it is not in *own_profiles*
+    (a protein of another kind than the marker; see
+    `HMMIdentifier.best_hit_profiles`), else None.  Reads hits cached by
+    `annotate_hmm_hits`; None for a record never scanned or without a passing
+    hit."""
+    best = best_passing_target(record.annotations.get(_HMM_HITS_KEY) or [])
+    if best is None or best in own_profiles:
+        return None
+    return best
 
 
 def _record_satisfies_any_token(
@@ -224,15 +345,108 @@ def _record_satisfies_any_token(
     return False
 
 
-def make_identifier(cfg: dict) -> MarkerIdentifier:
+# Passing marker hits further apart than this (aa) on one protein are not the
+# same domain region.  On the RefSeq proteins of the 107 RdRp families the
+# largest gap between neighbouring marker-domain hits was 383 aa (a
+# phenuivirus L between its PA-C-like and RdRp domains; 99 % were <= 339).
+MAX_DOMAIN_GAP = 500
+
+
+def _marker_hit_chain(hits: list[dict]) -> list[dict]:
+    """The run of *hits* around the best-scoring one in which neighbouring
+    hits are at most `MAX_DOMAIN_GAP` residues apart."""
+    best = max(hits, key=lambda h: (h.get("dom_score") or 0.0, h.get("full_score") or 0.0))
+    ordered = sorted(hits, key=lambda h: (h["ali_from"], h["ali_to"]))
+    chains: list[list[dict]] = []
+    end = None
+    for h in ordered:
+        if end is None or h["ali_from"] - end > MAX_DOMAIN_GAP:
+            chains.append([h])
+            end = h["ali_to"]
+        else:
+            chains[-1].append(h)
+            end = max(end, h["ali_to"])
+    return next(c for c in chains if any(h is best for h in c))
+
+
+def crop_to_marker_domain(
+    record: SeqRecord, tokens: list[str], padding: int
+) -> SeqRecord:
+    """Return *record* cut to the span its marker hits cover, ± *padding* aa.
+
+    The span runs from the first to the last residue aligned to the passing
+    hits of profiles named in *tokens* (cached on ``annotations["hmm_hits"]``
+    by `annotate_hmm_hits`) that form one region with the best-scoring hit:
+    neighbouring hits at most `MAX_DOMAIN_GAP` apart.  A distant stray hit,
+    or a second copy of the domain in a chimeric record, is left out (and
+    noted in the COMMENT).  Used to keep only the conserved domain of a
+    large multi-domain protein, e.g. the RdRp of a viral polyprotein: whole
+    polyproteins would otherwise dominate the alignment with variable
+    structural regions.
+
+    Metadata survives: annotations are kept, the ``source`` and ``CDS``
+    features keep their qualifiers (``/host``, ``/coded_by`` …) with their
+    location reset to the new length, other features are dropped, and a
+    COMMENT records which residues were kept.  Returns *record* itself when
+    there is no matching hit or the span already covers the whole protein.
+    """
+    from Bio.SeqFeature import FeatureLocation, SeqFeature
+
+    hits = marker_hits(record, tokens)
+    length = len(record.seq)
+    if not hits or not length:
+        return record
+    chain = _marker_hit_chain(hits)
+    n_distant = len(hits) - len(chain)
+    if n_distant:
+        log.info(
+            "%s: %d marker hit(s) more than %d aa from the best one left out of "
+            "the domain crop", record.id, n_distant, MAX_DOMAIN_GAP,
+        )
+    hits = chain
+    start = max(0, min(h["ali_from"] for h in hits) - 1 - max(0, padding))
+    end = min(length, max(h["ali_to"] for h in hits) + max(0, padding))
+    if start == 0 and end == length:
+        return record
+
+    cropped = SeqRecord(
+        record.seq[start:end],
+        id=record.id,
+        name=record.name,
+        description=record.description,
+    )
+    cropped.annotations = {
+        k: v for k, v in record.annotations.items() if k != _HMM_HITS_KEY
+    }
+    cropped.annotations.setdefault("molecule_type", "protein")
+    note = (
+        f"vfam_trees: residues {start + 1}-{end} of {length} "
+        f"(marker domain {', '.join(sorted({h['target'] for h in hits}))} ± {padding} aa"
+        + (f"; {n_distant} distant hit(s) left out" if n_distant else "")
+        + ")"
+    )
+    previous = cropped.annotations.get("comment")
+    cropped.annotations["comment"] = f"{previous}\n{note}" if previous else note
+    cropped.features = [
+        SeqFeature(FeatureLocation(0, end - start), type=f.type, qualifiers=dict(f.qualifiers))
+        for f in record.features
+        if f.type in ("source", "CDS")
+    ]
+    return cropped
+
+
+def make_identifier(cfg: dict, threads: int | None = None) -> MarkerIdentifier:
     """Select the marker identifier from config.
 
     ``hmm.enabled: true`` → `HMMIdentifier` (HMM-authoritative for specs with
     ``hmms``, name fallback otherwise).  Otherwise the default
-    `NameMatchIdentifier`.
+    `NameMatchIdentifier`.  *threads* (the run's thread count) is what
+    hmmscan uses when ``hmm.threads`` is null.
     """
     hcfg = (cfg or {}).get("hmm", {}) or {}
     if hcfg.get("enabled"):
+        if threads and not hcfg.get("threads"):
+            cfg = {**cfg, "hmm": {**hcfg, "threads": int(threads)}}
         return HMMIdentifier(cfg)
     return NameMatchIdentifier()
 

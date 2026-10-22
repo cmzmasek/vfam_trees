@@ -9,12 +9,19 @@ Vendored from ``repseq/hmm/database.py``.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
+
+try:  # POSIX only; without it the build steps run unlocked
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 from .errors import HMMDatabaseError
 
@@ -87,6 +94,30 @@ def resolve_database_path(
     return path
 
 
+@contextlib.contextmanager
+def _exclusive_lock(lock_path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on *lock_path* across processes.
+
+    vfam_trees adaptation: families running in parallel (``run -j N``) share
+    one combined database (e.g. the bundled "RdRp" set used by 107 families)
+    and must not build or press it at the same time.  Without fcntl, or when
+    the lock file cannot be created (read-only directory), runs unlocked.
+    """
+    if fcntl is None:
+        yield
+        return
+    try:
+        fh = open(lock_path, "a")
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+    finally:
+        fh.close()  # releases the lock
+
+
 def _combine_hmm_directory(
     dir_path: Path, cache_dir: Optional[Path]
 ) -> Path:
@@ -115,14 +146,20 @@ def _combine_hmm_directory(
     combined = combined_dir / f"{dir_path.name}_{sig}.hmm"
 
     if not combined.exists():
-        tmp = combined.with_suffix(".hmm.partial")
-        with open(tmp, "w") as out:
-            for member in members:
-                text = member.read_text()
-                out.write(text)
-                if not text.endswith("\n"):
-                    out.write("\n")
-        tmp.replace(combined)  # atomic publish so a half-written file is never used
+        with _exclusive_lock(combined_dir / f"{combined.name}.lock"):
+            if not combined.exists():  # another process may have built it meanwhile
+                # Unique temp name, then an atomic publish, so a half-written
+                # file is never used.
+                fd, tmp_name = tempfile.mkstemp(
+                    dir=combined_dir, prefix=f"{combined.name}.", suffix=".partial",
+                )
+                with os.fdopen(fd, "w") as out:
+                    for member in members:
+                        text = member.read_text()
+                        out.write(text)
+                        if not text.endswith("\n"):
+                            out.write("\n")
+                Path(tmp_name).replace(combined)
     return combined
 
 
@@ -153,7 +190,17 @@ def is_press_index_stale(db_path: Path) -> bool:
 
 
 def ensure_pressed(db_path: Path) -> None:
-    """Auto-run ``hmmpress`` if the .h3* indexes are missing OR stale."""
+    """Auto-run ``hmmpress`` if the .h3* indexes are missing OR stale.
+
+    The check and the press happen under a lock beside the database, so
+    parallel runs neither press it twice nor scan half-written indexes
+    (vfam_trees adaptation; see `_exclusive_lock`).
+    """
+    with _exclusive_lock(Path(str(db_path) + ".lock")):
+        _ensure_pressed_unlocked(db_path)
+
+
+def _ensure_pressed_unlocked(db_path: Path) -> None:
     if has_press_index(db_path) and not is_press_index_stale(db_path):
         return
     if shutil.which("hmmpress") is None:

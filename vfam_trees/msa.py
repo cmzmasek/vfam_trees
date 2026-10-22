@@ -160,12 +160,35 @@ def orient_to_majority_strand(alignment_fasta: Path, flipped: list[str]) -> list
     return now_flipped
 
 
+def _alignable_protein_input(input_fasta: Path, output_fasta: Path) -> Path:
+    """*input_fasta*, or a copy beside *output_fasta* with the residues MAFFT
+    rejects written as X (`quality.normalize_protein_records`).  The caller's
+    file is left as deposited."""
+    from .quality import normalize_protein_records
+
+    records = _read_records(input_fasta)
+    before = [str(r.seq) for r in records]
+    replaced = normalize_protein_records(records)
+    if all(str(r.seq) == b for r, b in zip(records, before)):
+        return input_fasta
+    if replaced:
+        log.info(
+            "%d protein sequence(s) had residues MAFFT cannot align (O for a "
+            "read-through codon, U, J or an internal stop); written as X: %s",
+            len(replaced), ", ".join(replaced[:10]) + (" …" if len(replaced) > 10 else ""),
+        )
+    cleaned = output_fasta.with_name(output_fasta.stem + ".input.fasta")
+    _write_records(records, cleaned)
+    return cleaned
+
+
 def run_msa(
     input_fasta: Path,
     output_fasta: Path,
     tool: str = "mafft",
     options: str = "--auto",
     threads: int = 1,
+    seq_type: str | None = None,
 ) -> list[str]:
     """Run multiple sequence alignment.
 
@@ -175,6 +198,8 @@ def run_msa(
         tool: alignment tool name ('mafft' supported)
         options: tool-specific options string
         threads: number of CPU threads
+        seq_type: ``"protein"`` aligns a copy of the input with the residues
+            MAFFT and IQ-TREE reject (O, U, J, internal stops) written as X
 
     Returns:
         ids of sequences the alignment holds reverse-complemented (MAFFT
@@ -190,12 +215,30 @@ def run_msa(
     if tool.lower() != "mafft":
         raise ValueError(f"Unsupported MSA tool: {tool}. Supported: mafft")
 
+    if seq_type == "protein":
+        input_fasta = _alignable_protein_input(input_fasta, output_fasta)
     flipped = _run_mafft(input_fasta, output_fasta, options, threads)
     flipped = orient_to_majority_strand(output_fasta, flipped)
     write_flipped_ids(output_fasta, flipped)
 
     log.debug("MSA complete: %s", output_fasta)
     return flipped
+
+
+# MAFFT's threaded iterative refinement (FFT-NS-i, which --auto picks for a
+# few hundred sequences, and L-INS-i) returns a different alignment on every
+# run.  "--threadit 0" runs only that stage on one thread: the alignment is
+# then the same on every run and for any --thread value (MAFFT 7.520,
+# checked with 1, 2, 4 and 8).  Options that set --threadit themselves win.
+DETERMINISTIC_REFINEMENT = ["--threadit", "0"]
+
+
+def mafft_thread_options(options: str, threads: int) -> list[str]:
+    """Thread flags added to the configured MAFFT ``options``."""
+    flags = ["--thread", str(threads)]
+    if not any(o.startswith("--threadit") for o in options.split()):
+        flags += DETERMINISTIC_REFINEMENT
+    return flags
 
 
 def _run_mafft(
@@ -207,11 +250,12 @@ def _run_mafft(
     cmd = ["mafft"]
     cmd += options.split()
     adjusts_direction = any(o.startswith("--adjustdirection") for o in options.split())
-    cmd += ["--thread", str(threads)]
+    thread_flags = mafft_thread_options(options, threads)
+    cmd += thread_flags
     cmd += ["--out", str(output_fasta)]
     cmd += [str(input_fasta)]
 
-    log.info("Running MAFFT (%s, thread=%d)", options, threads)
+    log.info("Running MAFFT (%s %s)", options, " ".join(thread_flags))
     log.debug("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 

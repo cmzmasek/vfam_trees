@@ -231,7 +231,8 @@ def test_skip_path_when_fetch_returns_no_genomes(tmp_path, monkeypatch):
     def fake_fetch_taxonomy_lineages(taxids):
         return {}
     monkeypatch.setattr(pipeline_concat, "fetch_species_genomes", fake_fetch_species_genomes)
-    monkeypatch.setattr(pipeline_concat, "fetch_taxonomy_lineages", fake_fetch_taxonomy_lineages)
+    import vfam_trees.fetch as fetch_mod  # the shared cache helper calls it there
+    monkeypatch.setattr(fetch_mod, "fetch_taxonomy_lineages", fake_fetch_taxonomy_lineages)
 
     # Capture mark_skipped / mark_done invocations
     mark_skipped_calls: list[tuple] = []
@@ -539,3 +540,32 @@ class TestConcatPhyloxmlIntegration:
     def test_taxon_id_emitted_as_taxonomy_id(self, tmp_path):
         xml = self._write_xml(tmp_path).read_text()
         assert "11053" in xml
+
+
+# ---------------------------------------------------------------------------
+# Species without the markers (report status)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("partial, status", [(0, "no marker"), (2, "too few markers")])
+def test_species_without_genome_reported_by_marker_status(tmp_path, monkeypatch,
+                                                            partial, status):
+    import vfam_trees.fetch as fetch_mod
+    monkeypatch.setattr(fetch_mod, "fetch_taxonomy_lineages", lambda taxids: {})
+    monkeypatch.setattr(fetch_mod, "count_species_records", lambda *a, **k: 916)
+
+    def fake_fetch(**kwargs):
+        return {}, {"n_proteins_fetched": 6, "n_dropped_min_fraction": 2,
+                    "n_dropped_partial_markers": partial}
+    monkeypatch.setattr(pipeline_concat, "_fetch_one_species_with_cache", fake_fetch)
+
+    without: list[dict] = []
+    genomes, _, _ = pipeline_concat._fetch_all_species(
+        family="Marseilleviridae",
+        species_list=[{"name": "Noumeavirus", "taxid": 1955558}],
+        marker_set=[{"name": "DNA polymerase", "aliases": []}],
+        work_dir=tmp_path, max_per_species=5, min_fraction=0.7,
+        exclude_organisms=None, without_marker=without,
+    )
+    assert genomes == {}
+    assert without == [{"species": "Noumeavirus", "taxid": 1955558,
+                        "ncbi_records": 916, "status": status}]

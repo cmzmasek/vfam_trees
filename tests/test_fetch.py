@@ -1,5 +1,7 @@
 """Tests for vfam_trees.fetch — query building and concat-mode helpers
 (no network calls)."""
+import shutil
+
 import pytest
 
 from Bio.Seq import Seq
@@ -592,7 +594,30 @@ class TestGroupProteinsByGenome:
         assert set(genomes.keys()) == {"NC_001"}
         assert stats["n_genomes_kept"] == 1
         assert stats["n_dropped_min_fraction"] == 1
+        assert stats["n_dropped_partial_markers"] == 1   # NC_002 had one
         assert stats["n_required_markers"] == 2
+
+    def test_genome_with_no_identified_marker_is_not_partial(self):
+        # HMM mode hands every protein of a genome to the identifier; a genome
+        # where it finds none of the markers is a min_fraction drop, but not
+        # a "some of the markers" one.
+        proteins_by_marker = {"__all__": [
+            _protein("YP_1", "hypothetical protein", source_acc="NC_001"),
+            _protein("YP_2", "DNA polymerase", source_acc="NC_002"),
+        ]}
+
+        class _Ident:
+            def identify(self, candidates, marker_set, lineage):
+                return {"DNA polymerase": c for c in candidates
+                        if c.description == "DNA polymerase"}
+
+        genomes, stats = group_proteins_by_genome(
+            proteins_by_marker, [_POLB, _MCP, _HEL], None, min_fraction=0.7,
+            identifier=_Ident(),
+        )
+        assert genomes == {}
+        assert stats["n_dropped_min_fraction"] == 2
+        assert stats["n_dropped_partial_markers"] == 1
 
     def test_orphaned_proteins_counted(self):
         # Protein with no source_acc is excluded from grouping.
@@ -1041,6 +1066,76 @@ class TestNoNameQuery:
         q = _build_all_proteins_query(1, ["Homo sapiens"], refseq_only=True)
         assert "refseq[filter]" in q
         assert 'NOT "Homo sapiens"[Organism]' in q
+        assert "[SLEN]" not in q
+
+    def test_no_length_clause(self):
+        """NCBI's [SLEN] search is seconds slower per query; the floor is
+        applied to the downloaded records instead."""
+        from vfam_trees.fetch import _build_all_proteins_query
+        for refseq_only in (False, True):
+            assert "[SLEN]" not in _build_all_proteins_query(1, None, refseq_only)
+
+    def test_floor_applied_to_downloaded_records(self, monkeypatch, tmp_path):
+        from Bio.Seq import Seq
+        from Bio.SeqRecord import SeqRecord
+        from Bio import SeqIO
+        from io import StringIO
+        from vfam_trees import fetch as fetch_mod
+
+        def gb(acc, n):
+            r = SeqRecord(Seq("M" * n), id=acc, name=acc.split(".")[0],
+                          description=f"protein {acc}")
+            r.annotations["molecule_type"] = "protein"
+            buf = StringIO(); SeqIO.write(r, buf, "genbank"); return buf.getvalue()
+
+        lengths = {"P1.1": 99, "P2.1": 100, "P3.1": 900}
+        queries = []
+        monkeypatch.setattr(fetch_mod, "_search_ids",
+                            lambda db, q, max_records: queries.append(q) or list(lengths))
+        monkeypatch.setattr(fetch_mod, "_fetch_batch",
+                            lambda db, ids: "".join(gb(i, lengths[i]) for i in ids))
+        got = fetch_mod._fetch_all_species_proteins(
+            1, tmp_path / "all.gb", None, "sp", min_length=100)
+        assert sorted(r.id for r in got) == ["P2.1", "P3.1"]
+        assert queries and not any("[SLEN]" in q for q in queries)
+        got = fetch_mod._fetch_all_species_proteins(1, tmp_path / "all.gb", None, "sp")
+        assert len(got) == 3
+
+    def test_floor_passed_from_identifier(self, monkeypatch, tmp_path):
+        from vfam_trees import fetch as fetch_mod
+        from vfam_trees.markers import HMMIdentifier
+        seen = []
+        monkeypatch.setattr(fetch_mod, "_fetch_all_species_proteins",
+                            lambda *a, **k: seen.append(k.get("min_length")) or [])
+        fetch_mod._fetch_species_marker_hmm(
+            taxid=1, species_name="sp", marker={"name": "RdRp", "hmms": ["RdRP_1"]},
+            output_gb=tmp_path / "o.gb", max_per_species=10, exclude_organisms=None,
+            identifier=HMMIdentifier({"hmm": {"enabled": True, "min_protein_length": 100}}),
+            species_lineage=None,
+        )
+        assert seen == [100]
+
+
+class TestAccessionDb:
+    def test_shapes(self):
+        from vfam_trees.fetch import accession_db
+        assert accession_db("NC_045512.2") == "nuccore"
+        assert accession_db("MN908947.3") == "nuccore"
+        assert accession_db("YP_009724389.1") == "protein"
+        assert accession_db("QHD43415.1") == "protein"
+
+    def test_wgs_case_and_unknown_shapes(self):
+        """Review 2026-10-21: 6-letter WGS ids, lower case and non-NCBI ids
+        were all classed as protein."""
+        from vfam_trees.fetch import accession_db, _is_nuccore_accession
+        assert accession_db("JAAAAA010000001.1") == "nuccore"   # 6-letter WGS
+        assert accession_db("AAAA01000001.1") == "nuccore"      # 4-letter WGS
+        assert accession_db("mn908947") == "nuccore"
+        assert accession_db("yp_009724389.1") == "protein"
+        assert accession_db("ABO61246") == "protein"
+        assert accession_db("PP_0015K2T.1") is None             # Pathoplexus
+        assert accession_db("my_virus_1") is None
+        assert _is_nuccore_accession("jaaaaa010000001")
 
 
 class TestCapGenomes:
@@ -1189,3 +1284,277 @@ def test_extract_metadata_falls_back_to_country():
     from vfam_trees.fetch import extract_metadata
     assert extract_metadata(_gb_record(country="Sierra Leone"))["location"] == "Sierra Leone"
     assert extract_metadata(_gb_record())["location"] == "unknown"
+
+
+class TestForeignMarkerGenomes:
+    """hmm.best_hit_only: genomes whose proteins fit another profile best are
+    left out of the marker set and named in a WARNING."""
+
+    @staticmethod
+    def _scored(target, score):
+        return {"target": target, "passing": True, "full_score": score, "dom_score": score,
+                "dom_evalue": 1e-30, "ali_from": 1, "ali_to": 300}
+
+    def test_foreign_genomes_left_out_and_logged(self, monkeypatch, tmp_path, caplog):
+        import logging
+        from Bio import SeqIO
+        from vfam_trees import fetch as fetch_mod
+        from vfam_trees.markers import HMMIdentifier
+        recs = [
+            _hprot("NSP", "MN_001.1", 2500, [self._scored("RdRP_2", 500)], "nonstructural polyprotein"),
+            _hprot("VP1", "PV_002.1", 1295, [self._scored("Orbi_VP1", 2290), self._scored("RdRP_1", 55)], "VP1"),
+            _hprot("L", "PV_003.1", 2257, [self._scored("Bunya_RdRp", 790)], "L protein"),
+            _hprot("N", "PV_004.1", 234, [], "N protein"),
+        ]
+        monkeypatch.setattr(fetch_mod, "_fetch_all_species_proteins", lambda *a, **k: recs)
+        ident = HMMIdentifier({"hmm": {"enabled": True, "best_hit_only": True}})
+        out = tmp_path / "out.gb"
+        with caplog.at_level(logging.WARNING):
+            n = fetch_mod._fetch_species_marker_hmm(
+                taxid=1, species_name="Cape Wrath virus",
+                marker={"name": "RdRp", "hmms": ["RdRP_1", "RdRP_2", "RdRP_3", "RdRP_4"]},
+                output_gb=out, max_per_species=200, exclude_organisms=None,
+                identifier=ident, species_lineage=None,
+            )
+        assert n == 1
+        assert [r.id for r in SeqIO.parse(out, "genbank")] == ["NSP"]
+        msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(msgs) == 1
+        assert "left out 2 genome(s)" in msgs[0]
+        assert "Orbi_VP1 (1)" in msgs[0] and "Bunya_RdRp (1)" in msgs[0]
+        assert "PV_002.1" in msgs[0] and "PV_003.1" in msgs[0]
+        assert "MN_001.1" not in msgs[0] and "PV_004.1" not in msgs[0]
+
+    def test_sibling_domain_genome_kept_and_not_reported(self, monkeypatch, tmp_path, caplog):
+        # A hantavirus L whose best hit is the L thumb-ring domain is the
+        # family's own kind (hmm.best_hit_also), not a misfiled virus.
+        import logging
+        from vfam_trees import fetch as fetch_mod
+        from vfam_trees.markers import HMMIdentifier
+        recs = [_hprot("L", "MN_010.1", 2150, [self._scored("L_thumb_ring_vir", 420),
+                                               self._scored("Bunya_RdRp", 380)], "L protein")]
+        monkeypatch.setattr(fetch_mod, "_fetch_all_species_proteins", lambda *a, **k: recs)
+        ident = HMMIdentifier({"hmm": {"enabled": True, "best_hit_only": True,
+                                       "best_hit_also": ["L_PA-C-like", "L_thumb_ring_vir"]}})
+        with caplog.at_level(logging.WARNING):
+            n = fetch_mod._fetch_species_marker_hmm(
+                taxid=1, species_name="Divergent hantavirus",
+                marker={"name": "RdRp", "hmms": ["Bunya_RdRp", "Flu_PB1"]},
+                output_gb=tmp_path / "o.gb", max_per_species=200, exclude_organisms=None,
+                identifier=ident, species_lineage=None,
+            )
+        assert n == 1
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_no_warning_when_flag_off(self, monkeypatch, tmp_path, caplog):
+        import logging
+        from vfam_trees import fetch as fetch_mod
+        from vfam_trees.markers import HMMIdentifier
+        recs = [_hprot("L", "PV_003.1", 2257, [self._scored("Bunya_RdRp", 790)], "L protein")]
+        monkeypatch.setattr(fetch_mod, "_fetch_all_species_proteins", lambda *a, **k: recs)
+        with caplog.at_level(logging.WARNING):
+            n = fetch_mod._fetch_species_marker_hmm(
+                taxid=1, species_name="sp",
+                marker={"name": "RdRp", "hmms": ["RdRP_1"]},
+                output_gb=tmp_path / "o.gb", max_per_species=200, exclude_organisms=None,
+                identifier=HMMIdentifier({"hmm": {"enabled": True}}), species_lineage=None,
+            )
+        assert n == 0
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+class TestCachedTaxonomyLineages:
+    def _lin(self, t):
+        return [{"name": f"taxon {t}", "rank": "species", "taxid": t}]
+
+    def test_fetches_only_missing_taxa_and_extends_the_cache(self, tmp_path, monkeypatch):
+        import json
+        from vfam_trees import fetch as fetch_mod
+        cache = tmp_path / "taxonomy_cache.json"
+        cache.write_text(json.dumps({"1": self._lin("1")}))
+        asked = []
+        monkeypatch.setattr(fetch_mod, "fetch_taxonomy_lineages",
+                            lambda ids: asked.append(sorted(ids)) or {t: self._lin(t) for t in ids if t != "9"})
+        got = fetch_mod.cached_taxonomy_lineages({"1", "2", "9", ""}, cache)
+        assert asked == [["2", "9"]]
+        assert set(got) == {"1", "2"}
+        assert set(json.loads(cache.read_text())) == {"1", "2"}
+        # Next run: only the unresolvable taxon is asked for again.
+        fetch_mod.cached_taxonomy_lineages({"1", "2", "9"}, cache)
+        assert asked[-1] == ["9"]
+
+    def test_no_fetch_when_complete(self, tmp_path, monkeypatch):
+        import json
+        from vfam_trees import fetch as fetch_mod
+        cache = tmp_path / "c.json"
+        cache.write_text(json.dumps({"1": self._lin("1")}))
+        monkeypatch.setattr(fetch_mod, "fetch_taxonomy_lineages",
+                            lambda ids: (_ for _ in ()).throw(AssertionError("no fetch expected")))
+        assert set(fetch_mod.cached_taxonomy_lineages(["1"], cache)) == {"1"}
+
+    def test_unreadable_cache_is_rebuilt(self, tmp_path, monkeypatch):
+        from vfam_trees import fetch as fetch_mod
+        cache = tmp_path / "c.json"
+        cache.write_text("{not json")
+        monkeypatch.setattr(fetch_mod, "fetch_taxonomy_lineages",
+                            lambda ids: {t: self._lin(t) for t in ids})
+        assert set(fetch_mod.cached_taxonomy_lineages(["5"], cache)) == {"5"}
+
+
+# ---------------------------------------------------------------------------
+# Translation fallback: markers NCBI never annotated as a protein
+# ---------------------------------------------------------------------------
+
+# HIV-1 RT domain (YP_001856242.1, RVT_1 hit 63-234), used as an unannotated
+# gene inside a synthetic genome.
+_HIV_RT = ("IKKKDSTKWRKLVDFRELNKRTQDFWEVQLGIPHPAGLKKKKSVTVLDVGDAYFSVPLDEDFRKYTAFTIPS"
+           "INNETPGIRYQYNVLPQGWKGSPAIFQSSMTKILEPFRKQNPDIVIYQYMDDLYVGSDLEIGQHRTKIEEL"
+           "RQHLLRWGLTTPDKKHQKEPPFLWMGYEL")
+_CODON = {"A": "GCT", "R": "CGT", "N": "AAT", "D": "GAT", "C": "TGT", "Q": "CAA", "E": "GAA",
+          "G": "GGT", "H": "CAT", "I": "ATT", "L": "CTT", "K": "AAA", "M": "ATG", "F": "TTT",
+          "P": "CCT", "S": "TCT", "T": "ACT", "W": "TGG", "Y": "TAT", "V": "GTT"}
+
+
+def _genome(acc, protein, minus=False, flank="TAGTAACTAATTAGC" * 20):
+    """A nucleotide GenBank-like record carrying *protein* as an unannotated gene."""
+    from Bio.Seq import Seq
+    from Bio.SeqFeature import FeatureLocation, SeqFeature
+    from Bio.SeqRecord import SeqRecord
+    gene = "ATG" + "".join(_CODON[a] for a in protein) + "TAA"
+    nuc = Seq(flank + gene + flank)
+    if minus:
+        nuc = nuc.reverse_complement()
+    rec = SeqRecord(nuc, id=acc, name=acc.split(".")[0], description=f"{acc} complete genome")
+    rec.annotations = {"molecule_type": "DNA", "organism": "Test spumavirus 1",
+                       "taxonomy": ["Viruses", "Retroviridae"]}
+    rec.features = [SeqFeature(FeatureLocation(0, len(nuc)), type="source", qualifiers={
+        "organism": ["Test spumavirus 1"], "host": ["Myotis myotis"],
+        "db_xref": ["taxon:4242"], "collection_date": ["2021"]})]
+    return rec, len(flank)
+
+
+class TestTranslatedOrfs:
+    def test_both_strands_and_coordinates(self):
+        from vfam_trees.fetch import translated_orfs
+        for minus in (False, True):
+            rec, flank = _genome("OR000001.1", _HIV_RT, minus=minus)
+            orfs = [o for o in translated_orfs(rec, 100) if _HIV_RT in str(o.seq)]
+            assert len(orfs) == 1, minus
+            orf = orfs[0]
+            coded_by = orf.features[-1].qualifiers["coded_by"][0]
+            start, end = (flank + 1, flank + 3 * (len(_HIV_RT) + 1)) if not minus else \
+                         (flank + 4, flank + 3 * (len(_HIV_RT) + 2))
+            # plus: ATG..last codon; minus: the ORF begins after the stop codon
+            # of the reverse complement and runs to the end of the gene.
+            assert coded_by.startswith("complement(" if minus else "OR000001.1:")
+            assert orf.annotations["organism"] == "Test spumavirus 1"
+            assert orf.features[0].qualifiers["host"] == ["Myotis myotis"]
+            from vfam_trees.fetch import extract_metadata, _source_nuc_accession
+            assert extract_metadata(orf)["taxon_id"] == "4242"
+            assert _source_nuc_accession(orf) == "OR000001.1"
+
+    def test_short_frames_dropped(self):
+        from vfam_trees.fetch import translated_orfs
+        rec, _ = _genome("OR000002.1", _HIV_RT[:60])
+        assert not [o for o in translated_orfs(rec, 100) if _HIV_RT[:60] in str(o.seq)]
+
+
+@pytest.mark.skipif(shutil.which("hmmscan") is None, reason="needs HMMER")
+class TestTranslationFallback:
+    def _run(self, tmp_path, monkeypatch, nuc_records, proteins=()):
+        from vfam_trees import fetch as fetch_mod
+        from vfam_trees.config import hmm_marker_preset
+        from vfam_trees.markers import HMMIdentifier
+        cfg = hmm_marker_preset("Retroviridae")
+        monkeypatch.setattr(fetch_mod, "_fetch_all_species_proteins", lambda *a, **k: list(proteins))
+        monkeypatch.setattr(fetch_mod, "_fetch_species_nucleotide_records", lambda *a, **k: nuc_records)
+        report = {}
+        n = fetch_mod._fetch_species_marker_hmm(
+            taxid=4242, species_name="Test spumavirus 1",
+            marker={"name": "RT", "hmms": cfg["sequence"]["hmms"],
+                    "domain_padding": cfg["sequence"]["domain_padding"]},
+            output_gb=tmp_path / "sp" / "sequences.gb", max_per_species=10,
+            exclude_organisms=None, identifier=HMMIdentifier({"hmm": cfg["hmm"]}),
+            species_lineage=None, report=report,
+        )
+        return n, report
+
+    def test_unannotated_rt_found_by_translation(self, tmp_path, monkeypatch):
+        from Bio import SeqIO
+        rec, _ = _genome("OR000003.1", _HIV_RT, minus=True)
+        n, report = self._run(tmp_path, monkeypatch, [rec])
+        assert n == 1 and report["outcome"] == "translated"
+        assert report["proteins"] == 0 and report["nucleotide_records"] == 1
+        out = list(SeqIO.parse(tmp_path / "sp" / "sequences.gb", "genbank"))
+        assert out[0].id == "OR000003.1"                 # named after its genome
+        assert "translated from complement(OR000003.1:" in out[0].description
+        assert "vfam_trees: RT translated from" in out[0].annotations["comment"]
+        assert _HIV_RT[10:-10] in str(out[0].seq)
+
+    def test_no_marker_anywhere(self, tmp_path, monkeypatch):
+        rec, _ = _genome("OR000004.1", "ACDEFGHIKLMNPQRSTVWY" * 8)   # not an RT
+        n, report = self._run(tmp_path, monkeypatch, [rec])
+        assert n == 0 and report["outcome"] == "no_marker"
+
+    def test_no_data(self, tmp_path, monkeypatch):
+        n, report = self._run(tmp_path, monkeypatch, [])
+        assert n == 0 and report["outcome"] == "no_data"
+
+
+class TestSpeciesNucleotideRecords:
+    @pytest.mark.real_ncbi_helpers
+    def test_complete_genomes_first_when_capped(self, monkeypatch):
+        from vfam_trees import fetch as fetch_mod
+        queries = []
+
+        def fake_search(db, q, max_records):
+            queries.append(q)
+            return ["c1", "c2"] if "complete genome" in q else [f"x{i}" for i in range(max_records)]
+        fetched = []
+        monkeypatch.setattr(fetch_mod, "_search_ids", fake_search)
+        monkeypatch.setattr(fetch_mod, "_fetch_batch", lambda db, ids: fetched.extend(ids) or "")
+        fetch_mod._fetch_species_nucleotide_records(1, None, max_records=5)
+        assert fetched[:2] == ["c1", "c2"] and len(fetched) == 5
+        queries.clear(); fetched.clear()
+        monkeypatch.setattr(fetch_mod, "_search_ids", lambda db, q, m: queries.append(q) or ["a"])
+        fetch_mod._fetch_species_nucleotide_records(1, None, max_records=5)
+        assert len(queries) == 1 and fetched == ["a"]       # one search when not capped
+
+    @pytest.mark.real_ncbi_helpers
+    def test_count_species_records(self, monkeypatch):
+        import contextlib
+        from vfam_trees import fetch as fetch_mod
+        seen = []
+
+        def fake_esearch(db, term, retmax):
+            seen.append((db, term, retmax))
+            return contextlib.nullcontext("handle")
+        monkeypatch.setattr(fetch_mod.Entrez, "esearch", fake_esearch)
+        monkeypatch.setattr(fetch_mod.Entrez, "read", lambda handle: {"Count": "7"})
+        assert fetch_mod.count_species_records(5, "nuccore", ["metagenome"]) == 7
+        assert seen[0][0] == "nuccore" and seen[0][2] == 0
+        assert 'NOT "metagenome"[Organism]' in seen[0][1]
+
+
+class TestConfigureEntrezTimeout:
+    """A connection to NCBI that dies (sleep, network change) must time out
+    so the retries apply, instead of leaving the read waiting forever."""
+
+    def test_sets_a_socket_timeout_when_none(self, monkeypatch):
+        import socket
+        from vfam_trees import fetch as fetch_mod
+        monkeypatch.setattr(socket, "getdefaulttimeout", lambda: None)
+        set_to = []
+        monkeypatch.setattr(socket, "setdefaulttimeout", set_to.append)
+        fetch_mod.configure_entrez("someone@example.org")
+        assert set_to == [fetch_mod.NCBI_SOCKET_TIMEOUT]
+
+    def test_keeps_an_existing_timeout(self, monkeypatch):
+        import socket
+        from vfam_trees import fetch as fetch_mod
+        monkeypatch.setattr(socket, "getdefaulttimeout", lambda: 30.0)
+        set_to = []
+        monkeypatch.setattr(socket, "setdefaulttimeout", set_to.append)
+        fetch_mod.configure_entrez("someone@example.org", api_key=None)
+        assert set_to == []
+

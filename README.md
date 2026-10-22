@@ -4,7 +4,7 @@
 
 Two trees are produced per family:
 
-- **tree_500** — broad diversity tree (up to 500 sequences, IQ-TREE `--fast` / GTR+G or LG+G, SH-aLRT support)
+- **tree_500** — broad diversity tree (up to 500 sequences, IQ-TREE `--fast` with GTR+G for nucleotide, a 50-iteration search `-n 50` with LG+G for protein; SH-aLRT support)
 - **tree_100** — collapsed representative tree (up to 100 sequences, full IQ-TREE search / GTR+G or `TEST`-selected best-fit AA model; UFBoot support, SH-aLRT also computed)
 
 ## How it works
@@ -17,9 +17,11 @@ The family TaxID is resolved from NCBI Taxonomy and every descendant species is 
 
 ### 2. Sequence download
 
-GenBank is queried per species with RefSeq priority. The query targets the configured molecule (`whole_genome` or a marker name) and, for segmented viruses, the configured segment keyword (records lacking it in their title are dropped). When `hmm.enabled`, the marker-name query is instead replaced by a single all-proteins-per-species fetch, and markers are identified downstream by HMMER profile homology rather than by name (see [HMM-based marker identification](#hmm-based-marker-identification)). RefSeqs are uncapped; non-RefSeq records are limited by `download.max_per_species`.
+GenBank is queried per species with RefSeq priority. The query targets the configured molecule (`whole_genome` or a marker name) and, for segmented viruses, the configured segment keyword (records lacking it in their title are dropped). When `hmm.enabled`, the marker-name query is instead replaced by a single all-proteins-per-species fetch, and markers are identified downstream by HMMER profile homology rather than by name (see [HMM-based marker identification](#hmm-based-marker-identification)); this is how most RNA-virus families get their RdRp (see [RNA virus families](#rna-virus-families-rdrp)). RefSeqs are uncapped; non-RefSeq records are limited by `download.max_per_species`.
 
 An optional shared cache (configurable TTL, per-entry locking, negative-result caching) avoids re-downloading the same species across runs and across parallel family jobs.
+
+Every NCBI request is retried up to 5 times, and a connection that sends nothing for 180 s counts as failed. Without that limit, a connection lost while the computer slept or changed networks left the run waiting forever. A computer that sleeps still pauses a run, so keep it awake for long runs (macOS: `caffeinate -is vfam_trees run …`, on power).
 
 ### 3. Quality filtering
 
@@ -40,12 +42,15 @@ Each species' sequences are filtered in this order:
 ### 5. Alignment and tree inference
 
 - **MAFFT** with separate options for nucleotide vs. protein, and for tree_500 vs. tree_100 (the latter typically slower / more accurate). Nucleotide alignments run with `--adjustdirection`: GenBank records deposited on the opposite strand are reverse-complemented before alignment (otherwise they land in the tree as nonsense long branches). MAFFT orients against the first record, so when that record is on the minority strand the finished alignment is reverse-complemented as a whole onto the majority strand (ties go to the strand of the smallest id); the strand never depends on record order and MAFFT runs once. The flipped accessions are logged, also when a cached alignment is reused, and the `*_sequences_raw_*.fasta` files keep the deposited orientation.
-- **trimAl** column trimming (`-automated1` by default) between MAFFT and tree inference; pre-trim length, tool, and options are recorded per tree.
-- **IQ-TREE `--fast`** for tree_500 (SH-aLRT support, auto-added by the wrapper). It takes the same wall time as FastTree and reaches a clearly better likelihood. FastTree remains available: set `tree_500.tool: fasttree` together with `options_nuc: ""` and `options_aa: ""` (config validation rejects IQ-TREE options such as `--fast` under FastTree, and FastTree options under IQ-TREE). `+G` / `+GAMMA` enables discrete-gamma rate variation.
+- **trimAl** column trimming between MAFFT and tree inference: by default (`-gt 0.5`) columns with gaps in more than half of the sequences are removed; pre-trim length, tool, and options are recorded per tree. Until 1.5.x the default was `-automated1`, which on alignments with many short fragments switches to a strict mode and keeps few columns (Retroviridae RT: 58 of 657), splitting genera; `-gt 0.5` was never worse on 42 test alignments and better on 6 (CHANGELOG 1.6.0).
+- **Repeatable runs** — the same input gives the same alignment and tree on every run. MAFFT runs with `--threadit 0`: its threaded iterative refinement (FFT-NS-i, which `--auto` picks for a few hundred protein sequences, and L-INS-i, the tree_100 protein mode) otherwise returns a different alignment each time, which trimAl's adaptive `-automated1` (the trimming default before 1.6.0) turned into very different column counts (939 vs 441 for the same 100 Tombusviridae RdRps). With it, only that stage runs on one thread, and the alignment is the same for any `--threads`. It costs a few minutes per protein family; nucleotide modes (`--retree 2/3`) have no refinement stage and are unaffected. IQ-TREE runs with `-seed 42`, so a tree is repeatable at the same `--threads`. Options that set `--threadit` or `-seed` themselves win.
+- **IQ-TREE for tree_500** (SH-aLRT support, auto-added by the wrapper). Nucleotide alignments use `--fast`: the same wall time as FastTree, a clearly better likelihood, and a full search gained nothing on them. Protein alignments use `-n 50`, IQ-TREE's normal search stopped after 50 iterations: on weak-signal protein sets (e.g. 500 RdRps) `--fast` lands in a different local optimum on each seed, with several strongly supported (SH-aLRT ≥ 95) splits that a full search contradicts, while `-n 50` comes about as close to the full search as a second full search does, at ~12× the `--fast` time (benchmark in CHANGELOG 1.6.0). FastTree remains available: set `tree_500.tool: fasttree` together with `options_nuc: ""` and `options_aa: ""` (config validation rejects IQ-TREE options such as `--fast` and `-n` under FastTree, and FastTree options under IQ-TREE). `+G` / `+GAMMA` enables discrete-gamma rate variation.
 - **IQ-TREE full search** for tree_100 with `-alrt 1000 -B 1000 --bnni`: SH-aLRT and UFBoot (ultrafast bootstrap, with `--bnni` to curb overestimation under model violation). The outputs carry the UFBoot value; the IQ-TREE `.treefile` under `_work/100/tree/` keeps both as `alrt/ufboot` labels. IQ-TREE 2.3.2 can abort in its post-bootstrap consensus step on particular taxon sets; the wrapper then scores the ML tree that run already found with SH-aLRT (a fixed-topology run that takes seconds; ModelFinder's pick is read from the aborted run's log) instead of failing the family, and the outputs report `SH_aLRT`. A `WARNING` in the family log says when this happened. Setting `model_aa: TEST` triggers ModelFinder; the chosen model (e.g. `LG+I+G4`) is parsed from the IQ-TREE log and surfaces in `summary.tsv`, the per-family PDF, and the PhyloXML provenance.
 - **Branch-support measure** is picked per tree (`SH_like` / `SH_aLRT` / `UFBoot` / `Bootstrap`) and recorded uniformly: `tree{500,100}_support_type` plus generic `support_{min,q1,median,q3,max,iqr}` columns; the PhyloXML `<confidence type="…">` attribute mirrors the same label. When several IQ-TREE measures are requested (any of `-alrt`/`--alrt`, `-lbp`, `-abayes`, `-B`/`--ufboot`, `-b`/`--boot`), each node keeps one value: the bootstrap-type one if present, else SH-aLRT. `_work/<label>/tree/tree_<label>.tree_info.json` records the tool, options and the measure the tree actually carries.
-- **Iterative branch-length outlier removal** — between iterations, leaves with terminal branch length exceeding `median + factor × MAD` are removed and MSA + tree are re-run (up to `max_iterations`; only when ≥ `min_seqs` remain). Zero-length tips (identical sequences, ≤ 1e-5 subs/site; IQ-TREE writes them as 1e-6) are left out of the median and MAD, so families with many identical genomes don't get an artificially low threshold. RefSeqs are protected: a flagged RefSeq stays with a warning. Detailed per-outlier log lines include length, ratio to median, and threshold.
+- **Iterative branch-length outlier removal** — between iterations, leaves with terminal branch length exceeding `median + factor × MAD` are removed and MSA + tree are re-run (up to `max_iterations`; only when ≥ `min_seqs` remain). With `quick_check: true` (default) each round is first checked on a quick IQ-TREE `--fast` tree (GTR+G / LG+G instead of ModelFinder); the configured search — tree_100's UFBoot search, tree_500's `-n 50` — runs once that finds nothing more to remove, and its tree is checked as before, so the final tree is always the configured one. Long-branch outliers are the same on both trees; the full search no longer repeats in every round (Togaviridae: 4 tree_100 searches of ~14 min each before). Zero-length tips (identical sequences, ≤ 1e-5 subs/site; IQ-TREE writes them as 1e-6) are left out of the median and MAD, so families with many identical genomes don't get an artificially low threshold. RefSeqs are protected: a flagged RefSeq stays with a warning. Detailed per-outlier log lines include length, ratio to median, and threshold.
 - **Multi-marker protein concatenation** — large DNA virus families with curated marker presets concatenate per-marker MAFFT + trimAl alignments into a single matrix; tree_100 uses partitioned IQ-TREE (`-p partitions.nex -m MFP`) so each marker gets its own ModelFinder pick. Markers are found either by GenBank name (per-marker query) or, when `hmm.enabled`, by HMMER profile homology over one all-proteins-per-species fetch (see [HMM-based marker identification](#hmm-based-marker-identification)); either way the returned proteins are bucketed by source nucleotide accession (Policy A). A length filter (`concatenation.source_nuc_min_length_frac`, default 0.3) drops source-nuc accessions shorter than that fraction of the longest parent so partial single-gene submissions don't crowd out genome-scale proteins under `download.max_per_species` (default 3000 for concat families). See [CONCAT_DESIGN.md](CONCAT_DESIGN.md) for design details.
+
+- **Phylogenetic-signal check** — every tree is measured once it is final: the median tip-to-tip distance on the tree (substitutions per site, the classic saturation measure), the median pairwise identity of the trimmed alignment (over shared A/C/G/T or standard amino-acid positions; ambiguity codes and X ignored), the core fraction (residues a typical sequence keeps after trimming) and the number of branches at IQ-TREE's 10 subs/site cap. A verdict of `ok`, `weak` or `saturated` goes to `summary.tsv` (`tree{500,100}_signal`, `_patristic_median`, `_identity_median`, `_core_frac`, `_branches_at_cap`), the report PDF and the log, with a `WARNING` naming the reasons when a tree is not `ok`. Nucleotide trees are `saturated` above a median of 1.5 subs/site (≈ 35% identity under JC; unrelated aligned sequence reaches about that) or with a branch at the cap and a median above 0.75, and `weak` above 0.75 or below 60% identity or 25% core; protein thresholds are 4.0 / 3.0 and 30%. A saturated nucleotide tree's deep structure is noise; a conserved protein marker carries it far better. Distance and identity are measured on the columns the tree was built from, so they depend on trimming: a stricter trim keeps the conserved columns and reads less saturated. Compare verdicts only between runs with the same `msa_trim` settings.
 
 ### 6. Annotation and rooting
 
@@ -56,9 +61,9 @@ Each species' sequences are filtered in this order:
 
 ### 7. Output
 
-Per-family: Newick, PhyloXML (with `<taxonomy>`, `<sequence>`, tip `<date>`, `vipr:` metadata, and rank properties), a ready-to-open Archaeopteryx.js HTML page and an Auspice v2 (Nextstrain) JSON for interactive exploration, rooted-rectangular and unrooted-radial PDF + PNG tree images, a topology-only icon PNG, sequence and metadata FASTAs/TSVs, a per-family PDF report, and a per-family log.
+Per-family: Newick, PhyloXML (with `<taxonomy>`, `<sequence>`, tip `<date>`, `vipr:` metadata, and rank properties), a ready-to-open Archaeopteryx.js HTML page and an Auspice v2 (Nextstrain) JSON for interactive exploration, rooted-rectangular and unrooted-radial PDF + PNG tree images, a topology-only icon PNG, sequence and metadata FASTAs/TSVs, a per-family PDF report, a per-family log, the merged settings the family ran with (`<Family>.yaml`), and a list of species that have NCBI records but not the marker (`<Family>_species_without_marker.tsv`).
 
-Cross-family: a row-per-family `summary.tsv` with full statistics, a lightweight `status.tsv` (success/skip), and an `overview_tree_100.png` thumbnail grid shaded by viral realm. See [Output](#output) for the full file inventory.
+Cross-family: a row-per-family `summary.tsv` with full statistics, a lightweight `status.tsv` (success/skip), an `overview_tree_100.png` thumbnail grid shaded by viral realm, and a record of each `vfam_trees run` (`run_records/`: version, command, tool versions, effective global settings). See [Output](#output) for the full file inventory.
 
 Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`) — or, when `manual.name` is set, `<manual.name>_<taxid>` (e.g. `Orthoebolavirus_11266`), with every output file prefixed by the same display name (see [Output prefix and directory naming](#output-prefix-and-directory-naming)). Failures and skips at any stage produce a row in `status.tsv` with the skip reason; the per-family work directory is preserved for inspection.
 
@@ -68,14 +73,14 @@ Per-family directories are named `<Family>_<taxid>` (e.g. `Asfarviridae_137992`)
 - **Interactive trees (Archaeopteryx / Archaeopteryx.js)** — the PhyloXML is written for the [Archaeopteryx](https://github.com/cmzmasek/forester) desktop viewer and [Archaeopteryx.js](https://github.com/cmzmasek/archaeopteryx-js): `branch_length_unit="subs/site"` (scale bar and clock-plot rate units), each tip's collection date as a decimal-year `<date unit="year">` (the viewers' root-to-tip clock plot needs every tip dated), ICTV species in `vipr:Species` consistent with the internal labels (so "Clades by rank" groups a species once), the leaf's own NCBI taxon (id, current name, rank) in `<taxonomy>`, NCBI ids on internal taxonomies, `vipr:Country` for grouping, and accession sources (`ncbi` / `pathoplexus` with a record `<uri>` / `user`). Each tree also gets `<prefix>_tree_{500,100}.html`: the tree inlined in a page that opens it in Archaeopteryx.js 3.28.0 loaded from jsDelivr — double-click to explore (needs an internet connection). Toggle with `output.archaeopteryx_html` (default on).
 - **Custom output naming** — set `manual.name` to rename a family's outputs (e.g. run *Filoviridae* restricted to the *Orthoebolavirus* genus and label everything `Orthoebolavirus`); the directory and all files take the sanitized display name while NCBI/taxonomy/cache lookups keep using the biological family. See [Output prefix and directory naming](#output-prefix-and-directory-naming).
 - **Additional data sources (outbreak sequences)** — supplement a family tree with forced-include sequences from [Pathoplexus](https://pathoplexus.org) via the `additional_data_sources` config block. These bypass QC and clustering (like `manual.include`) but carry real host/location/date/taxon metadata, so they are coloured by genus. Useful for grafting the latest outbreak genomes onto an existing tree. See [Additional data sources (Pathoplexus)](#additional-data-sources-pathoplexus).
-- **HMM-based marker identification** — for large DNA virus families with inconsistent annotation, identify marker proteins by **HMMER profile homology** instead of GenBank protein names, via the per-family `hmm:` config block. Each marker carries an `hmms:` token — a single curated Pfam-A profile (`"DNA_pol_B"`) or a multidomain architecture (`"Adeno_hexon--Adeno_hexon_C"`, HMMs in N-to-C order). Hits are gated on the curated Pfam GA bit-score (or an E-value) plus HMM-model coverage; the all-proteins-per-species pool is grouped by source genome and assigned to markers by HMM. Works on both the single-marker and concatenated-marker paths. Bundled CC0 Pfam-A sets ship for **Poxviridae** (8 markers) and **Adenoviridae** (hexon); requires HMMER on `$PATH`. See [HMM-based marker identification](#hmm-based-marker-identification).
-- **Pre-configured family presets** — 28 segmented RNA virus families (segment keywords) and 26 DNA virus families (sequence type, region/marker, and concat marker sets for the 15 families that use concatenation) ship with curated defaults.
+- **HMM-based marker identification** — identify marker proteins by **HMMER profile homology** instead of GenBank protein names, via the per-family `hmm:` config block: by default the RdRp, RT and Rep of the RNA-virus, reverse-transcribing and CRESS-DNA families (see [RNA virus families](#rna-virus-families-rdrp)), and markers of large DNA virus families with inconsistent annotation. Each marker carries an `hmms:` token — a single curated Pfam-A profile (`"DNA_pol_B"`) or a multidomain architecture (`"Adeno_hexon--Adeno_hexon_C"`, HMMs in N-to-C order). Hits are gated on the curated Pfam GA bit-score (or an E-value; the RdRp, RT and Rep presets use E ≤ 1e-3) plus HMM-model coverage; the all-proteins-per-species pool is grouped by source genome and assigned to markers by HMM. Works on both the single-marker and concatenated-marker paths. Bundled CC0 Pfam-A sets ship for the **RdRp** (23 profiles), **RT** (4), **Rep** (4), **Poxviridae** (8 markers) and **Adenoviridae** (hexon); requires HMMER on `$PATH`. See [HMM-based marker identification](#hmm-based-marker-identification).
+- **Pre-configured family presets** — 134 families on an HMM-identified marker protein (107 RNA-virus families on the RdRp, 4 reverse-transcribing families on the RT, 23 CRESS-DNA and satellite families on Rep), 24 DNA virus families (sequence type, region/marker, and concat marker sets for the 15 families that use concatenation) and 28 segmented RNA virus families (segment keywords, used when such a family runs as nucleotide; 21 of them are on the RdRp by default) ship with curated defaults.
 - **Checkpointing** — MSA and tree steps store a content-hashed sidecar of inputs + tool / model / options (and, for trees, the tool version), so any change, including a tool upgrade, auto-invalidates the cache. Each iterative outlier-removal pass gets its own hash; partially-completed runs resume in the right place.
 - **Family-annotation TSV** (optional) — joins extra per-family columns (e.g. `baltimore_class`) into `summary.tsv` and `status.tsv`. Missing file or family is silent.
 - **Stage tracking** — `vfam_trees status` reports the current processing stage for in-progress families (downloading/QC, MSA, tree inference, annotating).
 - **Dry-run mode** — `vfam_trees run --dry-run` previews per-family parameters without executing.
 - **Parallelism** — `-j N` runs N families concurrently; `-t T` sets threads per family job. The download cache and external tools are concurrency-safe.
-- **Validation and warnings** — partial NCBI batches, unrecognized per-family YAML keys, configs that override a recommended DNA-family setting, and MAFFT / tree output sanity checks all surface as log warnings.
+- **Validation and warnings** — partial NCBI batches, config keys this version does not read (in `global.yaml` and family files, at any depth), configs that override a family preset, weak or saturated trees (signal check), species without the marker, and MAFFT / tree output sanity checks all surface as log warnings.
 
 ## Dependencies
 
@@ -97,13 +102,12 @@ matplotlib >= 3.9    # PDF report and tree images; requires NumPy 2.x compatible
 | `FastTree` | Optional alternative tree tool (`tool: fasttree`); not needed by the defaults, and `vfam_trees test` reports it as optional |
 | `iqtree2` | ML tree inference (tree_500 and tree_100) |
 | `mmseqs` | Sequence clustering |
-| `hmmscan`, `hmmpress` (HMMER) | *Optional* — HMM-based marker identification (only when `hmm.enabled`) |
+| `hmmscan`, `hmmpress` (HMMER) | HMM-based marker identification: the RdRp of most RNA-virus families, the RT of the reverse-transcribing families, the Rep of the CRESS-DNA families, Poxviridae and Adenoviridae markers. Required for the default family list |
 
 All required tools must be available on `$PATH`. Installation via conda is recommended:
 
 ```bash
-conda install -c bioconda mafft iqtree mmseqs2 trimal
-conda install -c bioconda hmmer        # only needed for HMM-based marker identification
+conda install -c bioconda mafft iqtree mmseqs2 trimal hmmer
 conda install -c bioconda fasttree     # only needed for tool: fasttree
 ```
 
@@ -119,7 +123,7 @@ pip install -e .
 
 ```bash
 # 1. Create and edit global config (sets NCBI email and API key)
-vfam_trees init
+vfam_trees init          # or: vfam_trees init --full (every setting listed)
 # edit config/global.yaml
 
 # 2. Check all dependencies
@@ -142,7 +146,7 @@ vfam_trees status -f families.txt
 
 ### Global config (`config/global.yaml`)
 
-Generate a template with `vfam_trees init`. Then edit it to set your NCBI credentials:
+Generate a template with `vfam_trees init` (common settings) or `vfam_trees init --full` (every setting this version has, each with its default and a comment). Then edit it to set your NCBI credentials:
 
 ```yaml
 ncbi:
@@ -153,6 +157,12 @@ ncbi:
 An NCBI API key can be obtained for free at https://www.ncbi.nlm.nih.gov/account/.
 
 The `defaults:` section of `global.yaml` overrides the built-in defaults for all families. Per-family configs further override individual parameters.
+
+Settings are layered, lowest to highest priority: the built-in defaults, the `defaults:` section of `global.yaml`, the family preset (RdRp marker, DNA marker proteins, segment), and the family's own `configs/<Family>.yaml`. Nothing is migrated when a new version changes a default: a value written in `global.yaml` or a family file stays in force. A file written by `init --full` therefore pins every default of the version that wrote it; delete a block to follow the built-in default again.
+
+Keys this version does not read (misspelled, or left over from an older version, such as `length_outlier.hi_mult`) are reported with a WARNING, at any depth, both for `global.yaml` and for family files. The output folder and log level are command-line options of `vfam_trees run` (`-o`, `--log-level`), not settings in `global.yaml`; older templates wrote `output_dir:` and `log_level:` there, which never had an effect.
+
+Every run records what it used; see [Run records](#run-records).
 
 #### Sequence download cache
 
@@ -175,7 +185,7 @@ vfam_trees cache stats                # show entry count and size
 #### Family-annotation TSV
 
 ```yaml
-annotation_tsv: virus_families_annotation.tsv
+annotation_tsv: virus_families_annotation.tsv   # null → this name, next to global.yaml
 ```
 
 Relative paths are resolved against the `global.yaml` directory. The file must have a `family` column (case-insensitive match) plus any extra columns to be picked up — currently `baltimore_class` (Roman numeral I–VII per Baltimore 1971) is the only one read by the pipeline. Missing file, missing key, or missing family → column simply left empty.
@@ -248,12 +258,12 @@ msa_100:
 msa_trim:
   enabled: true                  # drop poorly-aligned columns before tree inference
   tool: trimal
-  options: "-automated1"         # adaptive; works for both nucleotide and protein
+  options: "-gt 0.5"             # keep columns with at most 50% gaps; nucleotide and protein
 
 tree_500:
   tool: iqtree                # FastTree: tool: fasttree plus options_nuc/options_aa: ""
   options_nuc: "--fast"       # nucleotide; SH-aLRT support auto-added by the wrapper
-  options_aa: "--fast"        # amino acid (e.g. marker-gene families)
+  options_aa: "-n 50"         # amino acid (marker proteins): search stopped after 50 iterations
   model_nuc: GTR+G
   model_aa: LG+G              # LG+G used for amino acid sequences
 
@@ -277,6 +287,8 @@ outlier_removal:
   factor: 20.0                  # threshold = median + factor × MAD (Median Absolute Deviation)
   max_iterations: 3             # maximum MSA+tree iterations
   min_seqs: 40                  # only remove outliers when ≥ min_seqs sequences remain after removal
+  quick_check: true             # check each round on a quick --fast tree; the configured
+                                # search runs once no more outliers turn up
 
 labeling:
   format: "{species}|{id}|{host}"  # format string for leaf labels (PhyloXML <name>,
@@ -400,6 +412,7 @@ Notes on `include_seq` and `include_fasta_files`:
 - For `include_seq`, the sequence may be wrapped across lines — whitespace is stripped and the sequence is uppercased.
 - Injected leaves render gray (no genus) and do not participate in LCA voting, since only id and organism are required.
 - Not supported when `sequence.region == "concatenated"` — injected sequences cannot be split into per-marker proteins.
+- The sequences must be of the family's type: a nucleotide sequence in a protein family, or a protein in a nucleotide family, is a hard error. Likewise a `manual.include` accession whose shape clearly belongs to the other NCBI database (a nuccore accession for a protein family, a protein accession for a nucleotide one; case does not matter) is left out with a warning instead of being fetched. Ids of no NCBI shape, such as Pathoplexus ids, are not judged by shape.
 
 #### Additional data sources (Pathoplexus)
 
@@ -428,7 +441,7 @@ Valid organism slugs: `andv`, `cchf`, `dengue`, `ebola-bdbv`, `ebola-sudan`, `eb
 
 Notes:
 
-- **Nucleotide-only**, and the family's tree must be nucleotide (e.g. `sequence.region: whole_genome`). Not supported when `sequence.region == "concatenated"`.
+- **Nucleotide-only**, and the family's tree must be nucleotide: a family analysed as protein (including the RNA-virus families on the RdRp preset, e.g. Filoviridae) is refused at config load. Set `sequence.type: nucleotide` in its config first (see [RNA virus families](#rna-virus-families-rdrp)). Not supported when `sequence.region == "concatenated"`.
 - `name_prefix` is prepended **verbatim** to every leaf label from that source (supply your own trailing separator, e.g. `PATHOPLEXUS_`), so external tips are easy to spot in the tree, FASTA, `*_id_map.tsv`, PhyloXML, and Auspice.
 - `outbreak_name` tags each injected tip with the given label, emitted as a PhyloXML `vipr:outbreak` property and an **Outbreak** colouring + filter in the Auspice JSON — handy for isolating the outbreak clade in Nextstrain. Both fields appear only when set, so ordinary trees are unaffected.
 - Only the **latest version** of each Pathoplexus accession is fetched; revoked records are excluded.
@@ -487,16 +500,15 @@ The outcome — how many long and short outliers were dropped, the median, and t
 
 #### DNA virus families
 
-Known DNA virus families are automatically configured with curated ICTV-aligned markers. Small ssDNA / dsDNA families use a single diagnostic protein (when one is well established), medium–large dsDNA families use a family-specific structural or replication protein, and nucleocytoplasmic large DNA viruses (NCLDVs) share DNA polymerase (family B) as a universal marker:
+Known DNA virus families are automatically configured with curated ICTV-aligned markers (the CRESS-DNA families and Hepadnaviridae are on the HMM-identified Rep and RT markers, [below](#reverse-transcribing-and-cress-dna-families-rt-rep)). Small ssDNA / dsDNA families use a single diagnostic protein (when one is well established), medium–large dsDNA families use a family-specific structural or replication protein, and nucleocytoplasmic large DNA viruses (NCLDVs) share DNA polymerase (family B) as a universal marker:
 
 | Family group | Marker gene | Sequence type |
 |---|---|---|
-| Circoviridae, Smacoviridae | Rep | protein |
+| Smacoviridae | Rep (by GenBank name) | protein |
 | Anelloviridae | ORF1 | protein |
 | Parvoviridae | NS1 | protein |
 | Polyomaviridae | large T antigen | protein |
 | Papillomaviridae | L1 | protein |
-| Hepadnaviridae | whole genome | nucleotide |
 | Adenoviridae | hexon | protein |
 | Orthoherpesviridae, Alloherpesviridae, Herpesviridae | DNA polymerase | protein |
 | Malacoherpesviridae | major capsid protein | protein |
@@ -519,6 +531,45 @@ Families using **multi-marker protein concatenation** (`region: concatenated`) a
 
 The 8-marker NCLDV-hallmark fallback now applies only to Pandoraviridae and Medusaviridae (no cache audit data yet). If a stale auto-generated config file exists with incorrect settings for any of these families, the program logs a warning and suggests deleting the file to regenerate it.
 
+#### RNA virus families (RdRp)
+
+Whole-genome nucleotide alignment is saturated at family scale for most RNA viruses: in a survey of 117 earlier nucleotide family trees, 84 had a median tip-to-tip distance above 1.5 substitutions per site and 24 more above 0.75 (see the [phylogenetic-signal check](#5-alignment-and-tree-inference)). Their deep structure was noise. So **107 RNA-virus families** (kingdom *Orthornavirae*) default to the **RNA-dependent RNA polymerase** — the one protein all of them encode and the standard family-level marker — as a protein tree (`RDRP_FAMILIES` in `config.py`):
+
+- **Identified by HMM**, not by name, against the bundled Pfam set `RdRp` (23 profiles: `RdRP_1`–`RdRP_5`, `Mononeg_RNA_pol`, `Bunya_RdRp`, `Arena_RNA_pol`, `Flu_PB1`, `Flavi_NS5`, `Mitovir_RNA_pol`, `RNA_replicase_B`, the reovirus and birnavirus polymerases, …). GenBank names the protein in dozens of ways (NIb, nsP4, 2a, lambda-3, L, PB1, ORF1ab, polyprotein, "183 kDa protein") and HMM identification makes that irrelevant.
+- **Only the family's own kind of RdRp.** Each family's marker tokens are the profiles its own RefSeq RdRps hit (`RDRP_FAMILY_PROFILES`: e.g. `Mononeg_RNA_pol` for Rhabdoviridae; `Bunya_RdRp` and `Flu_PB1` for Phenuiviridae; the four broad palm-domain profiles `RdRP_1`–`RdRP_4` together for +ssRNA families such as Togaviridae), and `hmm.best_hit_only` makes a protein count only when one of them fits it better than any other profile in the set (profiles for other domains of the same polymerase, such as the bunyavirus L thumb-ring and PA-C-like domains, count as the family's own: `hmm.best_hit_also`). Those two L domains outside the RdRp core never select or cut a protein, even where a family's RefSeq L proteins hit them (Peribunyaviridae, Phenuiviridae, Cruliviridae): a partial L covering only such a domain would otherwise enter the alignment with no RdRp columns. Every RefSeq L protein of those families also hits `Bunya_RdRp`. This keeps out other viruses filed under the family's taxa: in October 2026 NCBI had about 20 orbivirus and bunyavirus species under *Alphavirus*, whose VP1 and L proteins fit `Orbi_VP1` / `Bunya_RdRp` best and would otherwise have joined the Togaviridae tree (whole-genome nucleotide mode took them too). Each such species is named in a WARNING in the family log, with its accessions.
+- **Cut to the RdRp domain** ± 100 residues (`sequence.domain_padding`): in polyprotein viruses the longest RdRp-carrying protein is the whole polyprotein, whose structural and protease regions would otherwise dominate the alignment. The span is the run of profile hits around the best one; a hit more than 500 residues from its neighbours (a stray hit, or a second RdRp copy in a chimeric record) is left out. Metadata is kept and a GenBank COMMENT records the residues used. Proteins given by hand (`manual.include` protein accessions, `include_seq`, `include_fasta_files`) are cut the same way.
+- **Proteins under 100 aa are never candidates** (`hmm.min_protein_length`): quality control drops them anyway. They are removed after download, because a length clause makes each NCBI protein search several seconds slower.
+- **Hit rule:** domain E-value ≤ 1e-3 and ≥ 20 % profile coverage, no Pfam GA (`hmm.use_ga_when_available: false`). Every profile in the set is an RdRp, so the looser rule costs little; on RefSeq proteins it raised the families with ≥ 70 % of viruses covered from 78 to 107 of 138, and an audit of the extra hits found RdRps under other names except ~4 in several thousand.
+- **Families stay nucleotide** when fewer than 70 % of their RefSeq viruses had an RdRp hit (divergent RdRps Pfam does not model: ormycoviruses, ambiviruses, most botourmia-, narna- and hypo-like families, Phasmaviridae, Qinviridae, …; listed with their coverage in `config.py`), and by design for deltaviruses (Kolmioviridae), satellites and viroids. Reverse-transcribing families have no RdRp; they are on the RT marker ([below](#reverse-transcribing-and-cress-dna-families-rt-rep)).
+- The segment keyword of segmented families is cleared: the HMM finds the RdRp on whichever segment carries it.
+
+To keep nucleotide analysis for a family, set in its config:
+
+```yaml
+sequence:
+  type: nucleotide
+  region: whole_genome
+  segment: segment L      # segmented families only: the segment to use
+hmm:
+  enabled: false
+```
+
+A file that sets `sequence.type` other than protein, `sequence.region` other than `RdRp`, or `hmm.enabled: false` gets no part of the RdRp preset: the family runs on the template defaults under the file's own values. A file written without any of these keys (as in v1.5.0) therefore gets whole-genome nucleotide with the usual segment. A file generated by v1.6.0 holds every key, so edit all of the lines above: its `segment: null` would otherwise put all segments into one alignment. The load step logs a warning naming the type, region and segment that will run. Two half-edited combinations stop the run at load, with the lines to fix: `hmm.enabled: true` with `sequence.type: nucleotide` (the run would fetch RdRp proteins and reject them all as nucleotide), and a `sequence.segment` with the HMM protein marker (protein titles name no segment, so every record would be dropped). Outbreak trees (`additional_data_sources`) need nucleotide analysis, as Pathoplexus supplies nucleotide genomes.
+
+#### Reverse-transcribing and CRESS-DNA families (RT, Rep)
+
+The same approach covers the two groups without an RdRp whose whole-genome trees were saturated or weak in the survey: the reverse-transcribing viruses (*Pararnavirae*) on the **reverse transcriptase**, and the circular Rep-encoding ssDNA viruses (*Cressdnaviricota*, plus Alphasatellitidae, whose satellites encode a circovirus-like Rep) on the **Rep** protein. Hit rule, 100-aa floor, opt-out (`sequence.region: RT` / `Rep` instead of `RdRp`) and the load-time checks are as for the RdRp. Coverage of RefSeq viruses was tested the same way (2026-10-21):
+
+- **RT** (bundled set `RT`: `RVT_1`, `RVT_2`, `RVT_thumb`, `RVT_connect`): Retroviridae, Caulimoviridae, Hepadnaviridae, Metaviridae. `RVT_1` hits every RefSeq caulimo-, hepadna- and metavirus and 64 of 89 retroviruses; the other 25 have no RT gene at all (transforming viruses that carry an onc gene in place of *pol*, endogenous-retrovirus fragments), so they are not in the Retroviridae tree. The RT is cut to its domain ± 100 residues (~310–370 aa; Gag-Pol, the hepadnavirus P protein and caulimovirus polyproteins are 800–1850 aa). The thumb and connection domains count only for the best-hit rule; `RVT_2` (Ty1/copia RT) is there so such a protein is recognised as foreign. Pseudoviridae (no RefSeq proteins) stays as it was. Hepadnaviridae was whole-genome nucleotide before.
+- **Rep** (bundled set `Rep`: `Viral_Rep`, `RNA_helicase` (the SF3 helicase of Rep), `Gemini_AL1`, `Gemini_AL1_M`): 23 families — Adamaviridae, Alphasatellitidae, Amesuviridae, Anicreviridae, Bacilladnaviridae, Circoviridae, Draupnirviridae, Endolinaviridae, Gandrviridae, Geminiviridae, Genomoviridae, Geplanaviridae, Kanorauviridae, Kirkoviridae, Mahapunaviridae, Nanoviridae, Naryaviridae, Nenyaviridae, Oomyviridae, Ouroboviridae, Pecoviridae, Redondoviridae, Vilyaviridae; ≥ 94 % of RefSeq viruses in each. Rep proteins are ~270–470 aa and are kept whole. Geminivirus-like and circovirus-like Reps hit different profiles, but the profiles do not tell families apart, so every Rep profile selects and there is no best-hit rule. Smacoviridae keeps its Rep chosen by GenBank name (Pfam finds only 38 of 88 smacovirus Reps); Metaxyviridae (no RefSeq proteins) and Tolecusatellitidae (betasatellites encode no Rep) stay whole-genome nucleotide. Circoviridae used the name-based Rep before.
+
+#### Species without the marker
+
+A tree built on one marker (RdRp, RT, Rep, a DNA marker protein, a segment, or complete genomes) can only show species NCBI has that sequence for. Two things keep that loss small and visible:
+
+- **Translation fallback** (HMM markers: RdRp, RT, Rep, Adenoviridae hexon): when no annotated protein of a species carries the marker, the species' nucleotide records (up to 100, complete genomes first) are translated in all six frames and searched with the same profiles and rules. This finds markers NCBI never annotated as a protein: foamy-virus and endogenous-retrovirus genomes without a *pol* CDS, metagenomic records with no protein at all. The record is named after its genome accession, keeps its metadata, and a GenBank COMMENT says it was translated. On Retroviridae (2026-10-21) it recovered the galago prosimian foamy virus, bat spumavirus 1, the *Xenopus* endogenous retrovirus Xen1 and SHIV (whose 70,000 GenBank proteins are mostly env clones). It uses the standard genetic code.
+- **Report:** a species with NCBI records but none of the marker is listed in a WARNING in the family log and in `<Family>_species_without_marker.tsv` (with the species found only by translation), and counted in `summary.tsv` (`species_without_marker`, `species_marker_translated`) and in the report PDF. For Retroviridae these are mostly the acutely transforming viruses, whose genomes carry a host oncogene in place of *pol*. In concatenated mode a species whose genomes carry some of the markers, but none as many as `concatenation.min_fraction` asks for, is listed as `too few markers` (Marseilleviridae, 2026-10-22: Noumeavirus and Golden Marseillevirus, whose packaging ATPase and RNA polymerase subunits NCBI names differently).
+
 #### HMM-based marker identification
 
 For large DNA virus families whose GenBank annotation is inconsistent (synonyms, gene-symbol vs descriptive names, mis-/un-annotated or divergent orthologs), marker proteins can be identified by **HMMER profile homology** instead of protein-name queries. Enable it per family with the `hmm:` block and give each marker an `hmms:` token list:
@@ -531,9 +582,15 @@ hmm:
   use_ga_when_available: true   # prefer each profile's curated GA bit-score
   relative_length_cutoff: 0.5   # min fraction of the HMM model a hit must cover
   multidomain_overlap_tolerance: 30   # residue slack between adjacent domains of an "A--B" token
+  best_hit_only: false          # true: a protein counts only if one of the marker's profiles fits it best
+  best_hit_also: []             # profiles that also count as the marker's own for best_hit_only
+                                #   (other domains of the same protein); not tokens
+  min_protein_length: null      # proteins shorter than this (aa) are never candidates
   threads: null                 # hmmscan --cpu; null → the run's thread count
 
-# Single-marker family (DNA_FAMILIES) — token on the sequence block.
+# Single-marker family (DNA_FAMILIES, RDRP_FAMILIES) — token on the sequence block.
+# domain_padding: null keeps the whole protein; an integer keeps only the
+# span of the token's hits ± that many residues (the RdRp and RT presets use 100).
 # OR'd tokens: try the 2-domain architecture first, fall back to the single domain.
 sequence:
   region: hexon
@@ -551,13 +608,16 @@ concatenation:
 
 **How it works.** When `hmm.enabled`, the per-marker name queries are replaced by an all-proteins-per-species fetch. Each protein is scanned once (`hmmscan`, batched and sequence-deduplicated); a hit passes when it clears the curated Pfam **GA** bit-score (or `default_evalue`) **and** covers ≥ `relative_length_cutoff` of the HMM model. Proteins are grouped by source genome and the longest token-satisfying protein is chosen per marker; `max_per_species` then bounds the number of genomes kept (RefSeq-first). Works on both the single-marker and concatenated-marker paths; the global sequence cache is bypassed in HMM mode.
 
-**Bundled profiles.** Curated CC0 **Pfam-A** sets ship under `vfam_trees/data/hmms/<Family>/` and are selected by bare family name (`database: Poxviridae`). **Poxviridae** (8 single-domain markers) and **Adenoviridae** (hexon, as the 2-domain `Adeno_hexon--Adeno_hexon_C` architecture OR'd with the single `Adeno_hexon` domain) are bundled and enabled in their presets. (A live 761-species Adenoviridae run showed the strict 2-domain gate is highly specific but under-sensitive — `Adeno_hexon_C` misses its GA cutoff on divergent hexons and partial deposits split the domains across records — hence the single-domain fallback. Likewise a live Poxviridae run showed the generic capping-enzyme Pfam families don't match the poxvirus D1 large subunit at all, so that marker uses the N7-methyltransferase domain `mRNA_G-N7_MeTrfase` with a per-family `relative_length_cutoff` of 0.40 — empirical validation per family matters.) Point `database` at your own directory of `.hmm` files (or a single `.hmm`) for other families; the set is auto-combined and `hmmpress`-ed on first use. Rebuild the bundled sets with `scripts/build_bundled_hmms.sh`. Requires **HMMER** (`hmmscan`/`hmmpress`) on `$PATH`.
+**Bundled profiles.** Curated CC0 **Pfam-A** sets ship under `vfam_trees/data/hmms/<Family>/` and are selected by bare family name (`database: Poxviridae`). **Poxviridae** (8 single-domain markers), **Adenoviridae** (hexon, as the 2-domain `Adeno_hexon--Adeno_hexon_C` architecture OR'd with the single `Adeno_hexon` domain) and **RdRp** (23 RNA-polymerase profiles, shared by the 107 RNA-virus families above) are bundled and enabled in their presets. (A live 761-species Adenoviridae run showed the strict 2-domain gate is highly specific but under-sensitive — `Adeno_hexon_C` misses its GA cutoff on divergent hexons and partial deposits split the domains across records — hence the single-domain fallback. Likewise a live Poxviridae run showed the generic capping-enzyme Pfam families don't match the poxvirus D1 large subunit at all, so that marker uses the N7-methyltransferase domain `mRNA_G-N7_MeTrfase` with a per-family `relative_length_cutoff` of 0.40 — empirical validation per family matters.) Point `database` at your own directory of `.hmm` files (or a single `.hmm`) for other families; the set is auto-combined and `hmmpress`-ed on first use. Rebuild the bundled sets with `scripts/build_bundled_hmms.sh`. Requires **HMMER** (`hmmscan`/`hmmpress`) on `$PATH`.
 
 ## Usage
 
 ```bash
 # Generate global config template
 vfam_trees init
+
+# ... listing every setting with its default
+vfam_trees init --full
 
 # Overwrite an existing global config
 vfam_trees init --force
@@ -574,13 +634,20 @@ vfam_trees init-configs -f families.txt --force
 # Preview per-family parameters without running the pipeline
 vfam_trees run -f families.txt --dry-run
 
-# Run pipeline (1 family at a time)
+# Run pipeline (1 family at a time).  Before Snakemake starts, `run` checks
+# global.yaml and that the external tools the listed families need are on
+# PATH (HMMER for the RdRp and other HMM families, FastTree if a tree block
+# uses it), and stops at once if not.
 vfam_trees run -f families.txt
 
 # Run with 4 parallel families, 4 threads each
 vfam_trees run -f families.txt -j 4 -t 4
 
-# Force re-run families already marked as done
+# Force re-run families already marked as done.  Each species' download in
+# the output folder is reused only when the sequence settings (type, region,
+# segment, HMM marker settings and profile content, max_per_species, excluded
+# organisms) are unchanged; otherwise it is downloaded again.  Lineages of
+# taxa new to the folder are fetched and added to its taxonomy cache.
 vfam_trees run -f families.txt --force
 
 # Check progress (shows current stage for in-progress families)
@@ -651,14 +718,28 @@ Filoviridae
 |------|-------------|
 | `<Family>_report.pdf` | Stats table (taxid, lineage, molecule/region, species/QC counts, sequence-length stats, per-tree MSA / tree / clustering / support stats), post-QC and per-tree length histograms, support histograms, tree_100 visualization with color legend |
 | `<Family>.log` | Per-family log |
+| `<Family>_species_without_marker.tsv` | Species NCBI has records for but none of the analysed marker / region, or too few of the concatenated markers (not in the trees), and species whose marker was found only by translating nucleotide records ([details](#species-without-the-marker)); written only when there are any |
+| `<Family>.yaml` | The settings this family ran with: built-in defaults, `global.yaml` `defaults:`, family preset and family file, merged. A header names the vfam_trees version, start time, thread count, the files merged and any keys the version did not read. Usable as the family's config to repeat the analysis |
 
 ### Cross-family files (`results/`)
 
 | File | Description |
 |------|-------------|
-| `summary.tsv` | One row per family analyzed (success or skip): species counts, QC breakdown, sequence-length stats, clustering thresholds, MSA / trim / tree program-model-options, leaf counts, support stats, length- and branch-outlier counts and cutoffs, genus/subfamily counts, plus joined columns from `annotation_tsv` (e.g. `baltimore_class`). Rows are written by column name, so appending to a file from an earlier version first rewrites its header to the current columns |
+| `summary.tsv` | One row per family analyzed (success or skip): species counts (discovered, with sequences, without the marker, marker found only by translation), QC breakdown, sequence-length stats, clustering thresholds, MSA / trim / tree program-model-options, leaf counts, support stats, phylogenetic-signal verdict and measures, length- and branch-outlier counts and cutoffs, genus/subfamily counts, plus joined columns from `annotation_tsv` (e.g. `baltimore_class`). Rows are written by column name, so appending to a file from an earlier version first rewrites its header to the current columns |
 | `status.tsv` | Lightweight one-row-per-family table: `family`, `ncbi_taxid`, `molecule_region`, `status` (`OK` or skip reason), `lineage`, `baltimore_class` |
 | `overview_tree_100.png` | Thumbnail grid of all tree_100 trees, shaded by viral realm (ssDNA, dsDNA, –ssRNA, +ssRNA/dsRNA, RT viruses) |
+| `run_records/<start time>.yaml` | One per `vfam_trees run`; see [Run records](#run-records) |
+
+### Run records
+
+Each `vfam_trees run` writes `run_records/<start time>.yaml` into the output folder before Snakemake starts, and completes it when the run ends. It holds:
+
+- the vfam_trees version, command line, working directory, family list and options (`-j`, `-t`, `--force`, log level), and the paths of `global.yaml`, the configs folder and the output folder;
+- `status` (`running`, `completed`, `failed` or `interrupted`), start and finish times and Snakemake's exit code; a killed run stays `running`;
+- the versions of Python, the main Python packages and the external tools (MAFFT, trimAl, IQ-TREE, FastTree, mmseqs, CD-HIT, HMMER);
+- `global_config`: every global setting the run used, i.e. the built-in defaults overlaid with `global.yaml`, plus the keys it did not read. The NCBI API key is not recorded.
+
+Family presets and family files are applied per family on top of `global_config.defaults`; what each family ran with is in its `<Family>.yaml` (above). Together the two say what a results folder was made with, without having to reconstruct an older version's defaults. A family skipped as already done keeps the `<Family>.yaml` of the run that made it.
 
 ## License
 

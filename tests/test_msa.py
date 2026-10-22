@@ -157,3 +157,81 @@ class TestFlippedRecord:
 
     def test_missing_record_is_empty(self, tmp_path):
         assert read_flipped_ids(tmp_path / "nothing.fasta") == []
+
+
+class TestProteinInput:
+    """run_msa(seq_type="protein") aligns a copy with residues MAFFT rejects
+    written as X; the caller's FASTA is left as deposited."""
+
+    def _capture(self, monkeypatch):
+        seen = {}
+
+        def fake(input_fasta, output_fasta, options, threads):
+            seen["input"] = input_fasta
+            seen["seqs"] = _seqs(input_fasta)
+            output_fasta.write_text(input_fasta.read_text())
+            return []
+        monkeypatch.setattr(msa_mod, "_run_mafft", fake)
+        return seen
+
+    def test_rejected_residues_written_as_x_in_a_copy(self, tmp_path, monkeypatch, caplog):
+        import logging
+        seen = self._capture(monkeypatch)
+        inp = tmp_path / "raw.fasta"
+        inp.write_text(">p1\nMKOLAUV\n>p2\nMKLAV*\n")
+        with caplog.at_level(logging.INFO, logger="vfam_trees.msa"):
+            run_msa(inp, tmp_path / "aln.fasta", options="--auto", seq_type="protein")
+        assert seen["input"] != inp
+        assert seen["seqs"] == {"p1": "MKXLAXV", "p2": "MKLAV"}
+        assert inp.read_text() == ">p1\nMKOLAUV\n>p2\nMKLAV*\n"     # untouched
+        assert "1 protein sequence(s)" in caplog.text and "p1" in caplog.text
+
+    def test_clean_input_aligned_as_is(self, tmp_path, monkeypatch, caplog):
+        import logging
+        seen = self._capture(monkeypatch)
+        inp = tmp_path / "raw.fasta"
+        inp.write_text(">p1\nMKLAV\n>p2\nMKLAV\n")
+        with caplog.at_level(logging.INFO, logger="vfam_trees.msa"):
+            run_msa(inp, tmp_path / "aln.fasta", options="--auto", seq_type="protein")
+        assert seen["input"] == inp
+        assert "cannot align" not in caplog.text
+
+    def test_nucleotide_input_never_touched(self, tmp_path, monkeypatch):
+        seen = self._capture(monkeypatch)
+        inp = tmp_path / "raw.fasta"
+        inp.write_text(">n1\nACGTU\n")
+        run_msa(inp, tmp_path / "aln.fasta", options="--auto")
+        assert seen["input"] == inp
+
+
+class TestMafftThreads:
+    """Threaded iterative refinement is nondeterministic: --threadit 0 by default."""
+
+    def _cmd(self, tmp_path, monkeypatch, options, threads=8):
+        import subprocess
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            out = Path(cmd[cmd.index("--out") + 1])
+            out.write_text(">a\nMKV\n")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        monkeypatch.setattr(msa_mod.subprocess, "run", fake_run)
+        inp = tmp_path / "in.fasta"
+        inp.write_text(">a\nMKV\n")
+        msa_mod._run_mafft(inp, tmp_path / "out.fasta", options, threads)
+        return seen["cmd"]
+
+    def test_refinement_on_one_thread_by_default(self, tmp_path, monkeypatch):
+        cmd = self._cmd(tmp_path, monkeypatch, "--maxiterate 1000 --localpair")
+        i = cmd.index("--thread")
+        assert cmd[i:i + 4] == ["--thread", "8", "--threadit", "0"]
+
+    def test_configured_threadit_wins(self, tmp_path, monkeypatch):
+        cmd = self._cmd(tmp_path, monkeypatch, "--auto --threadit 4")
+        assert cmd.count("--threadit") == 1
+        assert cmd[cmd.index("--threadit") + 1] == "4"
+
+    def test_thread_options_helper(self):
+        assert msa_mod.mafft_thread_options("--retree 2", 1) == ["--thread", "1", "--threadit", "0"]
+        assert msa_mod.mafft_thread_options("--threadit=2 --auto", 3) == ["--thread", "3"]

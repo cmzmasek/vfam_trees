@@ -10,7 +10,8 @@
 #     bash scripts/build_bundled_hmms.sh
 #
 # Pfam-A is licensed CC0 (public domain); redistribution is unrestricted.
-# Accessions verified against the InterPro REST API (2026-06).
+# Accessions verified against the InterPro REST API (2026-06; RdRp set 2026-10-20;
+# RT and Rep sets 2026-10-21).
 
 set -euo pipefail
 
@@ -32,6 +33,42 @@ PROFILES=(
     "Poxviridae   PF03167 UDG              uracil-DNA_glycosylase_D4R"
     "Adenoviridae PF01065 Adeno_hexon      hexon_N-terminal"
     "Adenoviridae PF03678 Adeno_hexon_C    hexon_C-terminal"
+    # RdRp — RNA-dependent RNA polymerase profiles for the RNA-virus families
+    #   (RDRP_FAMILIES); all tokens OR'd, accessions verified 2026-10-20.
+    "RdRp PF00680 RdRP_1                    picorna-/calici-/potyvirus-like_RdRp"
+    "RdRp PF00978 RdRP_2                    alphavirus-like_supergroup_RdRp"
+    "RdRp PF00998 RdRP_3                    flavi-/tombus-like_and_HCV_RdRp"
+    "RdRp PF02123 RdRP_4                    toti-/luteo-/rotavirus_RdRp"
+    "RdRp PF07925 RdRP_5                    reovirus_lambda3_RdRp"
+    "RdRp PF00946 Mononeg_RNA_pol           Mononegavirales_L"
+    "RdRp PF04196 Bunya_RdRp                bunyavirus_L"
+    "RdRp PF04197 Birna_RdRp_palm           birnavirus_VP1_palm"
+    "RdRp PF06317 Arena_RNA_pol             arenavirus_L"
+    "RdRp PF00602 Flu_PB1                   influenza_PB1"
+    "RdRp PF00972 Flavi_NS5                 flavivirus_NS5_fingers_palm"
+    "RdRp PF20483 Flavi_NS5_thumb           flavivirus_NS5_thumb"
+    "RdRp PF03431 RNA_replicase_B           levivirus_replicase"
+    "RdRp PF05919 Mitovir_RNA_pol           mitovirus_RdRp"
+    "RdRp PF05788 Orbi_VP1                  orbivirus_VP1"
+    "RdRp PF06478 CoV_RPol_N                coronavirus_nsp12_N-terminal"
+    "RdRp PF22152 Permu_RdRp_palm           permutotetravirus_palm"
+    "RdRp PF27669 RNA-dir_pol_phytoreovirus phytoreovirus_RdRp"
+    "RdRp PF27845 Seadorna_RNAP             seadornavirus_VP1"
+    "RdRp PF22212 CPV_RdRP_pol_dom          cypovirus_polymerase_domain"
+    "RdRp PF08467 Luteo_P1-P2               luteovirus_P1-P2_replicase"
+    "RdRp PF21561 L_thumb_ring_vir          bunyavirus_L_thumb_ring"
+    "RdRp PF12603 L_PA-C-like               bunyavirus_L_PA-C-like"
+    # RT — reverse transcriptase of the reverse-transcribing families
+    #   (RT_FAMILY_PROFILES); accessions verified 2026-10-21.
+    "RT PF00078 RVT_1                       retro-/caulimo-/hepadnavirus_and_Ty3_RT"
+    "RT PF07727 RVT_2                       Ty1/copia_RT"
+    "RT PF06817 RVT_thumb                   RT_thumb"
+    "RT PF06815 RVT_connect                 RT_connection"
+    # Rep — CRESS-DNA replication-associated protein (REP_FAMILIES).
+    "Rep PF02407 Viral_Rep                  circo-/nanovirus-like_Rep_endonuclease"
+    "Rep PF00910 RNA_helicase               SF3_helicase_of_Rep"
+    "Rep PF00799 Gemini_AL1                 geminivirus-like_Rep_catalytic"
+    "Rep PF08283 Gemini_AL1_M               geminivirus_Rep_central"
 )
 
 TMP="$(mktemp -d)"

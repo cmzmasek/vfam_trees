@@ -422,3 +422,64 @@ def test_remove_length_outliers_non_protected_still_dropped():
     kept_ids = {r.id for r in kept}
     assert "NC_000001" in kept_ids
     assert "UNPROT1" not in kept_ids
+
+
+# ---------------------------------------------------------------------------
+# normalize_protein_sequence / _records — residues MAFFT and IQ-TREE reject
+# (found live: a tombusvirus RdRp writes its amber read-through codon as "O").
+# ---------------------------------------------------------------------------
+
+from vfam_trees.quality import normalize_protein_records, normalize_protein_sequence
+
+
+class TestNormalizeProtein:
+    def test_standard_and_ambiguity_codes_kept(self):
+        s = "ACDEFGHIKLMNPQRSTVWYBZX"
+        assert normalize_protein_sequence(s) == s
+
+    def test_rejected_letters_become_x(self):
+        assert normalize_protein_sequence("MKOLUJA") == "MKXLXXA"
+
+    def test_stops_and_gaps(self):
+        assert normalize_protein_sequence("MK*LA**") == "MKXLA"
+        assert normalize_protein_sequence("MK-L.A") == "MKLA"
+
+    def test_lower_case_is_upper_cased(self):
+        assert normalize_protein_sequence("mkla") == "MKLA"
+
+    def test_records_in_place(self):
+        from Bio.Seq import Seq
+        from Bio.SeqRecord import SeqRecord
+        recs = [SeqRecord(Seq("MKOLA"), id="a"), SeqRecord(Seq("MKLA"), id="b")]
+        assert normalize_protein_records(recs) == ["a"]
+        assert str(recs[0].seq) == "MKXLA" and str(recs[1].seq) == "MKLA"
+
+    def test_case_and_terminal_stop_fixed_but_not_reported(self):
+        from Bio.Seq import Seq
+        from Bio.SeqRecord import SeqRecord
+        recs = [SeqRecord(Seq("mkla*"), id="a"), SeqRecord(Seq("MKXLA"), id="b")]
+        assert normalize_protein_records(recs) == []
+        assert str(recs[0].seq) == "MKLA" and str(recs[1].seq) == "MKXLA"
+
+
+from vfam_trees.quality import sequence_type_mismatch
+
+
+class TestSequenceTypeMismatch:
+    check = staticmethod(sequence_type_mismatch)
+
+    def test_nucleotide_in_protein_family(self):
+        assert "nucleotide" in self.check("ACGTTGCAAGGTNNACGT" * 20, "protein")
+
+    def test_protein_in_protein_family(self):
+        assert self.check("MSLEKTFQRIVDGAPWYCHN" * 10, "protein") is None
+
+    def test_protein_in_nucleotide_family(self):
+        assert "protein" in self.check("MSLEKTFQRIVDGAPWYCHN" * 10, "nucleotide")
+
+    def test_iupac_nucleotide_in_nucleotide_family(self):
+        assert self.check("ACGTRYKMSWNACGT" * 20, "nucleotide") is None
+
+    def test_short_rdrp_motif_rich_protein_not_mistaken(self):
+        # Alanine/glycine/threonine-rich protein, still < 90 % A/C/G/T/N.
+        assert self.check("GDDGATGAGCATSGNTLL" * 5, "protein") is None

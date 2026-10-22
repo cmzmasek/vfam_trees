@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import statistics
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -14,18 +15,21 @@ from Bio import Phylo, SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from .config import load_family_config, load_global_config, sanitize_output_prefix
+from .config import (
+    DEFAULT_FAMILY_CONFIG, global_settings, load_family_config, load_global_config,
+    sanitize_output_prefix, unknown_config_keys, unknown_keys_message,
+)
 from .datasources import SOURCE_FETCHERS
 from .fetch import (
     configure_entrez, discover_species, get_family_taxid,
-    fetch_species_sequences, fetch_accessions_directly,
+    fetch_species_sequences, fetch_accessions_directly, accession_db,
     parse_gb_records, extract_metadata,
-    fetch_taxonomy_lineages,
+    fetch_taxonomy_lineages, cached_taxonomy_lineages,
 )
 from .summary import (
     compute_support_stats, compute_msa_stats, compute_seqlen_stats,
     build_summary_row, write_summary_row, load_family_annotations,
-    build_status_row, write_status_row,
+    build_status_row, write_status_row, report_marker_coverage,
 )
 from .quality import (
     filter_sequences,
@@ -33,15 +37,17 @@ from .quality import (
     log_mad_cutoffs,
     deduplicate,
     write_fasta,
+    sequence_type_mismatch,
 )
 from .rename import assign_short_ids, restore_fasta_names, DEFAULT_LABEL_FORMAT
 from .subsample import absorb_into_refseqs, adaptive_cluster_species, proportional_merge
 from .msa import run_msa, get_mafft_version, read_flipped_ids, validate_msa
-from .trim import run_trim, get_trimal_version
+from .signal import log_signal, measure as measure_signal
+from .trim import DEFAULT_TRIM_OPTIONS, run_trim, get_trimal_version
 from .tree import (
     run_tree, get_tree_tool_version, validate_newick,
     parse_iqtree_best_model, is_model_finder_spec, read_tree_info,
-    support_type_for,
+    support_type_for, quick_tree_settings,
 )
 from .taxonomy import annotate_tree
 from .phyloxml_writer import write_phyloxml
@@ -181,6 +187,8 @@ def _inject_pasted_sequences(
     manual_include_ids: set[str],
     fasta_entries: list[dict],
     family: str,
+    seq_type: str = "nucleotide",
+    prepare=None,
 ) -> int:
     """Inject manual.include_seq / include_fasta_files entries into species_data.
 
@@ -189,7 +197,10 @@ def _inject_pasted_sequences(
     matches a fetched species, otherwise creating a new bucket).  The id is
     added to *manual_include_ids* so the downstream protected-set logic picks
     it up automatically.  Raises ValueError if an entry id collides with any
-    accession already in species_data.
+    accession already in species_data, or if a sequence is not of the
+    family's *seq_type* (`quality.sequence_type_mismatch`).  *prepare*, when
+    given, maps the list of new SeqRecords to the records actually injected
+    (e.g. `_crop_forced_proteins`).
 
     Returns the number of entries injected.
     """
@@ -201,6 +212,7 @@ def _inject_pasted_sequences(
         for d in species_data.values()
         for m in d["metadata"]
     }
+    records: list[SeqRecord] = []
     for entry in fasta_entries:
         entry_id = entry["id"]
         if entry_id in fetched_accessions:
@@ -209,9 +221,21 @@ def _inject_pasted_sequences(
                 f"{entry_id!r} collides with an accession returned by NCBI "
                 "for this family.  Rename the entry or remove it."
             )
+        problem = sequence_type_mismatch(entry["sequence"], seq_type)
+        if problem:
+            raise ValueError(
+                f"{family}: manual.include_seq / include_fasta_files entry "
+                f"{entry_id!r} {problem}."
+            )
+        records.append(SeqRecord(Seq(entry["sequence"]), id=entry_id,
+                                 description=entry["organism"]))
+    if prepare is not None:
+        records = prepare(records)
+
+    for entry, rec in zip(fasta_entries, records):
+        entry_id = entry["id"]
         organism = entry["organism"]
-        seq_str = entry["sequence"]
-        rec = SeqRecord(Seq(seq_str), id=entry_id, description=organism)
+        seq_str = str(rec.seq)
         meta = {
             "accession": entry_id,
             "seq_name": organism or entry_id,
@@ -245,6 +269,7 @@ def _inject_external_sequences(
     manual_include_ids: set[str],
     entries: list[dict],
     family: str,
+    seq_type: str = "nucleotide",
 ) -> int:
     """Inject ``additional_data_sources`` sequences (e.g. Pathoplexus) into
     *species_data*.
@@ -256,7 +281,9 @@ def _inject_external_sequences(
     because ``taxon_id`` is set, the ranked-taxonomy step colours them by genus.
     **Must be called before that taxonomy enrichment** so the taxids are
     resolved.  Raises ValueError on id collision with an already-present
-    accession.  Returns the number of sequences injected.
+    accession, or when a sequence is not of the family's *seq_type* (config
+    validation already refuses these sources for protein families).  Returns
+    the number of sequences injected.
     """
     if not entries:
         return 0
@@ -277,6 +304,11 @@ def _inject_external_sequences(
             raise ValueError(
                 f"{family}: additional_data_sources id {entry_id!r} collides "
                 "with an accession already fetched for this family."
+            )
+        problem = sequence_type_mismatch(entry["sequence"], seq_type)
+        if problem:
+            raise ValueError(
+                f"{family}: additional_data_sources record {entry_id!r} {problem}."
             )
         seq_str = entry["sequence"]
         species = entry.get("species") or ""
@@ -308,6 +340,37 @@ def _inject_external_sequences(
     return injected
 
 
+def _crop_forced_proteins(
+    records: list[SeqRecord], identifier, marker: dict | None, family: str,
+) -> list[SeqRecord]:
+    """Cut proteins that bypass the HMM fetch — manual.include accessions
+    fetched directly, include_seq / include_fasta_files entries — to the
+    marker domain, as the HMM-selected proteins are
+    (`markers.crop_to_marker_domain`).  Does nothing unless HMM single-marker
+    mode crops (``sequence.domain_padding`` set).  A protein with no hit on
+    the marker's profiles is kept whole, with a warning: it was asked for.
+    """
+    if (
+        not records or marker is None or not getattr(identifier, "is_hmm", False)
+        or marker.get("domain_padding") is None or not marker.get("hmms")
+    ):
+        return records
+    from .markers import marker_hits, token_profile_names
+
+    tokens = list(marker["hmms"])
+    cropped = identifier.crop(records, tokens, int(marker["domain_padding"]))
+    names = token_profile_names(tokens)
+    unhit = [r.id for r in records if not marker_hits(r, tokens)]
+    if unhit:
+        log.warning(
+            "%s: %d forced-in protein(s) have no hit on the %r profiles (%s) — "
+            "kept whole: %s",
+            family, len(unhit), marker.get("name"), ", ".join(sorted(names)),
+            ", ".join(unhit),
+        )
+    return cropped
+
+
 def run_family(
     family: str,
     global_config_path: Path,
@@ -319,6 +382,7 @@ def run_family(
     status_path: Path | None = None,
 ) -> None:
     """Execute the full pipeline for a single viral family."""
+    started = datetime.now()
     global_cfg = load_global_config(global_config_path)
     configure_entrez(
         email=global_cfg["ncbi"]["email"],
@@ -377,9 +441,15 @@ def run_family(
         log.warning("Could not resolve NCBI taxid for family %s", family)
     if auto_generated:
         log.warning("Using auto-generated config for %s — consider reviewing it.", family)
+    # Logged again here: the config loaders ran before this log file existed.
+    if global_cfg.get("_unknown_keys"):
+        log.warning(unknown_keys_message(global_config_path, global_cfg["_unknown_keys"]))
+    if family_cfg.get("_unknown_keys"):
+        log.warning(unknown_keys_message(
+            configs_dir / f"{family}.yaml", family_cfg["_unknown_keys"]))
 
     # Global sequence cache (optional — only active when cache.dir is set in global.yaml)
-    cache_cfg  = global_cfg.get("cache") or {}
+    cache_cfg  = global_settings(global_cfg, "cache")
     cache_dir  = cache_cfg.get("dir") or None
     seq_cache: SequenceCache | None = None
     if cache_dir:
@@ -391,7 +461,18 @@ def run_family(
             seq_cache.cache_dir, cs["entries"], cs["size_mb"],
         )
 
-    _save_config_copy(family_cfg, family_dir / f"{out_prefix}.yaml")
+    # The settings this run used, with version and provenance in a header.
+    from .provenance import family_config_header
+    _save_config_copy(
+        family_cfg, family_dir / f"{out_prefix}.yaml",
+        header=family_config_header(
+            family=family, started=started, threads=threads,
+            global_config_path=global_config_path,
+            family_config_path=configs_dir / f"{family}.yaml",
+            auto_generated=auto_generated,
+            unknown_keys=unknown_config_keys(family_cfg, DEFAULT_FAMILY_CONFIG),
+        ),
+    )
 
     work_dir = family_dir / "_work"
     work_dir.mkdir(exist_ok=True)
@@ -422,11 +503,15 @@ def run_family(
     hmm_marker = None
     if hmm_active:
         from .markers import make_identifier
-        hmm_identifier = make_identifier(family_cfg)
+        hmm_identifier = make_identifier(family_cfg, threads=threads)
+        seq_cfg = family_cfg.get("sequence") or {}
         hmm_marker = {
             "name": region,
-            "hmms": (family_cfg.get("sequence") or {}).get("hmms") or [],
+            "hmms": seq_cfg.get("hmms") or [],
             "aliases": [region],
+            # None: keep whole proteins; an int: keep only the marker domain
+            # ± that many residues (crop_to_marker_domain).
+            "domain_padding": seq_cfg.get("domain_padding"),
         }
         log.info(
             "HMM marker identification enabled (database=%r, marker=%r, tokens=%s) "
@@ -525,6 +610,7 @@ def run_family(
             output_dir=output_dir,
             species_list=species_list,
             threads=threads,
+            global_cfg=global_cfg,
             seq_cache=seq_cache,
             summary_path=summary_path,
             status_path=status_path,
@@ -550,6 +636,43 @@ def run_family(
     }
     seen_manual_include: set[str] = set()
     seen_manual_exclude: set[str] = set()
+    # Species NCBI has records for but none of the analysed marker / region
+    # (they cannot be in the trees), and species whose marker was found only
+    # by translating nucleotide records (HMM mode).
+    marker_report: list[dict] = []
+    family_db = "nuccore" if seq_type == "nucleotide" else "protein"
+
+    def _note_no_marker(sp: dict, n_records: int | None = None) -> None:
+        """Record *sp* if NCBI has records for it (counted when not known)."""
+        if n_records is None:
+            from . import fetch as fetch_module   # module attribute: stubbed in tests
+            n_records = fetch_module.count_species_records(
+                sp["taxid"], family_db, quality_cfg.get("exclude_organisms"))
+        if n_records:
+            marker_report.append({"species": sp["name"], "taxid": sp["taxid"],
+                                  "ncbi_records": n_records, "status": "no marker"})
+
+    # What a species' downloaded records depend on.  The per-run copy
+    # (sp_work/sequences.gb) is reused only under the same settings, so an
+    # output folder from a run with other settings (e.g. whole-genome
+    # nucleotide before v1.6.0) never feeds its records into this one.
+    download_key = {
+        "seq_type": seq_type,
+        "region": region,
+        "segment": segment,
+        "max_per_species": max_per_species,
+        "exclude_organisms": sorted(quality_cfg.get("exclude_organisms") or []),
+        "hmm": (
+            {k: v for k, v in hmm_cfg.items() if k != "threads"} if hmm_active else None
+        ),
+        "marker": (
+            {"hmms": hmm_marker["hmms"], "domain_padding": hmm_marker["domain_padding"]}
+            if hmm_active else None
+        ),
+        # The profiles' content, not just the set's name: an edited or added
+        # profile changes which protein is selected and how it is cut.
+        "hmm_db": hmm_identifier.database_fingerprint() if hmm_active else None,
+    }
 
     log.info("Downloading sequences for %d species (max %d per species) ...",
              len(species_list), max_per_species)
@@ -564,7 +687,15 @@ def run_family(
         sp_work.mkdir(parents=True, exist_ok=True)
 
         gb_file = sp_work / "sequences.gb"
+        gb_key_file = sp_work / "sequences.key"
         db      = "nuccore" if seq_type == "nucleotide" else "protein"
+
+        if gb_file.exists() and not _check_checkpoint(gb_key_file, download_key):
+            log.info(
+                "[%d/%d] %s: local download was made with other sequence "
+                "settings — downloading again", i, len(species_list), sp_name,
+            )
+            gb_file.unlink()
 
         # --- Download with three-tier caching ---
         # Tier 1: local per-run cache (sp_work/sequences.gb)
@@ -576,6 +707,7 @@ def run_family(
             # Fast path: skip lock acquisition entirely for known-empty species.
             if seq_cache.get_empty(sp_taxid, db, region, segment, max_per_species):
                 log.info("[%d/%d] Cached empty result: %s — skipping.", i, len(species_list), sp_name)
+                _note_no_marker(sp)
                 continue
 
             with seq_cache.download_lock(sp_taxid, db, region, segment, max_per_species) as got_lock:
@@ -588,6 +720,7 @@ def run_family(
                 elif seq_cache.get_empty(sp_taxid, db, region, segment, max_per_species):
                     log.info("[%d/%d] Cached empty result (concurrent): %s — skipping.",
                              i, len(species_list), sp_name)
+                    _note_no_marker(sp)
                     continue
                 else:
                     if not got_lock:
@@ -609,12 +742,14 @@ def run_family(
                         log.info("[%d/%d] No sequences found for %s — caching empty result.",
                                  i, len(species_list), sp_name)
                         seq_cache.store_empty(sp_taxid, db, region, segment, max_per_species, family=family)
+                        _note_no_marker(sp)
                         continue
                     seq_cache.store(sp_taxid, db, region, segment, max_per_species, gb_file, n, family=family)
 
         # Tier 3: no global cache — plain download (also the HMM path)
         else:
             log.info("[%d/%d] Downloading: %s", i, len(species_list), sp_name)
+            sp_report: dict = {}
             n = fetch_species_sequences(
                 taxid=sp_taxid,
                 species_name=sp_name,
@@ -627,11 +762,18 @@ def run_family(
                 hmm_identifier=hmm_identifier,
                 hmm_marker=hmm_marker,
                 species_lineage=sp.get("lineage"),
+                report=sp_report,
             )
             if n == 0:
                 log.info("[%d/%d] No sequences found for %s — skipping.",
                          i, len(species_list), sp_name)
+                if hmm_active:   # the HMM fetch saw what NCBI has
+                    _note_no_marker(sp, sp_report.get("proteins", 0)
+                                    + (sp_report.get("nucleotide_records") or 0))
+                else:
+                    _note_no_marker(sp)
                 continue
+        _write_checkpoint(gb_key_file, download_key)
 
         # Parse records
         raw_records: list[SeqRecord] = []
@@ -642,6 +784,13 @@ def run_family(
 
         if not raw_records:
             continue
+        # A marker found by translating nucleotide records (also when this
+        # download is reused from an earlier run).
+        if any("vfam_trees:" in (r.annotations.get("comment") or "")
+               and "translated from" in (r.annotations.get("comment") or "")
+               for r in raw_records):
+            marker_report.append({"species": sp_name, "taxid": sp_taxid,
+                                  "ncbi_records": len(raw_records), "status": "translated"})
 
         # Segment keyword validation for segmented families
         if segment:
@@ -656,6 +805,7 @@ def run_family(
                 )
             if not raw_records:
                 log.info("No records with segment '%s' for %s — skipping.", segment, sp_name)
+                _note_no_marker(sp, before)
                 continue
             # Rebuild raw_meta to match filtered raw_records
             valid_ids = {r.id for r in raw_records}
@@ -697,6 +847,11 @@ def run_family(
 
         species_data[sp_name] = {"records": filtered, "metadata": filtered_meta}
 
+    n_without_marker, n_translated = report_marker_coverage(
+        marker_report, family_dir / f"{out_prefix}_species_without_marker.tsv",
+        log, format_molecule_region(seq_type, region, segment),
+    )
+
     # Sequence length violin plot (per species, after ambiguity filter, before length filter)
     if species_pre_length_lengths:
         save_sequence_length_plot(out_prefix, family_dir, species_pre_length_lengths, display_name=display_name)
@@ -707,6 +862,27 @@ def run_family(
     # Done here — before the taxonomy fetch — so the new records' taxon IDs are
     # included in the lineage lookup that follows.
     unseen_before_direct = manual_include_ids - seen_manual_include
+    # An accession of the other NCBI database is the other molecule type: a
+    # nuccore genome cannot join a protein alignment, nor a protein a
+    # nucleotide one.  Report those here (not again as "not found" below).
+    # Only ids whose shape clearly belongs to the other database: anything
+    # else (a Pathoplexus id, an unusual shape) goes on to the direct fetch
+    # and the checks after it.
+    family_db = "nuccore" if seq_type == "nucleotide" else "protein"
+    wrong_db = sorted(
+        a for a in unseen_before_direct
+        if accession_db(a) not in (None, family_db)
+    )
+    if wrong_db:
+        log.warning(
+            "manual.include: %d accession(s) are %s accessions but %s is analysed "
+            "as %s — left out (list the %s accession instead): %s",
+            len(wrong_db), "protein" if family_db == "nuccore" else "nucleotide",
+            family, seq_type, "nucleotide" if family_db == "nuccore" else "protein",
+            ", ".join(wrong_db),
+        )
+        seen_manual_include |= set(wrong_db)
+        unseen_before_direct -= set(wrong_db)
     if unseen_before_direct:
         log.info(
             "manual.include: %d accession(s) not found via per-species download; "
@@ -714,6 +890,20 @@ def run_family(
             len(unseen_before_direct), sorted(unseen_before_direct),
         )
         direct_records = fetch_accessions_directly(unseen_before_direct)
+        mismatched = {
+            r.id for r in direct_records
+            if sequence_type_mismatch(str(r.seq), seq_type)
+        }
+        if mismatched:
+            log.warning(
+                "manual.include: %d fetched record(s) are not %s sequences — "
+                "left out: %s", len(mismatched), seq_type, ", ".join(sorted(mismatched)),
+            )
+            seen_manual_include |= mismatched
+            direct_records = [r for r in direct_records if r.id not in mismatched]
+        direct_records = _crop_forced_proteins(
+            direct_records, hmm_identifier, hmm_marker, family,
+        )
         fetched_ids = {r.id for r in direct_records}
         if fetched_ids:
             bucket = species_data.setdefault(
@@ -727,7 +917,7 @@ def run_family(
                 "manual.include: direct fetch succeeded for %d/%d accession(s): %s",
                 len(fetched_ids), len(unseen_before_direct), sorted(fetched_ids),
             )
-        still_missing = unseen_before_direct - fetched_ids
+        still_missing = unseen_before_direct - fetched_ids - seen_manual_include
         if still_missing:
             log.warning(
                 "manual.include: could not fetch %d accession(s) for %s "
@@ -762,7 +952,7 @@ def run_family(
                 rec.setdefault("outbreak_name", src.get("outbreak_name", ""))
             ext_entries.extend(fetched)
         n_ext = _inject_external_sequences(
-            species_data, manual_include_ids, ext_entries, family,
+            species_data, manual_include_ids, ext_entries, family, seq_type=seq_type,
         )
         # Every entry is now in species_data (a collision raises): mark them
         # seen, or the unseen-manual.include check below reports them "absent
@@ -775,23 +965,16 @@ def run_family(
                 n_ext,
             )
 
-    # Fetch ranked taxonomy lineages from NCBI (cached per family)
-    taxid_cache = work_dir / "taxonomy_cache.json"
-    if taxid_cache.exists():
-        with open(taxid_cache) as f:
-            taxid_to_lineage = json.load(f)
-        log.info("Reusing cached ranked taxonomy: %d taxa", len(taxid_to_lineage))
-    else:
-        unique_taxids = {
-            str(m["taxon_id"])
-            for d in species_data.values()
-            for m in d["metadata"]
-            if m.get("taxon_id")
-        }
-        log.info("Fetching ranked taxonomy from NCBI for %d unique taxa ...", len(unique_taxids))
-        taxid_to_lineage = fetch_taxonomy_lineages(unique_taxids)
-        with open(taxid_cache, "w") as f:
-            json.dump(taxid_to_lineage, f)
+    # Fetch ranked taxonomy lineages from NCBI (cached per family; taxa the
+    # cache lacks, e.g. after a re-download, are fetched and added)
+    unique_taxids = {
+        str(m["taxon_id"])
+        for d in species_data.values()
+        for m in d["metadata"]
+        if m.get("taxon_id")
+    }
+    taxid_to_lineage = cached_taxonomy_lineages(
+        unique_taxids, work_dir / "taxonomy_cache.json")
 
     # Attach ranked lineage to each metadata dict
     for data in species_data.values():
@@ -839,6 +1022,8 @@ def run_family(
         species_data, manual_include_ids,
         all_manual_entries,
         family,
+        seq_type=seq_type,
+        prepare=lambda recs: _crop_forced_proteins(recs, hmm_identifier, hmm_marker, family),
     )
     if n_injected:
         log.info(
@@ -867,6 +1052,8 @@ def run_family(
                 segment=segment,
                 n_species_discovered=len(species_list),
                 n_species_with_seqs=len(species_data),
+                n_species_without_marker=n_without_marker,
+                n_species_marker_translated=n_translated,
                 seqlen_stats=seqlen_stats,
                 tree_stats={},
                 n_species_relaxed=n_species_relaxed,
@@ -1023,6 +1210,8 @@ def run_family(
         segment=segment,
         n_species_discovered=len(species_list),
         n_species_with_seqs=len(species_data),
+        n_species_without_marker=n_without_marker,
+        n_species_marker_translated=n_translated,
         seqlen_stats=seqlen_stats,
         tree_stats=tree_stats,
         n_species_relaxed=n_species_relaxed,
@@ -1044,13 +1233,13 @@ def run_family(
             family_annotation=family_annotation,
         ))
 
-    viz_cfg = global_cfg.get("visualization") or {}
-    branch_linewidth = float(viz_cfg.get("branch_linewidth", 0.5))
+    viz_cfg = global_settings(global_cfg, "visualization")
+    branch_linewidth = float(viz_cfg["branch_linewidth"])
 
-    icon_cfg = global_cfg.get("icon") or {}
-    icon_size = int(icon_cfg.get("size", 256))
-    icon_bg_color = icon_cfg.get("bg_color", "#EAF3F2")
-    icon_branch_color = icon_cfg.get("branch_color", "#000000")
+    icon_cfg = global_settings(global_cfg, "icon")
+    icon_size = int(icon_cfg["size"])
+    icon_bg_color = icon_cfg["bg_color"]
+    icon_branch_color = icon_cfg["branch_color"]
 
     # PDF report
     generate_family_report(
@@ -1260,12 +1449,18 @@ def _run_target(
     trim_cfg = family_cfg.get("msa_trim", {})
     trim_enabled = bool(trim_cfg.get("enabled", True))
     trim_tool = trim_cfg.get("tool", "trimal")
-    trim_options = trim_cfg.get("options", "-automated1")
+    trim_options = trim_cfg.get("options", DEFAULT_TRIM_OPTIONS)
     outlier_cfg = family_cfg.get("outlier_removal", {})
     do_outlier_removal = outlier_cfg.get("enabled", True)
     outlier_factor = float(outlier_cfg.get("factor", 20.0))
     max_iterations = int(outlier_cfg.get("max_iterations", 3))
     outlier_min_seqs = int(outlier_cfg.get("min_seqs", 40))
+    # Quick-tree pre-check of each outlier round (None: the configured tree
+    # is no slower, or outlier_removal.quick_check is off).
+    quick_settings = quick_tree_settings(
+        tree_cfg["tool"], tree_options,
+        tree_cfg.get("model_nuc", "GTR+G"), tree_cfg.get("model_aa", "LG+G"),
+    ) if do_outlier_removal and outlier_cfg.get("quick_check", True) else None
 
     msa_short_fasta = target_work / f"alignment_{label}_short.fasta"
     msa_trimmed_fasta = target_work / f"alignment_{label}_short.trim.fasta"
@@ -1273,8 +1468,8 @@ def _run_target(
     tree_input_fasta = msa_trimmed_fasta if trim_enabled else msa_short_fasta
     msa_checkpoint = target_work / ".msa_done"
     tree_output_dir = target_work / "tree"
-    expected_treefile = tree_output_dir / f"tree_{label}.nwk"
     tree_checkpoint = target_work / ".tree_done"
+    quick_checkpoint = target_work / ".quick_tree_done"
     treefile: Path | None = None
     n_outliers_removed = 0
 
@@ -1285,6 +1480,11 @@ def _run_target(
         # ------------------------------------------------------------------
         msa_key = {
             "seq_ids":      sorted(r.id for r in sel_records),
+            # Short ids are reassigned per run, so the same ids can carry other
+            # sequences (e.g. after a change of marker cropping).
+            "seqs_hash":    hashlib.sha256("\n".join(
+                f"{r.id}\t{r.seq}" for r in sorted(sel_records, key=lambda r: r.id)
+            ).encode()).hexdigest()[:16],
             "msa_tool":     msa_cfg["tool"],
             "msa_options":  msa_options,
             "trim_enabled": trim_enabled,
@@ -1305,6 +1505,7 @@ def _run_target(
                 tool=msa_cfg["tool"],
                 options=msa_options,
                 threads=threads,
+                seq_type=seq_type,
             )
             validate_msa(msa_short_fasta)
             log.info("MAFFT complete for tree_%s (iteration %d)", label, iteration)
@@ -1349,109 +1550,88 @@ def _run_target(
             tree_cfg.get("model_nuc") if seq_type == "nucleotide"
             else tree_cfg.get("model_aa")
         )
-        tree_key = {
-            "msa_hash": hashlib.sha256(tree_input_fasta.read_bytes()).hexdigest()[:16],
-            "tool":     tree_cfg["tool"],
-            "tool_version": tree_tool_version,
-            "model":    tree_model_for_check,
-            "options":  tree_options,
-        }
-        if _check_checkpoint(tree_checkpoint, tree_key) and expected_treefile.exists():
-            log.info("Reusing cached tree for tree_%s (iteration %d)", label, iteration)
-            treefile = expected_treefile
-        else:
-            log.info("Running %s (%s model) for tree_%s (iteration %d) ...",
-                     tree_cfg["tool"], tree_model_for_check, label, iteration)
-            treefile = run_tree(
+        msa_hash = hashlib.sha256(tree_input_fasta.read_bytes()).hexdigest()[:16]
+
+        def _build_tree(prefix, checkpoint, options, model_nuc, model_aa, key_model, quick):
+            tree_key = {
+                "msa_hash": msa_hash,
+                "tool":     tree_cfg["tool"],
+                "tool_version": tree_tool_version,
+                "model":    key_model,
+                "options":  options,
+            }
+            nwk = tree_output_dir / f"{prefix}.nwk"
+            what = "quick tree" if quick else "tree"
+            if _check_checkpoint(checkpoint, tree_key) and nwk.exists():
+                log.info("Reusing cached %s for tree_%s (iteration %d)", what, label, iteration)
+                return nwk
+            if quick:
+                log.info("Running quick %s tree (%s, %s model) for tree_%s (iteration %d) ...",
+                         tree_cfg["tool"], options, key_model, label, iteration)
+            else:
+                log.info("Running %s (%s model) for tree_%s (iteration %d) ...",
+                         tree_cfg["tool"], key_model, label, iteration)
+            nwk = run_tree(
                 alignment_fasta=tree_input_fasta,
                 output_dir=tree_output_dir,
-                prefix=f"tree_{label}",
+                prefix=prefix,
                 tool=tree_cfg["tool"],
                 seq_type=seq_type,
-                model_nuc=tree_cfg.get("model_nuc", "GTR+G"),
-                model_aa=tree_cfg.get("model_aa", "LG+G"),
-                options=tree_options,
+                model_nuc=model_nuc,
+                model_aa=model_aa,
+                options=options,
                 threads=threads,
             )
-            validate_newick(treefile)
-            _write_checkpoint(tree_checkpoint, tree_key)
-            log.info("Tree inference complete for tree_%s (iteration %d)", label, iteration)
+            validate_newick(nwk)
+            _write_checkpoint(checkpoint, tree_key)
+            log.info("%s complete for tree_%s (iteration %d)",
+                     "Quick tree" if quick else "Tree inference", label, iteration)
+            return nwk
+
+        def _configured_tree():
+            return _build_tree(
+                f"tree_{label}", tree_checkpoint, tree_options,
+                tree_cfg.get("model_nuc", "GTR+G"), tree_cfg.get("model_aa", "LG+G"),
+                tree_model_for_check, quick=False,
+            )
+
+        def _quick_tree():
+            q_options, q_nuc, q_aa = quick_settings
+            return _build_tree(
+                f"quick_{label}", quick_checkpoint, q_options, q_nuc, q_aa,
+                q_nuc if seq_type == "nucleotide" else q_aa, quick=True,
+            )
 
         # ------------------------------------------------------------------
-        # Post-tree branch-length outlier removal (iterative)
+        # Post-tree branch-length outlier removal (iterative).  With
+        # outlier_removal.quick_check a round is first checked on a quick
+        # tree, and the configured search runs once that finds nothing to
+        # remove; its tree is then checked as before.
         # ------------------------------------------------------------------
-        if not do_outlier_removal or iteration >= max_iterations:
-            break
-
-        if len(sel_records) <= outlier_min_seqs:
+        check = do_outlier_removal and iteration < max_iterations
+        if check and len(sel_records) <= outlier_min_seqs:
             log.info(
                 "Skipping branch-length outlier removal for tree_%s (iteration %d): "
                 "%d sequences ≤ min_seqs threshold %d.",
                 label, iteration, len(sel_records), outlier_min_seqs,
             )
-            break
-
-        all_outlier_ids = _find_branch_length_outliers(treefile, outlier_factor)
-        if not all_outlier_ids:
-            log.info("No branch-length outliers found for tree_%s (iteration %d) — stopping.",
-                     label, iteration)
-            break
-
-        # RefSeqs are never removed — flag them with a warning instead.
-        protected_outliers = all_outlier_ids & refseq_short_ids
-        outlier_ids = all_outlier_ids - refseq_short_ids
-
-        # Stats header (shared by warning + removal logs)
-        _bl_stats = _branch_length_stats(treefile)
-        _median   = _bl_stats["median"]
-        _mad      = _bl_stats["mad"]
-        _threshold = _median + outlier_factor * _mad
-        _bl_map   = _bl_stats["bl_map"]
-
-        log.info(
-            "tree_%s iteration %d: branch-length stats — median=%.5f, MAD=%.5f, "
-            "threshold (median + %.1f×MAD)=%.5f",
-            label, iteration, _median, _mad, outlier_factor, _threshold,
+            check = False
+        n_current = len(sel_records)
+        new_tree, outlier_ids = outlier_round(
+            _configured_tree,
+            lambda tf, stage: select_outliers(
+                tf, outlier_factor, refseq_short_ids, n_current, outlier_min_seqs,
+                log=log, label=label, iteration=iteration,
+                display=lambda s: short_to_display.get(s, s), stage=stage,
+            ),
+            check=check,
+            n_current=n_current,
+            build_quick_tree=_quick_tree if quick_settings else None,
         )
-
-        for oid in protected_outliers:
-            leaf_display = short_to_display.get(oid, oid)
-            bl = _bl_map.get(oid, float("nan"))
-            mads_above = (bl - _median) / _mad if _mad else float("nan")
-            log.warning(
-                "tree_%s iteration %d: RefSeq '%s' looks like a branch-length "
-                "outlier — branch length %.5f (%.1f× MAD above median, "
-                "threshold=%.5f) — KEEPING (RefSeq protected)",
-                label, iteration, leaf_display, bl, mads_above, _threshold,
-            )
-
+        if new_tree is not None:
+            treefile = new_tree
         if not outlier_ids:
-            log.info(
-                "Only protected (RefSeq) outliers remain for tree_%s "
-                "(iteration %d) — stopping.",
-                label, iteration,
-            )
             break
-
-        # Only remove outliers that still leave at least outlier_min_seqs sequences
-        remaining_after = len(sel_records) - len(outlier_ids)
-        if remaining_after < outlier_min_seqs:
-            log.info(
-                "Skipping branch-length outlier removal for tree_%s (iteration %d): "
-                "removing %d outlier(s) would leave only %d sequences (min_seqs=%d).",
-                label, iteration, len(outlier_ids), remaining_after, outlier_min_seqs,
-            )
-            break
-
-        for oid in outlier_ids:
-            leaf_display = short_to_display.get(oid, oid)
-            bl = _bl_map.get(oid, float("nan"))
-            mads_above = (bl - _median) / _mad if _mad else float("nan")
-            log.info(
-                "tree_%s iteration %d: removing outlier '%s' — branch length %.5f "
-                "(%.1f× MAD above median, threshold=%.5f)",
-                label, iteration, leaf_display, bl, mads_above, _threshold,
-            )
 
         n_outliers_removed += len(outlier_ids)
         sel_records = [r for r in sel_records if r.id not in outlier_ids]
@@ -1462,9 +1642,10 @@ def _run_target(
             )
             break
 
-        # Clear checkpoints so the next iteration re-runs MSA + tree
+        # Clear checkpoints so the next iteration re-runs MSA + trees
         msa_checkpoint.unlink(missing_ok=True)
         tree_checkpoint.unlink(missing_ok=True)
+        quick_checkpoint.unlink(missing_ok=True)
         # Update metadata/id_map for the reduced set
         sel_metadata = [short_id_to_meta.get(r.id, {}) for r in sel_records]
         id_map = {r.id: short_to_display.get(r.id, r.id) for r in sel_records}
@@ -1579,6 +1760,17 @@ def _run_target(
         ]
     target_stats["msa"] = compute_msa_stats(tree_input_fasta)
 
+    # Phylogenetic signal of the final alignment and tree (signal.py): flags
+    # trees whose deep structure is saturated, e.g. whole-genome nucleotide
+    # alignment of a divergent family.
+    try:
+        signal_metrics = measure_signal(tree_input_fasta, raw_short_fasta, treefile, seq_type)
+    except Exception as exc:  # diagnostics must never fail a family
+        log.warning("tree_%s: could not measure phylogenetic signal: %s", label, exc)
+        signal_metrics = {}
+    target_stats["signal"] = signal_metrics
+    log_signal(log, label, seq_type, signal_metrics)
+
     # PhyloXML
     log.info("Writing PhyloXML for tree_%s ...", label)
     phylogeny_name, phylogeny_detail = _build_phylogeny_name(
@@ -1644,10 +1836,8 @@ def _run_target(
 
 
 # Branch-outlier helpers live in vfam_trees.branch_outliers and are shared
-# with pipeline_concat; the leading-underscore aliases here keep existing
-# call sites in this module unchanged.
-from .branch_outliers import branch_length_stats as _branch_length_stats
-from .branch_outliers import find_branch_length_outliers as _find_branch_length_outliers
+# with pipeline_concat.
+from .branch_outliers import outlier_round, select_outliers
 
 
 
@@ -1737,10 +1927,11 @@ def _claim_family_dir(family_dir: Path, family: str) -> None:
     marker.write_text(family)
 
 
-def _save_config_copy(cfg: dict, path: Path) -> None:
+def _save_config_copy(cfg: dict, path: Path, header: str = "") -> None:
     clean = {k: v for k, v in cfg.items() if not k.startswith("_")}
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
+        f.write(header)
         yaml.dump(clean, f, default_flow_style=False, sort_keys=False)
 
 

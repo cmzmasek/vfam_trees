@@ -26,9 +26,10 @@ from typing import Any
 from Bio import Phylo, SeqIO
 from Bio.SeqRecord import SeqRecord
 
-from .branch_outliers import branch_length_stats, find_branch_length_outliers
+from .branch_outliers import outlier_round, select_outliers
+from .signal import log_signal, measure as measure_signal
 from .cache import SequenceCache, marker_set_hash
-from .config import sanitize_output_prefix
+from .config import global_settings, sanitize_output_prefix
 from .colors import assign_leaf_colors
 from .concat import (
     _safe_charset_name,
@@ -43,8 +44,8 @@ from .concat import (
 )
 from .fetch import (
     extract_metadata,
+    cached_taxonomy_lineages,
     fetch_species_genomes,
-    fetch_taxonomy_lineages,
     group_proteins_by_genome,
     load_proteins_from_marker_dir,
 )
@@ -63,14 +64,16 @@ from .summary import (
     compute_msa_stats,
     compute_seqlen_stats,
     compute_support_stats,
+    report_marker_coverage,
     write_status_row,
     write_summary_row,
 )
 from .taxonomy import annotate_tree
 from .tree import (
-    parse_iqtree_partition_models, read_tree_info, run_tree,
-    support_type_for, validate_newick,
+    parse_iqtree_partition_models, quick_tree_settings, read_tree_info,
+    run_tree, support_type_for, validate_newick,
 )
+from .trim import DEFAULT_TRIM_OPTIONS
 
 log = get_logger(__name__)
 
@@ -158,6 +161,7 @@ def run_family_concat(
     output_dir: Path,
     species_list: list[dict],
     threads: int,
+    global_cfg: dict | None = None,
     seq_cache: SequenceCache | None = None,
     summary_path: Path | None,
     status_path: Path | None,
@@ -223,13 +227,14 @@ def run_family_concat(
     # Per-species fetch
     # -------------------------------------------------------------------------
     from .markers import make_identifier
-    identifier = make_identifier(family_cfg)
+    identifier = make_identifier(family_cfg, threads=threads)
     if getattr(identifier, "is_hmm", False):
         log.info(
             "HMM marker identification enabled (database=%r) — markers assigned "
             "by profile homology; concat sequence cache bypassed",
             (family_cfg.get("hmm") or {}).get("database"),
         )
+    marker_report: list[dict] = []
     species_genomes, species_lineages, fetch_stats = _fetch_all_species(
         family=family,
         species_list=species_list,
@@ -241,6 +246,11 @@ def run_family_concat(
         seq_cache=seq_cache,
         source_nuc_min_length_frac=source_nuc_min_length_frac,
         identifier=identifier,
+        without_marker=marker_report,
+    )
+    n_without_marker, _ = report_marker_coverage(
+        marker_report, family_dir / f"{out_prefix}_species_without_marker.tsv", log,
+        f"concatenated markers ({', '.join(marker_order)}, ≥ {min_fraction:.0%} per genome)",
     )
 
     manual_exclude_seen: set[str] = set()
@@ -344,7 +354,8 @@ def run_family_concat(
                    len(species_genomes), reason,
                    summary_path, status_path,
                    family_dir, output_dir, mark_skipped,
-                   marker_names=marker_order)
+                   marker_names=marker_order,
+                   n_species_without_marker=n_without_marker)
         return
 
     # -------------------------------------------------------------------------
@@ -404,12 +415,14 @@ def run_family_concat(
         }
         for label, stats in tree_stats.items()
     }
-    visualization_cfg = (family_cfg.get("visualization") or {})
-    branch_linewidth = float(visualization_cfg.get("branch_linewidth", 0.5))
-    icon_cfg = (family_cfg.get("icon") or {})
-    icon_size         = int(icon_cfg.get("size", 256))
-    icon_bg_color     = icon_cfg.get("bg_color", "#EAF3F2")
-    icon_branch_color = icon_cfg.get("branch_color", "#000000")
+    # Global-only settings (global.yaml), as in the single-marker pipeline;
+    # family configs have no visualization / icon blocks.
+    visualization_cfg = global_settings(global_cfg or {}, "visualization")
+    branch_linewidth = float(visualization_cfg["branch_linewidth"])
+    icon_cfg = global_settings(global_cfg or {}, "icon")
+    icon_size         = int(icon_cfg["size"])
+    icon_bg_color     = icon_cfg["bg_color"]
+    icon_branch_color = icon_cfg["branch_color"]
 
     # -------------------------------------------------------------------------
     # Summary + status
@@ -436,6 +449,7 @@ def run_family_concat(
         segment=segment,
         n_species_discovered=len(species_list),
         n_species_with_seqs=len(species_genomes),
+        n_species_without_marker=n_without_marker,
         seqlen_stats=seqlen_stats,
         tree_stats=tree_stats,
         qc_stats=concat_qc_stats,
@@ -640,7 +654,7 @@ def _run_target_concat(
     trim_cfg = family_cfg.get("msa_trim", {}) or {}
     msa_options  = msa_cfg.get("options_aa", "--auto")  # concat is always protein
     trim_enabled = bool(trim_cfg.get("enabled", True))
-    trim_options = trim_cfg.get("options", "-automated1")
+    trim_options = trim_cfg.get("options", DEFAULT_TRIM_OPTIONS)
 
     outlier_cfg          = family_cfg.get("outlier_removal", {}) or {}
     do_outlier_removal   = bool(outlier_cfg.get("enabled", True))
@@ -718,84 +732,57 @@ def _run_target_concat(
             model_aa  = tree_cfg.get("model_aa", "LG+G")
             model_nuc = tree_cfg.get("model_nuc", "GTR+G")
 
-        treefile = run_tree(
-            alignment_fasta=concat_fasta,
-            output_dir=tree_output_dir,
-            prefix=f"tree_{label}",
-            tool=tree_tool,
-            seq_type="protein",
-            model_nuc=model_nuc,
-            model_aa=model_aa,
-            options=tree_options,
-            threads=threads,
-        )
-        validate_newick(treefile)
+        def _tree(prefix, options, m_nuc, m_aa):
+            nwk = run_tree(
+                alignment_fasta=concat_fasta,
+                output_dir=tree_output_dir,
+                prefix=prefix,
+                tool=tree_tool,
+                seq_type="protein",
+                model_nuc=m_nuc,
+                model_aa=m_aa,
+                options=options,
+                threads=threads,
+            )
+            validate_newick(nwk)
+            return nwk
 
-        # Branch-length outlier removal — RefSeq genomes are exempt.
-        if not do_outlier_removal or iteration >= outlier_max_iter:
-            break
-        if len(selected_genomes) <= outlier_min_genomes:
+        quick = quick_tree_settings(tree_tool, tree_options, model_nuc, model_aa) \
+            if do_outlier_removal and outlier_cfg.get("quick_check", True) else None
+
+        def _quick_tree():
+            log.info("tree_%s iteration %d: quick %s tree (%s, %s model) for the outlier check ...",
+                     label, iteration, tree_tool, quick[0], quick[2])
+            return _tree(f"quick_{label}", quick[0], quick[1], quick[2])
+
+        # Branch-length outlier removal — RefSeq genomes are exempt.  With
+        # outlier_removal.quick_check a round is first checked on a quick
+        # tree; the configured search runs once that finds nothing to remove.
+        check = do_outlier_removal and iteration < outlier_max_iter
+        if check and len(selected_genomes) <= outlier_min_genomes:
             log.info(
                 "tree_%s iteration %d: %d genomes ≤ min_seqs %d — stopping.",
                 label, iteration, len(selected_genomes), outlier_min_genomes,
             )
-            break
-
-        all_outliers = find_branch_length_outliers(treefile, outlier_factor)
-        if not all_outliers:
-            log.info("tree_%s iteration %d: no branch-length outliers — stopping.",
-                     label, iteration)
-            break
-
-        protected_outliers = all_outliers & refseq_ids
-        removable_outliers = all_outliers - refseq_ids
-
-        bl_stats = branch_length_stats(treefile)
-        median_bl = bl_stats["median"]
-        mad       = bl_stats["mad"]
-        threshold = median_bl + outlier_factor * mad
-        bl_map    = bl_stats["bl_map"]
-        log.info(
-            "tree_%s iteration %d: branch-length stats — median=%.5f, MAD=%.5f, "
-            "threshold (median + %.1f×MAD)=%.5f",
-            label, iteration, median_bl, mad, outlier_factor, threshold,
+            check = False
+        n_current = len(selected_genomes)
+        new_tree, removable_outliers = outlier_round(
+            lambda: _tree(f"tree_{label}", tree_options, model_nuc, model_aa),
+            lambda tf, stage: select_outliers(
+                tf, outlier_factor, refseq_ids, n_current, outlier_min_genomes,
+                log=log, label=label, iteration=iteration,
+                display=lambda oid: _outlier_display(oid, genome_to_species),
+                noun="genome", stage=stage,
+            ),
+            check=check,
+            n_current=n_current,
+            build_quick_tree=_quick_tree if quick else None,
         )
-        for oid in sorted(protected_outliers):
-            display = _outlier_display(oid, genome_to_species)
-            bl = bl_map.get(oid, float("nan"))
-            mads_above = (bl - median_bl) / mad if mad else float("nan")
-            log.warning(
-                "tree_%s iteration %d: RefSeq genome '%s' looks like a "
-                "branch-length outlier — branch length %.5f (%.1f× MAD above "
-                "median, threshold=%.5f) — KEEPING (RefSeq protected)",
-                label, iteration, display, bl, mads_above, threshold,
-            )
-
+        if new_tree is not None:
+            treefile = new_tree
         if not removable_outliers:
-            log.info(
-                "tree_%s iteration %d: only protected (RefSeq) outliers remain — stopping.",
-                label, iteration,
-            )
             break
 
-        remaining = len(selected_genomes) - len(removable_outliers)
-        if remaining < outlier_min_genomes:
-            log.info(
-                "tree_%s iteration %d: removing %d outlier(s) would leave %d genomes "
-                "(min_seqs=%d) — stopping.",
-                label, iteration, len(removable_outliers), remaining, outlier_min_genomes,
-            )
-            break
-
-        for oid in sorted(removable_outliers):
-            display = _outlier_display(oid, genome_to_species)
-            bl = bl_map.get(oid, float("nan"))
-            mads_above = (bl - median_bl) / mad if mad else float("nan")
-            log.info(
-                "tree_%s iteration %d: removing outlier genome '%s' — "
-                "branch length %.5f (%.1f× MAD above median, threshold=%.5f)",
-                label, iteration, display, bl, mads_above, threshold,
-            )
         for oid in removable_outliers:
             selected_genomes.pop(oid, None)
         n_outliers_removed += len(removable_outliers)
@@ -1073,6 +1060,14 @@ def _run_target_concat(
             if not c.is_terminal() and c.confidence is not None
         ]
     target_stats["msa"] = compute_msa_stats(concat_fasta)
+    # Phylogenetic signal (signal.py); no core fraction for a concatenation.
+    try:
+        signal_metrics = measure_signal(concat_fasta, None, treefile, "protein")
+    except Exception as exc:  # diagnostics must never fail a family
+        log.warning("tree_%s: could not measure phylogenetic signal: %s", label, exc)
+        signal_metrics = {}
+    target_stats["signal"] = signal_metrics
+    log_signal(log, label, "protein", signal_metrics)
     # Structured per-marker coverage map for the report PDF (underscored so
     # DictWriter(extrasaction='ignore') won't try to write it into summary.tsv).
     target_stats["_marker_coverage_map"] = {
@@ -1100,24 +1095,20 @@ def _fetch_all_species(
     seq_cache: SequenceCache | None = None,
     source_nuc_min_length_frac: float = 0.0,
     identifier: "MarkerIdentifier | None" = None,
+    without_marker: list[dict] | None = None,
 ) -> tuple[dict[str, dict[str, dict[str, SeqRecord]]], dict[str, list[dict]], dict]:
     """Fetch genomes per species and return:
        - species_genomes: {species_name: {genome_id: {marker_name: SeqRecord}}}
        - species_lineages: {species_name: ranked NCBI lineage}
        - aggregated fetch stats
+    A species left with no genome although NCBI has protein records for it
+    is appended to *without_marker* (``report_marker_coverage`` entries):
+    "too few markers" when a genome had some of the markers but fewer than
+    ``min_fraction`` asks for, "no marker" otherwise.
     """
     # Resolve species lineages once (one Entrez fetch instead of per-species)
     taxids = [str(sp["taxid"]) for sp in species_list]
-    lineage_cache = work_dir / "concat_lineages.json"
-    if lineage_cache.exists():
-        with open(lineage_cache) as f:
-            taxid_to_lineage = json.load(f)
-        log.info("Reusing cached ranked taxonomy: %d taxa", len(taxid_to_lineage))
-    else:
-        log.info("Fetching ranked taxonomy from NCBI for %d species ...", len(taxids))
-        taxid_to_lineage = fetch_taxonomy_lineages(taxids)
-        with open(lineage_cache, "w") as f:
-            json.dump(taxid_to_lineage, f)
+    taxid_to_lineage = cached_taxonomy_lineages(taxids, work_dir / "concat_lineages.json")
 
     species_genomes: dict[str, dict[str, dict[str, SeqRecord]]] = {}
     species_lineages: dict[str, list[dict]] = {}
@@ -1166,6 +1157,14 @@ def _fetch_all_species(
 
         if genomes:
             species_genomes[sp_name] = genomes
+        elif without_marker is not None:
+            from . import fetch as fetch_module   # module attribute: stubbed in tests
+            n_records = fetch_module.count_species_records(sp_taxid, "protein", exclude_organisms)
+            if n_records:
+                status = ("too few markers" if stats.get("n_dropped_partial_markers", 0)
+                          else "no marker")
+                without_marker.append({"species": sp_name, "taxid": sp_taxid,
+                                       "ncbi_records": n_records, "status": status})
         for k in agg:
             agg[k] += stats.get(k, 0)
 
@@ -1381,6 +1380,7 @@ def _emit_skip(
     output_dir: Path,
     mark_skipped,
     marker_names: list[str] | None = None,
+    n_species_without_marker: int | None = None,
 ) -> None:
     if summary_path is not None:
         row = build_summary_row(
@@ -1392,6 +1392,7 @@ def _emit_skip(
             segment=segment,
             n_species_discovered=n_species_discovered,
             n_species_with_seqs=n_species_with_seqs,
+            n_species_without_marker=n_species_without_marker,
             seqlen_stats={},
             tree_stats={},
             family_annotation=family_annotation,

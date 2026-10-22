@@ -1,6 +1,8 @@
 """Tests for vfam_trees.subsample.proportional_merge."""
 from pathlib import Path
 
+import pytest
+
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
@@ -79,6 +81,45 @@ def test_hits_target_when_every_species_at_quota_floor():
     out, stats = proportional_merge(species, 4)
     assert len(out) == 4
     assert stats["n_species_dropped_at_cap"] == 6
+
+
+def test_hits_target_when_floor_of_one_overshoots():
+    # Many single-rep species each get the floor of 1 slot, so the rounded
+    # quotas overshoot the target by more than one pass can take back
+    # (Genomoviridae: 419 species, 686 reps → 550 for target 500).
+    species = {f"S{i:03d}": _reps(f"S{i:03d}", 1) for i in range(300)}
+    species.update({f"M{i:03d}": _reps(f"M{i:03d}", 2) for i in range(100)})
+    species.update({f"L{i}": _reps(f"L{i}", 30) for i in range(3)})
+    assert len(species) <= 450 < sum(len(v) for v in species.values())
+    out, stats = proportional_merge(species, 450)
+    assert len(out) == 450          # was 466 with a single correction pass
+    assert len({r.id for r in out}) == 450
+    # every species keeps at least one representative
+    assert {r.id.rsplit("_", 1)[0] for r in out} == set(species)
+    assert stats["n_species_dropped_at_cap"] == 0
+
+
+def test_hits_target_when_rounding_undershoots_small_species():
+    # Rounding leaves the total short; the slots go only to species that
+    # still have unused reps, so the target is met exactly.
+    species = {"A": _reps("A", 1), "B": _reps("B", 1), "C": _reps("C", 40)}
+    out, _ = proportional_merge(species, 41)
+    assert len(out) == 41
+    assert len({r.id for r in out}) == 41
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_random_shapes_always_hit_target(seed):
+    import random as _r
+    rng = _r.Random(seed)
+    n_species = rng.randint(1, 300)
+    species = {f"X{i}": _reps(f"X{i}", rng.choice([1, 1, 1, 2, 2, 3, 5, 20]))
+               for i in range(n_species)}
+    total = sum(len(v) for v in species.values())
+    for target in (1, 5, 50, 100, 500):
+        out, _ = proportional_merge(species, target)
+        assert len(out) == min(target, total)
+        assert len({r.id for r in out}) == len(out)
 
 
 def test_prefers_species_with_more_reps_when_oversubscribed():

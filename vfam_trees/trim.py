@@ -9,6 +9,13 @@ from .logger import get_logger
 
 log = get_logger(__name__)
 
+# Keep columns with at most 50 % gaps.  Replaced -automated1 in v1.6.0:
+# on alignments with many short PCR fragments -automated1 switches to its
+# strict mode and keeps few columns (Retroviridae RT tree_500: 58 of 657),
+# which cost genus resolution.  -gt 0.5 was never worse on 22 protein and
+# 20 nucleotide alignments and better on 6 (CHANGELOG 1.6.0).
+DEFAULT_TRIM_OPTIONS = "-gt 0.5"
+
 
 def get_trimal_version() -> str:
     """Return the trimAl version string, or 'unknown' if it cannot be determined."""
@@ -29,7 +36,7 @@ def run_trim(
     input_fasta: Path,
     output_fasta: Path,
     tool: str = "trimal",
-    options: str = "-automated1",
+    options: str = DEFAULT_TRIM_OPTIONS,
 ) -> None:
     """Trim an MSA and write the column-filtered alignment to *output_fasta*.
 
@@ -37,7 +44,7 @@ def run_trim(
         input_fasta: MAFFT output alignment (short IDs)
         output_fasta: path to write the trimmed alignment
         tool: trimming tool ('trimal' supported)
-        options: tool-specific options string (default '-automated1')
+        options: tool-specific options string (default DEFAULT_TRIM_OPTIONS)
     """
     output_fasta.parent.mkdir(parents=True, exist_ok=True)
     tool_norm = tool.lower().strip()
@@ -68,6 +75,13 @@ def _run_trimal(input_fasta: Path, output_fasta: Path, options: str) -> None:
 
     if not output_fasta.exists() or output_fasta.stat().st_size == 0:
         log.error("trimAl stderr:\n%s", (result.stderr or "")[-4000:])
+        if "empty" in (result.stderr or "").lower():
+            raise RuntimeError(
+                f"trimAl ({options}) kept no column of {input_fasta.name}: "
+                "every column is too gappy for that threshold.  Loosen "
+                "msa_trim.options (e.g. -gt 0.3) or set msa_trim.enabled: "
+                "false in this family's config."
+            )
         raise FileNotFoundError(
             f"trimAl exited 0 but produced no output at {output_fasta}. "
             "This may indicate a change in trimAl's output behavior — see "

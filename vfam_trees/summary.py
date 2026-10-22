@@ -9,6 +9,7 @@ from Bio import SeqIO
 from Bio.Phylo.BaseTree import Tree as BioTree
 
 from .logger import get_logger
+from .signal import summary_fields as signal_summary_fields
 
 log = get_logger(__name__)
 
@@ -19,6 +20,8 @@ COLUMNS = [
     "molecule_region",
     "species_discovered",
     "species_with_seqs",
+    "species_without_marker",
+    "species_marker_translated",
     "species_relaxed_threshold",
     "seqs_passing_qc",
     # QC exclusion breakdown
@@ -58,6 +61,11 @@ COLUMNS = [
     "tree500_tree_tool",
     "tree500_tree_model",
     "tree500_tree_options",
+    "tree500_signal",
+    "tree500_patristic_median",
+    "tree500_identity_median",
+    "tree500_core_frac",
+    "tree500_branches_at_cap",
     # tree_100
     "tree100_leaves",
     "tree100_support_type",
@@ -80,6 +88,11 @@ COLUMNS = [
     "tree100_tree_tool",
     "tree100_tree_model",
     "tree100_tree_options",
+    "tree100_signal",
+    "tree100_patristic_median",
+    "tree100_identity_median",
+    "tree100_core_frac",
+    "tree100_branches_at_cap",
     # diversity / outlier counts
     "tree500_n_outliers_removed",
     "tree100_n_outliers_removed",
@@ -286,6 +299,64 @@ def _append_tsv_row(path: Path, columns: list[str], row: dict) -> None:
         writer.writerow(row)
 
 
+MARKER_REPORT_COLUMNS = ["species", "taxid", "ncbi_records", "status"]
+#: Statuses of species that are not in the trees for lack of the marker.
+MISSING_MARKER_STATUSES = ("no marker", "too few markers")
+
+
+def report_marker_coverage(
+    entries: list[dict], tsv_path: Path, family_log, what: str,
+) -> tuple[int, int]:
+    """Make species missing from the trees for lack of the marker visible.
+
+    *entries* (``species``, ``taxid``, ``ncbi_records``, ``status``):
+    "no marker" — NCBI has records for the species, but none of the analysed
+    marker / region (*what*, e.g. "protein, gene: RT"), so it cannot be in
+    the trees; "too few markers" (concatenated mode) — some of the markers,
+    but no genome with as many as ``min_fraction`` asks for; "translated" —
+    its marker was found only by translating nucleotide records.  Logs a
+    WARNING naming the first two kinds, INFO for the third, and writes them
+    all to *tsv_path* (removed when there are none, so a stale file never
+    outlives a re-run).  Returns (species not in the trees, translated).
+    """
+    missing = [e for e in entries if e["status"] in MISSING_MARKER_STATUSES]
+    translated = [e for e in entries if e["status"] == "translated"]
+    if missing:
+        names = ", ".join(e["species"] for e in missing[:25])
+        more = f" and {len(missing) - 25} more" if len(missing) > 25 else ""
+        n_partial = sum(e["status"] == "too few markers" for e in missing)
+        if n_partial:
+            family_log.warning(
+                "%d species have NCBI records but are not in the trees for want "
+                "of the analysed %s: %d have none of them, %d some but no genome "
+                "with enough (min_fraction) (list: %s): %s%s",
+                len(missing), what, len(missing) - n_partial, n_partial,
+                tsv_path.name, names, more,
+            )
+        else:
+            family_log.warning(
+                "%d species have NCBI records but none of the analysed %s, so "
+                "they are not in the trees (list: %s): %s%s",
+                len(missing), what, tsv_path.name, names, more,
+            )
+    if translated:
+        family_log.info(
+            "%d species are in the trees only through markers translated from "
+            "nucleotide records (no annotated protein): %s",
+            len(translated), ", ".join(e["species"] for e in translated),
+        )
+    if entries:
+        tsv_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tsv_path, "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=MARKER_REPORT_COLUMNS, delimiter="\t",
+                                    extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(sorted(entries, key=lambda e: (e["status"], e["species"])))
+    elif tsv_path.exists():
+        tsv_path.unlink()
+    return len(missing), len(translated)
+
+
 def write_summary_row(summary_path: Path, row: dict) -> None:
     """Append one row to the summary TSV, writing the header if the file is new."""
     _append_tsv_row(summary_path, COLUMNS, row)
@@ -340,6 +411,8 @@ def build_summary_row(
     qc_stats: dict | None = None,
     family_annotation: dict | None = None,
     marker_names: list[str] | None = None,
+    n_species_without_marker: int | None = None,
+    n_species_marker_translated: int | None = None,
 ) -> dict:
     """Assemble a summary row dict from collected pipeline stats.
 
@@ -356,6 +429,8 @@ def build_summary_row(
         "molecule_region":    format_molecule_region(seq_type, region, segment, marker_names),
         "species_discovered":        n_species_discovered,
         "species_with_seqs":         n_species_with_seqs,
+        "species_without_marker":    "" if n_species_without_marker is None else n_species_without_marker,
+        "species_marker_translated": "" if n_species_marker_translated is None else n_species_marker_translated,
         "species_relaxed_threshold": n_species_relaxed,
         "seqs_passing_qc":           total_seqs_qc,
         "qc_excluded_organism":       (qc_stats or {}).get("n_excluded_organism", ""),
@@ -398,6 +473,9 @@ def build_summary_row(
         row[f"{prefix}_tree_tool"]            = stats.get("tree_tool", "")
         row[f"{prefix}_tree_model"]           = stats.get("tree_model", "")
         row[f"{prefix}_tree_options"]         = stats.get("tree_options", "")
+        # Phylogenetic-signal diagnostics (signal.py)
+        for key, value in signal_summary_fields(stats.get("signal") or {}).items():
+            row[f"{prefix}_{key}"] = value
         row[f"{prefix}_n_outliers_removed"]      = stats.get("n_outliers_removed", "")
         row[f"{prefix}_n_length_outliers_long"]  = stats.get("n_length_outliers_long", "")
         row[f"{prefix}_n_length_outliers_short"] = stats.get("n_length_outliers_short", "")
