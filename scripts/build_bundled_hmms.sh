@@ -22,6 +22,7 @@ OUTROOT="vfam_trees/data/hmms"
 # Poxviridae — the 8-marker concatenation set (CONCATENATION_FAMILIES).
 # Adenoviridae — single-marker hexon, as a two-domain architecture
 #   (Adeno_hexon N-term --> Adeno_hexon_C C-term) for the "A--B" token.
+# Mamonoviridae — single-marker DNA polymerase B (same profile as Poxviridae's).
 PROFILES=(
     "Poxviridae   PF00136 DNA_pol_B        DNA_polymerase_E9L"
     "Poxviridae   PF00623 RNA_pol_Rpb1_2   RNA_pol_147kDa_A24R_RPO147"
@@ -33,6 +34,8 @@ PROFILES=(
     "Poxviridae   PF03167 UDG              uracil-DNA_glycosylase_D4R"
     "Adenoviridae PF01065 Adeno_hexon      hexon_N-terminal"
     "Adenoviridae PF03678 Adeno_hexon_C    hexon_C-terminal"
+    # Mamonoviridae — single-marker family-B DNA polymerase (2026-10-26).
+    "Mamonoviridae PF00136 DNA_pol_B       DNA_polymerase_B"
     # RdRp — RNA-dependent RNA polymerase profiles for the RNA-virus families
     #   (RDRP_FAMILIES); all tokens OR'd, accessions verified 2026-10-20.
     "RdRp PF00680 RdRP_1                    picorna-/calici-/potyvirus-like_RdRp"

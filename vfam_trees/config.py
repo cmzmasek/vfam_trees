@@ -164,7 +164,22 @@ DNA_FAMILIES: dict[str, dict] = {
     "Marseilleviridae":   {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~350 kb amoebal
     "Pandoraviridae":     {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~2 Mb amoebal
     "Pithoviridae":       {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~600 kb amoebal
-    "Medusaviridae":      {"sequence": {"region": "DNA polymerase", "type": "protein"}},  # ~380 kb amoebal
+    # Mamonoviridae (medusaviruses, ~360–560 kb amoebal; "Medusaviridae" was
+    # the proposed name, which NCBI never used, so that preset never applied
+    # and the family ran as whole-genome nucleotide: MAFFT on 4 genomes ran
+    # for hours).  Family-B DNA polymerase by HMM, cut to the domain ± 100
+    # aa: two of the four genomes (2026-10) split the gene into two proteins
+    # (Medusavirus 'euryale': exonuclease part / polymerase part;
+    # Furtivovirus B10: within the polymerase domain, larger part 65 % of the
+    # profile), and the spliced polymerases of M. medusae and M. sthenus
+    # carry a ~680-aa N-terminal region the others lack.
+    "Mamonoviridae": {
+        "sequence": {
+            "region": "DNA polymerase", "type": "protein",
+            "hmms": ["DNA_pol_B"], "domain_padding": 100,
+        },
+        "hmm": {"enabled": True, "database": "Mamonoviridae"},
+    },
 }
 
 
@@ -739,7 +754,7 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
     # ---- NCLDV hallmark fallback (8 markers) ----------------------------
     # Refs: Yutin & Koonin 2009, 2012; Koonin & Yutin 2019.  Applied to
     # large-DNA-virus families lacking a curated set (Mimi/Phyco/Marseille/
-    # Pitho/Pandora/Medusaviridae and any future NCLDV-like family).
+    # Pitho/Pandoraviridae and any future NCLDV-like family).
 }
 
 # Nudiviridae uses the Baculoviridae 7-gene set verbatim (same insect-dsDNA
@@ -858,11 +873,10 @@ _NCLDV_HALLMARK_PROTEINS = [
         "locus_tag_hint": r"RPB2",
     },
 ]
-for _ncldv_family in ("Pandoraviridae", "Medusaviridae"):
-    CONCATENATION_FAMILIES[_ncldv_family] = {
-        "sequence": {"region": "concatenated", "type": "protein"},
-        "concatenation": {"proteins": copy.deepcopy(_NCLDV_HALLMARK_PROTEINS)},
-    }
+CONCATENATION_FAMILIES["Pandoraviridae"] = {
+    "sequence": {"region": "concatenated", "type": "protein"},
+    "concatenation": {"proteins": copy.deepcopy(_NCLDV_HALLMARK_PROTEINS)},
+}
 
 # NCLDV families with cache audits (2026-05) get pruned per-family presets
 # instead of the 8-marker hallmark fallback.  In every case the markers

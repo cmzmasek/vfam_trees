@@ -468,10 +468,14 @@ class TestConcatenationFamiliesPresets:
             "Asfarviridae", "Iridoviridae",
             "Baculoviridae", "Nudiviridae", "Ascoviridae",
             "Mimiviridae", "Phycodnaviridae", "Marseilleviridae",
-            "Pithoviridae", "Pandoraviridae", "Medusaviridae",
+            "Pithoviridae", "Pandoraviridae",
         ):
             assert fam in CONCATENATION_FAMILIES, f"missing preset: {fam}"
         assert "Malacoherpesviridae" not in CONCATENATION_FAMILIES
+        # Mamonoviridae runs on one HMM marker (DNA_FAMILIES); "Medusaviridae"
+        # was a name NCBI never used.
+        assert "Mamonoviridae" not in CONCATENATION_FAMILIES
+        assert "Medusaviridae" not in CONCATENATION_FAMILIES
 
     def test_each_preset_has_proteins_and_correct_region(self):
         for fam, preset in CONCATENATION_FAMILIES.items():
@@ -524,14 +528,12 @@ class TestConcatenationFamiliesPresets:
             "DNA polymerase", "DNA helicase P143", "major capsid protein",
         }
 
-    def test_ncldv_fallback_only_pandora_and_medusa(self):
-        # After the 2026-05 audit only Pandoraviridae and Medusaviridae
-        # remain on the 8-marker NCLDV-hallmark fallback; Mimi, Phyco,
-        # Marseille, and Pitho got pruned per-family presets.
+    def test_ncldv_fallback_only_pandora(self):
+        # After the 2026-05 audit only Pandoraviridae remains on the 8-marker
+        # NCLDV-hallmark fallback; Mimi, Phyco, Marseille, and Pitho got
+        # pruned per-family presets, Mamonoviridae a single HMM marker.
         pandora = CONCATENATION_FAMILIES["Pandoraviridae"]["concatenation"]["proteins"]
-        medusa = CONCATENATION_FAMILIES["Medusaviridae"]["concatenation"]["proteins"]
         assert len(pandora) == 8
-        assert [p["name"] for p in medusa] == [p["name"] for p in pandora]
         # Pruned-preset families have fewer markers.
         for fam, expected_n in (
             ("Phycodnaviridae", 4),
@@ -2223,3 +2225,22 @@ class TestRtRepMarkers:
         for marker, n in (("RT", 4), ("Rep", 4)):
             db = resolve_database_path(marker, cache_dir=tmp_path)
             assert len(parse_ga_cutoffs(db)) == n
+
+
+class TestMamonoviridaePreset:
+    """Medusaviruses: family-B DNA polymerase by HMM, cut to the domain."""
+
+    def test_auto_generated_config(self, tmp_path):
+        cfg, auto = load_family_config("Mamonoviridae", tmp_path, MINIMAL_GLOBAL)
+        assert auto is True
+        seq = cfg["sequence"]
+        assert (seq["type"], seq["region"], seq["hmms"], seq["domain_padding"]) == \
+            ("protein", "DNA polymerase", ["DNA_pol_B"], 100)
+        assert cfg["hmm"]["enabled"] is True and cfg["hmm"]["database"] == "Mamonoviridae"
+        assert "concatenation" not in cfg or not cfg["concatenation"].get("proteins")
+
+    def test_bundled_profile_present(self):
+        import vfam_trees
+        hmm = Path(vfam_trees.__file__).parent / "data" / "hmms" / "Mamonoviridae" / "DNA_pol_B.hmm"
+        text = hmm.read_text()
+        assert "NAME  DNA_pol_B" in text and "ACC   PF00136" in text

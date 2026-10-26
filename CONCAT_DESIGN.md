@@ -177,7 +177,7 @@ Cache coverage on the 27 species fetched: DNA polymerase 81 %, MCP 76 %, P143 29
 
 References: Yutin & Koonin 2009, 2012; Koonin & Yutin 2019.
 
-Used as the auto-generated default for large-DNA-virus families that lack an audit-derived per-family preset. After the 2026-05 audit, only **Pandoraviridae** and **Medusaviridae** still ride the full 8-marker fallback (no cache data yet). Mimiviridae, Marseilleviridae, Pithoviridae, and Phycodnaviridae have pruned per-family presets in §4.6.1–§4.6.4.
+Used as the auto-generated default for large-DNA-virus families that lack an audit-derived per-family preset. After the 2026-05 audit, only **Pandoraviridae** still rides the full 8-marker fallback (no cache data yet). Medusaviruses (family **Mamonoviridae**; *Medusaviridae* was the proposed name and never matched NCBI) run on a single HMM-identified DNA polymerase B since 1.6.1. Mimiviridae, Marseilleviridae, Pithoviridae, and Phycodnaviridae have pruned per-family presets in §4.6.1–§4.6.4.
 
 | Marker | Aliases |
 |---|---|

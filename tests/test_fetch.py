@@ -1558,3 +1558,75 @@ class TestConfigureEntrezTimeout:
         fetch_mod.configure_entrez("someone@example.org", api_key=None)
         assert set_to == []
 
+
+
+# A WGS project master as NCBI returns it (rettype gb): contig accessions, no
+# sequence.  Filed under Sander lucioperca betanodavirus; it crashed the
+# Nodaviridae translation fallback on 2026-10-26.
+_WGS_MASTER_GB = """\
+LOCUS       CABPSU010000000         1966 rc    DNA     linear   VRL 14-FEB-2026
+DEFINITION  Sander lucioperca betanodavirus, whole genome shotgun sequencing
+            project.
+ACCESSION   CABPSU000000000
+VERSION     CABPSU000000000.1
+KEYWORDS    WGS.
+SOURCE      Sander lucioperca betanodavirus
+  ORGANISM  Sander lucioperca betanodavirus
+            Viruses; Riboviria; Orthornavirae; Kitrinoviricota; Magsaviricetes;
+            Nodamuvirales; Nodaviridae; Betanodavirus.
+FEATURES             Location/Qualifiers
+     source          1..1966
+                     /organism="Sander lucioperca betanodavirus"
+                     /mol_type="genomic DNA"
+                     /db_xref="taxon:1246483"
+WGS         CABPSU010000001-CABPSU010001966
+//
+"""
+
+
+def _gb_text(rec) -> str:
+    return rec.format("genbank")
+
+
+class TestRecordsWithoutSequence:
+    def _master(self):
+        import io
+        from Bio import SeqIO
+        return next(SeqIO.parse(io.StringIO(_WGS_MASTER_GB), "genbank"))
+
+    def test_wgs_master_has_no_sequence(self):
+        from vfam_trees.fetch import has_sequence
+        assert not has_sequence(self._master())
+        rec, _ = _genome("OR000010.1", _HIV_RT)
+        assert has_sequence(rec)
+
+    def test_translated_orfs_skips_it(self):
+        from vfam_trees.fetch import translated_orfs
+        assert translated_orfs(self._master(), 100) == []
+
+    @pytest.mark.real_ncbi_helpers
+    def test_fallback_download_leaves_it_out(self, monkeypatch, caplog):
+        from vfam_trees import fetch as fetch_mod
+        rec, _ = _genome("OR000011.1", _HIV_RT)
+        monkeypatch.setattr(fetch_mod, "_search_ids", lambda db, q, m: ["1", "2"])
+        monkeypatch.setattr(fetch_mod, "_fetch_batch",
+                            lambda db, ids: _WGS_MASTER_GB + _gb_text(rec))
+        with caplog.at_level("INFO", logger="vfam_trees.fetch"):
+            got = fetch_mod._fetch_species_nucleotide_records(1246483, None)
+        assert [r.id for r in got] == ["OR000011.1"]
+        assert "CABPSU000000000.1" in caplog.text
+
+    def test_parse_gb_records_leaves_it_out(self, tmp_path, caplog):
+        from vfam_trees.fetch import parse_gb_records
+        rec, _ = _genome("OR000012.1", _HIV_RT)
+        gb = tmp_path / "sequences.gb"
+        gb.write_text(_WGS_MASTER_GB + _gb_text(rec))
+        with caplog.at_level("WARNING", logger="vfam_trees.fetch"):
+            got = list(parse_gb_records(gb))
+        assert [r.id for r in got] == ["OR000012.1"]
+        assert "CABPSU000000000.1 has no sequence" in caplog.text
+
+    def test_direct_fetch_leaves_it_out(self, monkeypatch):
+        from vfam_trees import fetch as fetch_mod
+        monkeypatch.setattr(fetch_mod, "_fetch_batch", lambda db, ids: _WGS_MASTER_GB)
+        assert fetch_mod.fetch_accessions_directly(["CABPSU000000000.1"]) == []

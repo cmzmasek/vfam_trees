@@ -8,6 +8,38 @@ The full per-commit history is in `git log`; this file summarizes only
 changes that affect outputs, configuration, CLI behaviour, or other
 user-visible surface area.
 
+## [1.6.1] — 2026-10-26
+
+Two fixes found by the full re-run with 1.6.0. Mamonoviridae changes from
+whole-genome nucleotide to a DNA polymerase tree; delete its family config
+from an earlier run so the new preset applies.
+
+### Fixed
+- **A GenBank record without a sequence stopped the family.** NCBI files
+  some WGS project records ("… whole genome shotgun sequencing project",
+  a list of contig accessions) and CON-division records under virus taxa;
+  Biopython parses them with an undefined sequence, and the translation
+  fallback crashed on one (`UndefinedSequenceError`; Nodaviridae, from
+  `CABPSU000000000.1` under Sander lucioperca betanodavirus, a pikeperch
+  genome project). Such records are now left out with a log line in the
+  fallback's download, in the translation, and wherever downloaded or
+  `manual.include` records are read.
+- **Mamonoviridae ran as whole-genome nucleotide.** Its presets were filed
+  under *Medusaviridae*, a proposed name NCBI never used, so neither the
+  DNA polymerase preset nor the NCLDV concatenation fallback applied, and
+  MAFFT spent hours on four 360–560 kb genomes. Mamonoviridae now has its
+  own preset: the family-B DNA polymerase identified by HMM (bundled
+  `DNA_pol_B`, PF00136) and cut to the domain ± 100 aa. Two of the four
+  genomes split the polymerase gene into two proteins (Medusavirus
+  'euryale' between the exonuclease and polymerase parts, Furtivovirus B10
+  inside the polymerase domain), and the spliced polymerases of
+  *M. medusae* and *M. sthenus* carry ~680 N-terminal residues the others
+  lack, so a name-based pick would align different pieces.
+  Run end to end (2026-10-26): one polymerase per genome, cut to 404–663
+  aa, a 4 × 663 alignment, signal `ok` on both trees, 2 minutes. A family
+  config written by an earlier run pins whole-genome nucleotide; delete it
+  so the preset applies.
+
 ## [1.6.0] — 2026-10-22
 
 Phylogenetic-signal diagnostics for every tree, and 134 families moved from

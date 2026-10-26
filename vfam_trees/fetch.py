@@ -391,6 +391,29 @@ def fetch_species_sequences(
     return total
 
 
+def has_sequence(record: SeqRecord) -> bool:
+    """True when *record* carries its sequence.  A WGS project master
+    ("... whole genome shotgun sequencing project") and a CON-division
+    record fetched as plain GenBank list contig accessions instead; Biopython
+    parses them with an undefined sequence, and reading it raises
+    ``UndefinedSequenceError`` (found 2026-10-26: CABPSU000000000.1, filed
+    under Sander lucioperca betanodavirus, crashed the Nodaviridae run)."""
+    return bool(record.seq.defined)
+
+
+def records_with_sequence(records: Iterable[SeqRecord], what: str) -> list[SeqRecord]:
+    """*records* without those that carry no sequence (see `has_sequence`),
+    logging the ones left out under *what*."""
+    kept, dropped = [], []
+    for rec in records:
+        (kept if has_sequence(rec) else dropped).append(rec)
+    if dropped:
+        ids = ", ".join(r.id for r in dropped[:10]) + (" …" if len(dropped) > 10 else "")
+        log.info("%s: left out %d record(s) without sequence (WGS project or "
+                 "contig-list records): %s", what, len(dropped), ids)
+    return kept
+
+
 def fetch_accessions_directly(accessions: Iterable[str]) -> list[SeqRecord]:
     """Fetch a set of accessions from NCBI, auto-detecting nuccore vs protein db.
 
@@ -415,7 +438,8 @@ def fetch_accessions_directly(accessions: Iterable[str]) -> list[SeqRecord]:
             continue
         data = _fetch_batch(db, db_accs)
         if data.strip():
-            records.extend(SeqIO.parse(io.StringIO(data), "genbank"))
+            records.extend(records_with_sequence(
+                SeqIO.parse(io.StringIO(data), "genbank"), f"{db} accessions"))
     return records
 
 
@@ -482,9 +506,15 @@ def _build_species_query(
 # ---------------------------------------------------------------------------
 
 def parse_gb_records(gb_file: Path) -> Generator[SeqRecord, None, None]:
-    """Yield SeqRecord objects parsed from a GenBank flat file."""
+    """Yield SeqRecord objects parsed from a GenBank flat file, leaving out
+    (with a WARNING) records that carry no sequence (`has_sequence`)."""
     with open(gb_file) as f:
-        yield from SeqIO.parse(f, "genbank")
+        for rec in SeqIO.parse(f, "genbank"):
+            if has_sequence(rec):
+                yield rec
+            else:
+                log.warning("%s: %s has no sequence (WGS project or contig-list "
+                            "record); left out", gb_file, rec.id)
 
 
 def extract_metadata(record: SeqRecord) -> dict:
@@ -1282,7 +1312,8 @@ def _fetch_species_nucleotide_records(
     if not ids:
         return []
     text = "".join(_fetch_batch("nuccore", batch) for batch in _batched(ids, FETCH_BATCH_SIZE))
-    return list(SeqIO.parse(io.StringIO(text), "genbank"))
+    return records_with_sequence(SeqIO.parse(io.StringIO(text), "genbank"),
+                                 f"taxid {taxid} nucleotide records")
 
 
 def translated_orfs(record: SeqRecord, min_aa: int = _FALLBACK_MIN_ORF_AA) -> list[SeqRecord]:
@@ -1295,6 +1326,8 @@ def translated_orfs(record: SeqRecord, min_aa: int = _FALLBACK_MIN_ORF_AA) -> li
     the marker hits decide what is kept."""
     from Bio.SeqFeature import FeatureLocation, SeqFeature
 
+    if not has_sequence(record):
+        return []
     acc = record.id
     nuc = record.seq.upper()
     n = len(nuc)
