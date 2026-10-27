@@ -538,9 +538,26 @@ def hmm_marker_opt_out(file_cfg: dict | None, marker: str) -> bool:
 # editing the per-family yaml (set sequence.region back to a single
 # protein name and remove the concatenation block).
 #
-# Curation status: first pass from the literature; ASFV gene IDs are
-# flagged TBV (verify against NC_001659).  See CONCAT_DESIGN.md §4 for
-# references.
+# Curation status: first pass from the literature; Asfarviridae and
+# Pithoviridae moved to HMM-identified markers in 1.6.2.  See
+# CONCAT_DESIGN.md §4 for references.
+# NCLDV core markers identified by HMM (bundled set "NCLDV"), shared by the
+# Asfarviridae and Pithoviridae concatenations.  Tokens of one marker are
+# OR'd: the capping enzyme carries both domains, and some genomes hit only one.
+_NCLDV_HMM_MARKERS: list[dict] = [
+    {"name": "DNA polymerase B", "aliases": ["DNA polymerase"], "hmms": ["DNA_pol_B"]},
+    {"name": "major capsid protein", "aliases": ["p72"], "hmms": ["Capsid_NCLDV"]},
+    {"name": "DNA-directed RNA polymerase largest subunit", "aliases": ["RPB1"],
+     "hmms": ["RNA_pol_Rpb1_2"]},
+    {"name": "DNA-directed RNA polymerase second subunit", "aliases": ["RPB2"],
+     "hmms": ["RNA_pol_Rpb2_6"]},
+    {"name": "primase-helicase", "aliases": ["D5-like helicase"], "hmms": ["D5_N"]},
+    {"name": "late transcription factor 3", "aliases": ["VLTF-3"], "hmms": ["Pox_VLTF3"]},
+    {"name": "mRNA capping enzyme", "aliases": ["capping enzyme"],
+     "hmms": ["mRNA_G-N7_MeTrfase", "mRNA_cap_enzyme"]},
+    {"name": "DNA topoisomerase II", "aliases": ["topoisomerase II"], "hmms": ["DNA_topoisoIV"]},
+]
+
 CONCATENATION_FAMILIES: dict[str, dict] = {
 
     # ---- Poxviridae (9 markers) -----------------------------------------
@@ -670,44 +687,22 @@ CONCATENATION_FAMILIES: dict[str, dict] = {
         },
     },
 
-    # ---- Asfarviridae (6 markers — ASFV gene IDs TBV against NC_001659) -
-    # Refs: Yutin & Koonin 2012; Iyer et al. 2006.
+    # ---- Asfarviridae (8 markers, HMM-identified; 2026-10-27) -----------
+    # Refs: Yutin & Koonin 2012; Iyer et al. 2006.  Until 1.6.2 the markers
+    # were found by GenBank name, and ASFV names only its DNA polymerase and
+    # p72 that way: every genome failed min_fraction and the family had no
+    # tree.  Profiles from the shared NCLDV set, chosen from the Pfam domains
+    # UniProt gives the ASFV BA71V proteins and checked on the pipeline's own
+    # fetch (2026-10-27): all 35 genome-scale records of ASFV (6000-protein
+    # ceiling) and of Abalone asfa-like virus keep ≥ 6 of 8.  The packaging
+    # ATPase (Pox_A32) hits only the asfa-like virus and is left out.
+    # relative_length_cutoff 0.30: HMMER splits the polymerase domain of
+    # ASFV (hits of 0.47 / 0.45 of the profile) and of the asfa-like virus
+    # (0.31 / 0.23 / 0.36) at an insertion, so no single hit reaches 0.50.
     "Asfarviridae": {
         "sequence": {"region": "concatenated", "type": "protein"},
-        "concatenation": {
-            "proteins": [
-                {
-                    "name": "DNA polymerase B",
-                    "aliases": ["DNA polymerase", "DNA-directed DNA polymerase"],
-                    "locus_tag_hint": r"polB",
-                },
-                {
-                    "name": "major capsid protein p72",
-                    "aliases": ["major capsid protein", "p72", "capsid protein p72"],
-                    "locus_tag_hint": r"B646L|p72",
-                },
-                {
-                    "name": "packaging ATPase",
-                    "aliases": ["A32-like ATPase", "FtsK-like ATPase"],
-                    "locus_tag_hint": r"A32",
-                },
-                {
-                    "name": "primase-helicase",
-                    "aliases": ["D5-like helicase", "superfamily 3 helicase"],
-                    "locus_tag_hint": r"D5|A18",
-                },
-                {
-                    "name": "late transcription factor 3",
-                    "aliases": ["VLTF-3"],
-                    "locus_tag_hint": r"VLTF",
-                },
-                {
-                    "name": "DNA-directed RNA polymerase subunit",
-                    "aliases": ["RPB1-like subunit", "RNA polymerase largest subunit"],
-                    "locus_tag_hint": r"NP1450L|RPB1",
-                },
-            ],
-        },
+        "concatenation": {"proteins": copy.deepcopy(_NCLDV_HMM_MARKERS)},
+        "hmm": {"enabled": True, "database": "NCLDV", "relative_length_cutoff": 0.30},
     },
 
     # ---- Iridoviridae (6 markers) ---------------------------------------
@@ -933,18 +928,21 @@ for _f in ("Mimiviridae", "Marseilleviridae"):
         },
     }
 
-# Pithoviridae — different trim profile: packaging ATPase (0 %) and
-# VLTF-3 (0 %) drop out, but primase-helicase is kept (it's at 4 % vs 0 %
-# for the other dropouts and may improve with future alias work).  DNA
-# polymerase is at 17 % — also flagged for follow-up alias investigation.
+# Pithoviridae — 7 HMM-identified markers (2026-10-27; name-based until
+# 1.6.2, when 2 genomes passed min_fraction and the family had no tree).
+# Every complete genome (18 records of 7 species) carries all 7; pithoviruses
+# have no Pfam-detectable major capsid protein, so Capsid_NCLDV is left out.
+# The metagenome-assembled genomes (LCPAC…) are split over contigs with at
+# most 4 markers each and stay out, as before.  Cutoff as for Asfarviridae.
 CONCATENATION_FAMILIES["Pithoviridae"] = {
     "sequence": {"region": "concatenated", "type": "protein"},
     "concatenation": {
         "proteins": [
-            p for p in copy.deepcopy(_NCLDV_HALLMARK_PROTEINS)
-            if p["name"] not in ("packaging ATPase", "late transcription factor 3")
+            copy.deepcopy(p) for p in _NCLDV_HMM_MARKERS
+            if p["name"] != "major capsid protein"
         ],
     },
+    "hmm": {"enabled": True, "database": "NCLDV", "relative_length_cutoff": 0.30},
 }
 
 

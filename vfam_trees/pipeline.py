@@ -30,6 +30,7 @@ from .summary import (
     compute_support_stats, compute_msa_stats, compute_seqlen_stats,
     build_summary_row, write_summary_row, load_family_annotations,
     build_status_row, write_status_row, report_marker_coverage,
+    family_status, NO_TREE_STATUS,
 )
 from .quality import (
     filter_sequences,
@@ -1196,10 +1197,15 @@ def run_family(
                     clade.name = short_to_display.get(clade.name, clade.name)
             bio_trees[label] = display_tree
 
+    family_state = family_status(len(bio_trees), {
+        label: stats.get("skipped_reason", "") for label, stats in tree_stats.items()
+    })
     log.info("=" * 60)
     log.info("Pipeline complete for %s", family)
+    if family_state != "OK":
+        log.warning("%s: %s", family, family_state)
     log.info("=" * 60)
-    _mark_done(family_dir, family, output_dir)
+    _mark_done(family_dir, family, output_dir, no_tree=family_state != "OK" and family_state)
 
     summary_row = build_summary_row(
         family=family,
@@ -1229,7 +1235,7 @@ def run_family(
             seq_type=seq_type,
             region=region,
             segment=segment,
-            status="OK",
+            status=family_state,
             family_annotation=family_annotation,
         ))
 
@@ -1391,7 +1397,8 @@ def _run_target(
             "Only %d sequence(s) after proportional merge for tree_%s (minimum 4) — skipping.",
             len(sel_records), label,
         )
-        return {}, [], None
+        return {"skipped_reason": f"too few sequences after per-species clustering "
+                                  f"({len(sel_records)} < 4)"}, [], None
 
     # Pre-MSA length-outlier removal (MAD-on-log + hard floor, config-driven)
     length_outlier_cfg = family_cfg.get("length_outlier", {})
@@ -1421,7 +1428,8 @@ def _run_target(
             "Only %d sequence(s) after length-outlier removal for tree_%s (minimum 4) — skipping.",
             len(sel_records), label,
         )
-        return {}, [], None
+        return {"skipped_reason": f"too few sequences after length-outlier removal "
+                                  f"({len(sel_records)} < 4)"}, [], None
 
     sel_metadata = [short_id_to_meta.get(r.id, {}) for r in sel_records]
     id_map = {r.id: short_to_display.get(r.id, r.id) for r in sel_records}
@@ -1935,8 +1943,15 @@ def _save_config_copy(cfg: dict, path: Path, header: str = "") -> None:
         yaml.dump(clean, f, default_flow_style=False, sort_keys=False)
 
 
-def _mark_done(family_dir: Path, family: str, output_dir: Path) -> None:
-    (family_dir / ".status.json").write_text(json.dumps({"family": family, "status": "done"}))
+def _mark_done(family_dir: Path, family: str, output_dir: Path,
+               no_tree: str | bool = False) -> None:
+    """Mark *family* finished.  *no_tree* (the ``no tree: <reason>`` status)
+    records a family that ran to the end without building a tree."""
+    state = {"family": family, "status": "done"}
+    if no_tree:
+        state = {"family": family, "status": NO_TREE_STATUS,
+                 "reason": str(no_tree).removeprefix(f"{NO_TREE_STATUS}: ")}
+    (family_dir / ".status.json").write_text(json.dumps(state))
     (output_dir / f".done_{family}").write_text("")
 
 

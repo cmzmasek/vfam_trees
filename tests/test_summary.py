@@ -530,3 +530,20 @@ class TestMarkerCoverageReport:
         assert COLUMNS.index("species_without_marker") == COLUMNS.index("species_with_seqs") + 1
         blank = build_summary_row("F", 1, [], "protein", "RT", None, 0, 0, {}, {})
         assert blank["species_without_marker"] == ""
+
+
+class TestFamilyStatus:
+    def test_ok_when_any_tree_built(self):
+        from vfam_trees.summary import family_status
+        assert family_status(2, {}) == "OK"
+        assert family_status(1, {"100": "too few sequences after length-outlier removal (3 < 4)"}) == "OK"
+
+    def test_no_tree_names_tree_500_reason(self):
+        from vfam_trees.summary import family_status
+        reasons = {"500": "too few sequences after per-species clustering (2 < 4)",
+                   "100": "too few sequences after per-species clustering (2 < 4)"}
+        assert family_status(0, reasons) == \
+            "no tree: too few sequences after per-species clustering (2 < 4)"
+        assert family_status(0, {"500": "", "100": "empty concatenated alignment"}) == \
+            "no tree: empty concatenated alignment"
+        assert family_status(0, {}) == "no tree"

@@ -377,7 +377,8 @@ def build_status_row(
     """Assemble a single row for status.tsv.
 
     status is 'OK' when the full pipeline (including tree inference) succeeded,
-    otherwise the skip reason.
+    ``no tree: <reason>`` when it ran to the end without building a tree
+    (`family_status`), otherwise the skip reason.
     """
     lineage_str = "; ".join(e["name"] for e in family_lineage) if family_lineage else ""
     return {
@@ -387,6 +388,20 @@ def build_status_row(
         "status":           status,
         "lineage":          lineage_str,
     }
+
+
+NO_TREE_STATUS = "no tree"
+
+
+def family_status(n_trees_built: int, skip_reasons: dict[str, str]) -> str:
+    """status.tsv value for a family whose pipeline ran to the end: ``OK``
+    when at least one tree was built, else ``no tree: <reason>``.  The reason
+    is tree_500's (the larger target, so the one that decides; tree_100 is
+    drawn from the same sequences) or, failing that, any target's."""
+    if n_trees_built:
+        return "OK"
+    reason = skip_reasons.get("500") or next((r for r in skip_reasons.values() if r), "")
+    return f"{NO_TREE_STATUS}: {reason}" if reason else NO_TREE_STATUS
 
 
 def write_status_row(status_path: Path, row: dict) -> None:

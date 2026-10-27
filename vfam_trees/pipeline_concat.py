@@ -64,6 +64,7 @@ from .summary import (
     compute_msa_stats,
     compute_seqlen_stats,
     compute_support_stats,
+    family_status,
     report_marker_coverage,
     write_status_row,
     write_summary_row,
@@ -520,6 +521,11 @@ def run_family_concat(
     except Exception as e:
         log.warning("Per-family report PDF skipped: %s", e)
 
+    family_state = family_status(len(bio_trees), {
+        label: stats.get("skipped_reason", "") for label, stats in tree_stats.items()
+    })
+    if family_state != "OK":
+        log.warning("%s: %s", family, family_state)
     if status_path is not None:
         # For the OK row, list markers actually used in the alignment (those
         # retained in ≥1 genome after per-marker length-outlier filtering),
@@ -538,11 +544,14 @@ def run_family_concat(
             seq_type=seq_type,
             region=region,
             segment=segment,
-            status="OK",
+            status=family_state,
             family_annotation=family_annotation,
             marker_names=markers_used_for_status,
         ))
-    mark_done(family_dir, family, output_dir)
+    if family_state == "OK":
+        mark_done(family_dir, family, output_dir)
+    else:
+        mark_done(family_dir, family, output_dir, no_tree=family_state)
 
     leaves_500 = tree_stats.get("500", {}).get("leaves", "?")
     leaves_100 = tree_stats.get("100", {}).get("leaves", "?")
@@ -624,7 +633,8 @@ def _run_target_concat(
             "Only %d genome(s) selected for tree_%s — skipping (minimum 4).",
             len(selected_ids), label,
         )
-        return {"leaves": 0, "skipped_reason": f"too few genomes ({len(selected_ids)})"}
+        return {"leaves": 0, "skipped_reason": f"too few genomes after per-species clustering "
+                                              f"({len(selected_ids)} < 4)"}
 
     # 2. Build genome-level dicts limited to selected genomes
     #    (also collect per-genome species name + lineage for downstream tree annotation)
@@ -700,7 +710,7 @@ def _run_target_concat(
         )
         if not concat:
             log.warning("tree_%s: concat alignment is empty — skipping.", label)
-            return {"leaves": 0, "skipped_reason": "empty concat"}
+            return {"leaves": 0, "skipped_reason": "empty concatenated alignment"}
 
         with open(concat_fasta, "w") as f:
             SeqIO.write(list(concat.values()), f, "fasta")

@@ -569,3 +569,38 @@ def test_species_without_genome_reported_by_marker_status(tmp_path, monkeypatch,
     assert genomes == {}
     assert without == [{"species": "Noumeavirus", "taxid": 1955558,
                         "ncbi_records": 916, "status": status}]
+
+
+def test_no_tree_when_every_target_skips(tmp_path, monkeypatch):
+    """Enough genomes for the family, but each tree target ends with fewer
+    than 4 after clustering: status 'no tree: …', not 'OK'."""
+    from Bio.Seq import Seq
+    from Bio.SeqRecord import SeqRecord
+
+    def fake_fetch_species_genomes(taxid, *args, **kwargs):
+        rec = lambda m: SeqRecord(Seq("M" + "A" * 200), id=f"P{taxid}{m}")
+        return ({f"G{taxid}": {"DNA polymerase": rec(1), "MCP": rec(2)}},
+                {"n_proteins_fetched": 2, "n_genomes_found": 1, "n_genomes_kept": 1,
+                 "n_dropped_min_fraction": 0, "n_dropped_split_submission": 0,
+                 "n_orphaned_no_source": 0})
+    import vfam_trees.fetch as fetch_mod
+    monkeypatch.setattr(pipeline_concat, "fetch_species_genomes", fake_fetch_species_genomes)
+    monkeypatch.setattr(fetch_mod, "fetch_taxonomy_lineages", lambda taxids: {})
+    reason = "too few genomes after per-species clustering (3 < 4)"
+    monkeypatch.setattr(pipeline_concat, "_run_target_concat",
+                        lambda **kw: {"leaves": 0, "skipped_reason": reason})
+    done = []
+    output_dir = tmp_path / "results"; output_dir.mkdir()
+    family_dir = tmp_path / "Asfarviridae_137992"; family_dir.mkdir()
+    (tmp_path / "work").mkdir()
+    pipeline_concat.run_family_concat(
+        family="Asfarviridae", family_cfg=_minimal_family_cfg(), family_taxid=137992,
+        family_lineage=[{"rank": "family", "name": "Asfarviridae"}], family_annotation={},
+        family_dir=family_dir, work_dir=tmp_path / "work", output_dir=output_dir,
+        species_list=[{"name": f"Test virus {i}", "taxid": 100000 + i} for i in range(4)],
+        threads=1, summary_path=output_dir / "summary.tsv", status_path=output_dir / "status.tsv",
+        mark_done=lambda d, f, o, no_tree=False: done.append(no_tree),
+        mark_skipped=lambda *a: pytest.fail("family-level skip not expected"),
+    )
+    assert done == [f"no tree: {reason}"]
+    assert f"no tree: {reason}" in (output_dir / "status.tsv").read_text()

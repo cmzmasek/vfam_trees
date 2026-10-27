@@ -119,6 +119,8 @@ Removed from `CONCATENATION_FAMILIES` in the 2026-05 audit. The family contains 
 
 ### 4.3 Asfarviridae (6 markers — ASFV gene IDs TBV)
 
+> **Superseded in 1.6.2:** these name-based markers found only the DNA polymerase and p72 in ASFV annotations, so no genome passed `min_fraction` and the family had no tree. Asfarviridae (8 markers) and Pithoviridae (7) now use HMM-identified NCLDV core markers, bundled set `NCLDV`: `DNA_pol_B`, `Capsid_NCLDV`, `RNA_pol_Rpb1_2`, `RNA_pol_Rpb2_6`, `D5_N`, `Pox_VLTF3`, `mRNA_G-N7_MeTrfase` | `mRNA_cap_enzyme`, `DNA_topoisoIV` (Pithoviridae without `Capsid_NCLDV`). The table below is kept for the record.
+
 References: Yutin & Koonin 2012; Iyer et al. 2006; ICTV Asfarviridae chapter.
 
 | Marker | ASFV gene | Aliases | Locus tag hint |

@@ -8,6 +8,45 @@ The full per-commit history is in `git log`; this file summarizes only
 changes that affect outputs, configuration, CLI behaviour, or other
 user-visible surface area.
 
+## [1.6.2] — 2026-10-27
+
+Two families of the 2026-10-22 run that had no tree get one, and a family
+that finishes without a tree says so. Delete the Asfarviridae and
+Pithoviridae configs written by an earlier run so the new presets apply.
+
+### Changed
+- **A family that finishes without a tree says so.** When each tree target
+  ends with fewer than the 4 sequences a tree needs (after per-species
+  clustering or length-outlier removal; in concatenated mode, genomes), the
+  `status.tsv` value is `no tree: <reason>` instead of `OK`, e.g. `no tree:
+  too few sequences after per-species clustering (2 < 4)`, the family log
+  ends with a WARNING, and `vfam_trees status` shows `no tree`. In the
+  2026-10-22 run 12 families were `OK` without a tree. A family with one of
+  its two trees stays `OK`.
+
+### Fixed
+- **Asfarviridae and Pithoviridae had no tree.** Their concatenation presets
+  found the marker proteins by GenBank name, and NCBI names most of them
+  differently: African swine fever virus matched only its DNA polymerase and
+  p72, so all 46 full-length genomes failed `min_fraction`; pithoviruses
+  kept 2 genomes. Both now identify the markers by HMM, from a new bundled
+  set `NCLDV` of nine Pfam profiles (accessions checked against InterPro):
+  DNA polymerase B (`DNA_pol_B`), major capsid protein (`Capsid_NCLDV`,
+  Asfarviridae only; pithoviruses have none Pfam detects), RNA polymerase
+  largest and second subunits (`RNA_pol_Rpb1_2`, `RNA_pol_Rpb2_6`), D5-like
+  primase-helicase (`D5_N`), VLTF-3 (`Pox_VLTF3`), mRNA capping enzyme
+  (`mRNA_G-N7_MeTrfase` or `mRNA_cap_enzyme`) and topoisomerase II
+  (`DNA_topoisoIV`). The profiles were chosen from the Pfam domains UniProt
+  gives these viruses' proteins and tested on the pipeline's own download.
+  `relative_length_cutoff` is 0.30 for both: HMMER splits their polymerase
+  domain at an insertion into hits of 0.23–0.47 of the profile. Run end to
+  end (2026-10-27): Asfarviridae keeps 35 genomes (33 ASFV, 2 Abalone
+  asfa-like virus) with all 8 markers each, trees of 12 / 7 tips; Pithoviridae
+  keeps the 18 complete genomes of 7 species, 13 / 13 tips, cedratviruses
+  and pithoviruses in separate clades; signal `ok` on all four trees. The
+  metagenome-assembled pithoviruses (LCPAC…) are split over contigs with at
+  most 4 markers each and stay out.
+
 ## [1.6.1] — 2026-10-26
 
 Two fixes found by the full re-run with 1.6.0. Mamonoviridae changes from

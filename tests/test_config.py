@@ -539,7 +539,7 @@ class TestConcatenationFamiliesPresets:
             ("Phycodnaviridae", 4),
             ("Mimiviridae", 6),
             ("Marseilleviridae", 6),
-            ("Pithoviridae", 6),
+            ("Pithoviridae", 7),     # HMM-identified since 1.6.2
         ):
             n = len(CONCATENATION_FAMILIES[fam]["concatenation"]["proteins"])
             assert n == expected_n, f"{fam}: expected {expected_n} markers, got {n}"
@@ -2244,3 +2244,30 @@ class TestMamonoviridaePreset:
         hmm = Path(vfam_trees.__file__).parent / "data" / "hmms" / "Mamonoviridae" / "DNA_pol_B.hmm"
         text = hmm.read_text()
         assert "NAME  DNA_pol_B" in text and "ACC   PF00136" in text
+
+
+class TestNcldvHmmConcat:
+    """Asfarviridae and Pithoviridae: concatenations of HMM-identified NCLDV
+    core markers (bundled set "NCLDV"), not GenBank names."""
+
+    def test_presets(self, tmp_path):
+        for fam, n, has_mcp in (("Asfarviridae", 8, True), ("Pithoviridae", 7, False)):
+            cfg, _ = load_family_config(fam, tmp_path, MINIMAL_GLOBAL)
+            assert cfg["sequence"]["region"] == "concatenated", fam
+            assert cfg["hmm"]["enabled"] is True and cfg["hmm"]["database"] == "NCLDV", fam
+            assert cfg["hmm"]["relative_length_cutoff"] == 0.30, fam
+            proteins = cfg["concatenation"]["proteins"]
+            assert len(proteins) == n and all(p["hmms"] for p in proteins), fam
+            assert any(p["hmms"] == ["Capsid_NCLDV"] for p in proteins) is has_mcp, fam
+            _validate_hmm_block(cfg, fam)
+
+    def test_every_token_is_a_bundled_profile(self):
+        tokens = {tok for fam in ("Asfarviridae", "Pithoviridae")
+                  for p in CONCATENATION_FAMILIES[fam]["concatenation"]["proteins"]
+                  for tok in p["hmms"]}
+        assert tokens == _bundled_names("NCLDV")
+
+    def test_bundled_database_resolves(self, tmp_path):
+        from vfam_trees.hmm import resolve_database_path, parse_ga_cutoffs
+        db = resolve_database_path("NCLDV", cache_dir=tmp_path)
+        assert len(parse_ga_cutoffs(db)) == 9

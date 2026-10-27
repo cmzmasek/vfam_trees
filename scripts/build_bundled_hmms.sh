@@ -11,7 +11,7 @@
 #
 # Pfam-A is licensed CC0 (public domain); redistribution is unrestricted.
 # Accessions verified against the InterPro REST API (2026-06; RdRp set 2026-10-20;
-# RT and Rep sets 2026-10-21).
+# RT and Rep sets 2026-10-21; Mamonoviridae 2026-10-26; NCLDV 2026-10-27).
 
 set -euo pipefail
 
@@ -23,6 +23,7 @@ OUTROOT="vfam_trees/data/hmms"
 # Adenoviridae — single-marker hexon, as a two-domain architecture
 #   (Adeno_hexon N-term --> Adeno_hexon_C C-term) for the "A--B" token.
 # Mamonoviridae — single-marker DNA polymerase B (same profile as Poxviridae's).
+# NCLDV — shared set for the Asfarviridae / Pithoviridae HMM concatenations.
 PROFILES=(
     "Poxviridae   PF00136 DNA_pol_B        DNA_polymerase_E9L"
     "Poxviridae   PF00623 RNA_pol_Rpb1_2   RNA_pol_147kDa_A24R_RPO147"
@@ -36,6 +37,17 @@ PROFILES=(
     "Adenoviridae PF03678 Adeno_hexon_C    hexon_C-terminal"
     # Mamonoviridae — single-marker family-B DNA polymerase (2026-10-26).
     "Mamonoviridae PF00136 DNA_pol_B       DNA_polymerase_B"
+    # NCLDV — HMM marker set shared by the Asfarviridae and Pithoviridae
+    #   concatenations (2026-10-27); accessions checked against InterPro.
+    "NCLDV PF00136 DNA_pol_B               DNA_polymerase_B"
+    "NCLDV PF04451 Capsid_NCLDV            major_capsid_protein_(ASFV_p72)"
+    "NCLDV PF00623 RNA_pol_Rpb1_2          RNA_polymerase_largest_subunit"
+    "NCLDV PF00562 RNA_pol_Rpb2_6          RNA_polymerase_second_subunit"
+    "NCLDV PF08706 D5_N                    D5-like_primase-helicase"
+    "NCLDV PF04947 Pox_VLTF3               late_transcription_factor_VLTF-3"
+    "NCLDV PF01331 mRNA_cap_enzyme         capping_enzyme_guanylyltransferase"
+    "NCLDV PF03291 mRNA_G-N7_MeTrfase      capping_enzyme_N7-methyltransferase"
+    "NCLDV PF00521 DNA_topoisoIV           topoisomerase_II"
     # RdRp — RNA-dependent RNA polymerase profiles for the RNA-virus families
     #   (RDRP_FAMILIES); all tokens OR'd, accessions verified 2026-10-20.
     "RdRp PF00680 RdRP_1                    picorna-/calici-/potyvirus-like_RdRp"

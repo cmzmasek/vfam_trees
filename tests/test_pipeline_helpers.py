@@ -946,3 +946,19 @@ def test_species_without_marker_reported(tmp_path, monkeypatch):
     summary = list(csv.DictReader((tmp_path / "results" / "summary.tsv").open(), delimiter="\t"))[0]
     assert summary["species_without_marker"] == "1"
     assert summary["species_marker_translated"] == "1"
+
+
+class TestMarkDone:
+    def test_done_and_no_tree_states(self, tmp_path):
+        import json
+        from vfam_trees.pipeline import _mark_done
+        fam_dir, out = tmp_path / "F_1", tmp_path
+        fam_dir.mkdir()
+        _mark_done(fam_dir, "F", out)
+        assert json.loads((fam_dir / ".status.json").read_text())["status"] == "done"
+        _mark_done(fam_dir, "F", out,
+                   no_tree="no tree: too few sequences after per-species clustering (2 < 4)")
+        state = json.loads((fam_dir / ".status.json").read_text())
+        assert state == {"family": "F", "status": "no tree",
+                         "reason": "too few sequences after per-species clustering (2 < 4)"}
+        assert (out / ".done_F").exists()       # finished: not re-run without --force
