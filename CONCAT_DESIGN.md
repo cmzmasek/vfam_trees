@@ -179,7 +179,7 @@ Cache coverage on the 27 species fetched: DNA polymerase 81 %, MCP 76 %, P143 29
 
 References: Yutin & Koonin 2009, 2012; Koonin & Yutin 2019.
 
-Used as the auto-generated default for large-DNA-virus families that lack an audit-derived per-family preset. After the 2026-05 audit, only **Pandoraviridae** still rides the full 8-marker fallback (no cache data yet). Medusaviruses (family **Mamonoviridae**; *Medusaviridae* was the proposed name and never matched NCBI) run on a single HMM-identified DNA polymerase B since 1.6.1. Mimiviridae, Marseilleviridae, Pithoviridae, and Phycodnaviridae have pruned per-family presets in §4.6.1–§4.6.4.
+Used as the auto-generated default for large-DNA-virus families that lack an audit-derived per-family preset. After the 2026-05 audit, only **Pandoraviridae** still rides the full 8-marker fallback (no cache data yet). Medusaviruses (family **Mamonoviridae**; *Medusaviridae* was the proposed name and never matched NCBI) run on a single HMM-identified DNA polymerase B since 1.6.1. Mimiviridae, Marseilleviridae, Pithoviridae, and Phycodnaviridae have pruned per-family presets in §4.6.1–§4.6.4; Pithoviridae (1.6.2), Mimiviridae and Marseilleviridae (2026-10-27) have since moved to HMM-identified markers.
 
 | Marker | Aliases |
 |---|---|
@@ -198,9 +198,13 @@ The first 2026-05 audit cut the NCLDV-8 set to 3 (DNA pol, MCP, capping enzyme) 
 
 ### 4.6.2 Mimiviridae (6 markers)
 
+> **Superseded 2026-10-27:** Mimiviridae and Marseilleviridae now use six HMM-identified markers from the bundled `NCLDV` set (`DNA_pol_B`, `RNA_pol_Rpb1_2`, `RNA_pol_Rpb2_6`, `D5_N`, `mRNA_G-N7_MeTrfase` | `mRNA_cap_enzyme`, `DNA_topoisoIV`; `relative_length_cutoff` 0.30). `Capsid_NCLDV` and `Pox_VLTF3` are left out: Mimiviridae genomes carry 2–5 capsid paralogs and often two VLTF-3-like proteins, and the pipeline picks the longest hit per marker. `Pox_A32` (packaging ATPase) misses the klosneuviruses and most marseilleviruses. The Mimiviridae preset also turns branch-length outlier removal off: near-identical Megamimivirinae pull the median + 20 × MAD threshold down to ~0.10 subs/site, below the real Klosneuvirinae branches (0.2–0.5), and excludes Megavirus haemonchus182742 (BK066332.1, assembled from a nematode genome project; long branch at the base of Megamimivirinae). The name-based audits below are kept for the record.
+
 Cache audit of 89 species: drop primase-helicase (2 %) and VLTF-3 (0 %) from the §4.6 set. Remaining markers: DNA polymerase (45 %), MCP (43 %), packaging ATPase (19 %), mRNA capping enzyme (36 %), RPB1 (14 %), RPB2 (18 %).
 
 ### 4.6.3 Marseilleviridae (6 markers)
+
+> **Superseded 2026-10-27:** see §4.6.2. The HMM set finds the DNA polymerase in the other genomes, but the GenBank and RefSeq records of *Marseillevirus marseillevirus* and Golden Marseillevirus have no protein with a DNA polymerase B domain at all; they go in with 5 of the 6 markers.
 
 Cache audit of 28 species: drop primase-helicase (4 %) and VLTF-3 (4 %). Remaining: MCP (96 %), RPB1 (75 %), RPB2 (39 %), mRNA capping enzyme (36 %), packaging ATPase (14 %), DNA polymerase (**0 %** — flagged for follow-up alias investigation; the marker is kept in the preset on the assumption this is fixable, not a real annotation gap).
 

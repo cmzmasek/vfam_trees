@@ -530,14 +530,15 @@ class TestConcatenationFamiliesPresets:
 
     def test_ncldv_fallback_only_pandora(self):
         # After the 2026-05 audit only Pandoraviridae remains on the 8-marker
-        # NCLDV-hallmark fallback; Mimi, Phyco, Marseille, and Pitho got
-        # pruned per-family presets, Mamonoviridae a single HMM marker.
+        # NCLDV-hallmark fallback; Phyco got a pruned per-family preset,
+        # Mimi, Marseille and Pitho HMM-identified markers, Mamonoviridae a
+        # single HMM marker.
         pandora = CONCATENATION_FAMILIES["Pandoraviridae"]["concatenation"]["proteins"]
         assert len(pandora) == 8
         # Pruned-preset families have fewer markers.
         for fam, expected_n in (
             ("Phycodnaviridae", 4),
-            ("Mimiviridae", 6),
+            ("Mimiviridae", 6),      # HMM-identified since 2026-10-27
             ("Marseilleviridae", 6),
             ("Pithoviridae", 7),     # HMM-identified since 1.6.2
         ):
@@ -2247,11 +2248,15 @@ class TestMamonoviridaePreset:
 
 
 class TestNcldvHmmConcat:
-    """Asfarviridae and Pithoviridae: concatenations of HMM-identified NCLDV
-    core markers (bundled set "NCLDV"), not GenBank names."""
+    """Asfarviridae, Pithoviridae, Mimiviridae and Marseilleviridae:
+    concatenations of HMM-identified NCLDV core markers (bundled set
+    "NCLDV"), not GenBank names."""
+
+    FAMILIES = ("Asfarviridae", "Pithoviridae", "Mimiviridae", "Marseilleviridae")
 
     def test_presets(self, tmp_path):
-        for fam, n, has_mcp in (("Asfarviridae", 8, True), ("Pithoviridae", 7, False)):
+        for fam, n, has_mcp in (("Asfarviridae", 8, True), ("Pithoviridae", 7, False),
+                                ("Mimiviridae", 6, False), ("Marseilleviridae", 6, False)):
             cfg, _ = load_family_config(fam, tmp_path, MINIMAL_GLOBAL)
             assert cfg["sequence"]["region"] == "concatenated", fam
             assert cfg["hmm"]["enabled"] is True and cfg["hmm"]["database"] == "NCLDV", fam
@@ -2262,7 +2267,7 @@ class TestNcldvHmmConcat:
             _validate_hmm_block(cfg, fam)
 
     def test_every_token_is_a_bundled_profile(self):
-        tokens = {tok for fam in ("Asfarviridae", "Pithoviridae")
+        tokens = {tok for fam in self.FAMILIES
                   for p in CONCATENATION_FAMILIES[fam]["concatenation"]["proteins"]
                   for tok in p["hmms"]}
         assert tokens == _bundled_names("NCLDV")
@@ -2271,3 +2276,39 @@ class TestNcldvHmmConcat:
         from vfam_trees.hmm import resolve_database_path, parse_ga_cutoffs
         db = resolve_database_path("NCLDV", cache_dir=tmp_path)
         assert len(parse_ga_cutoffs(db)) == 9
+
+    def test_mimi_and_marseille_leave_out_paralogous_markers(self):
+        # Mimiviridae genomes carry several major capsid proteins and two
+        # VLTF-3-like proteins; both families use the same six markers.
+        mimi = CONCATENATION_FAMILIES["Mimiviridae"]["concatenation"]["proteins"]
+        marseille = CONCATENATION_FAMILIES["Marseilleviridae"]["concatenation"]["proteins"]
+        assert mimi == marseille
+        tokens = {tok for p in mimi for tok in p["hmms"]}
+        assert not tokens & {"Capsid_NCLDV", "Pox_VLTF3"}
+        assert {"DNA_pol_B", "RNA_pol_Rpb1_2", "RNA_pol_Rpb2_6", "D5_N",
+                "DNA_topoisoIV"} <= tokens
+
+    def test_mimiviridae_keeps_long_branches(self, tmp_path):
+        # Near-identical Megamimivirinae set the median + 20 × MAD threshold
+        # so low that real Klosneuvirinae were removed as outliers.
+        for fam in self.FAMILIES:
+            cfg, _ = load_family_config(fam, tmp_path / fam, MINIMAL_GLOBAL)
+            out = cfg["outlier_removal"]
+            assert out["enabled"] is (fam != "Mimiviridae"), fam
+            assert out["factor"] == 20.0 and out["quick_check"] is True, fam
+        # The preset beats global defaults and is written to the family file.
+        glob = make_minimal_global_cfg()
+        glob.setdefault("defaults", {})["outlier_removal"] = {"enabled": True}
+        cfg, auto = load_family_config("Mimiviridae", tmp_path / "g", glob)
+        assert auto and cfg["outlier_removal"]["enabled"] is False
+        written = yaml.safe_load((tmp_path / "g" / "Mimiviridae.yaml").read_text())
+        assert written["outlier_removal"]["enabled"] is False
+
+    def test_mimiviridae_leaves_out_nematode_assembly(self, tmp_path):
+        # BK066332.1: a TPA from a nematode genome project on a long branch.
+        for fam in self.FAMILIES:
+            cfg, _ = load_family_config(fam, tmp_path / fam, MINIMAL_GLOBAL)
+            manual = cfg["manual"]
+            want = ["BK066332.1"] if fam == "Mimiviridae" else []
+            assert manual["exclude"] == want, fam
+            assert manual["include"] == [] and manual["name"] == "", fam

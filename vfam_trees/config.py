@@ -539,10 +539,10 @@ def hmm_marker_opt_out(file_cfg: dict | None, marker: str) -> bool:
 # protein name and remove the concatenation block).
 #
 # Curation status: first pass from the literature; Asfarviridae and
-# Pithoviridae moved to HMM-identified markers in 1.6.2.  See
-# CONCAT_DESIGN.md §4 for references.
+# Pithoviridae moved to HMM-identified markers in 1.6.2, Mimiviridae and
+# Marseilleviridae after it.  See CONCAT_DESIGN.md §4 for references.
 # NCLDV core markers identified by HMM (bundled set "NCLDV"), shared by the
-# Asfarviridae and Pithoviridae concatenations.  Tokens of one marker are
+# Asfarviridae, Pithoviridae, Mimiviridae and Marseilleviridae concatenations.  Tokens of one marker are
 # OR'd: the capping enzyme carries both domains, and some genomes hit only one.
 _NCLDV_HMM_MARKERS: list[dict] = [
     {"name": "DNA polymerase B", "aliases": ["DNA polymerase"], "hmms": ["DNA_pol_B"]},
@@ -910,23 +910,47 @@ CONCATENATION_FAMILIES["Phycodnaviridae"] = {
     },
 }
 
-# Mimiviridae and Marseilleviridae share the same trim: drop primase-helicase
-# (2–4 %) and VLTF-3 (0–4 %) from the NCLDV-8 set; the remaining six markers
-# all have meaningful coverage in both families.  Note: Marseilleviridae DNA
-# polymerase is at 0 % under the current aliases — flagged for follow-up
-# alias investigation; the marker is kept in the preset on the assumption
-# that the alias issue is fixable.
-_NCLDV_TRIMMED_NO_HELICASE_NO_VLTF = [
-    p for p in copy.deepcopy(_NCLDV_HALLMARK_PROTEINS)
-    if p["name"] not in ("primase-helicase", "late transcription factor 3")
+# Mimiviridae and Marseilleviridae — 6 HMM-identified markers (2026-10-27;
+# name-based until then: NCBI names the packaging ATPase and the RNA
+# polymerase subunits in too many ways, which left out Noumeavirus, Golden
+# Marseillevirus and ~17 Mimiviridae species).  The NCLDV set without the
+# major capsid protein and VLTF-3: every Mimiviridae genome carries 2–5
+# capsid paralogs (APMV L425, R439, R440, R441) and 18 of 68 two VLTF-3-like
+# proteins (~430 and ~255 aa), and "longest protein per marker" would mix
+# paralogs.  Marseilleviridae has one copy of each but uses the same six:
+# with eight markers the min_fraction bar (6 of 8) drops LCMAC101, a
+# metagenome-assembled genome with its markers on two contigs.  The
+# packaging ATPase (Pox_A32, not bundled) hits 5 of 36 Marseilleviridae
+# genomes and none of Klosneuvirus, Indivirus or Megavirus Me1-1.  Checked on
+# the pipeline's own fetch and marker selection (scratch survey, 2026-10-27):
+# Mimiviridae 70 genomes of 46 species (name-based: 42 tips of 29 species),
+# Marseilleviridae 37 genomes of 20 species (23 of 18).  Cutoff 0.30 as for
+# Asfarviridae: at 0.50 the Mimiviridae DNA polymerase, split by HMMER at an
+# insertion, is found in 28 of 64 kept genomes instead of 66.
+_NCLDV_HMM_CORE6 = [
+    p for p in _NCLDV_HMM_MARKERS
+    if p["name"] not in ("major capsid protein", "late transcription factor 3")
 ]
 for _f in ("Mimiviridae", "Marseilleviridae"):
     CONCATENATION_FAMILIES[_f] = {
         "sequence": {"region": "concatenated", "type": "protein"},
-        "concatenation": {
-            "proteins": copy.deepcopy(_NCLDV_TRIMMED_NO_HELICASE_NO_VLTF),
-        },
+        "concatenation": {"proteins": copy.deepcopy(_NCLDV_HMM_CORE6)},
+        "hmm": {"enabled": True, "database": "NCLDV", "relative_length_cutoff": 0.30},
     }
+# Mimiviridae: no branch-length outlier removal.  Most genomes are near-
+# identical Megamimivirinae (median tip branch 0.005, MAD 0.005), so the
+# median + 20 × MAD threshold is ~0.10 and real members of the divergent
+# subfamily Klosneuvirinae (0.2–0.5) were removed: Klosneuvirus KNV1,
+# Catovirus CTV1, Indivirus ILV1, Chlorella virus XW01, Catovirus
+# klosterense (validation 2026-10-27).  Five RefSeq genomes of small
+# groups (0.18–0.87) were over the threshold too and stayed only because
+# RefSeq genomes are protected.
+CONCATENATION_FAMILIES["Mimiviridae"]["outlier_removal"] = {"enabled": False}
+# Left out by hand instead: Megavirus haemonchus182742 (BK066332.1), a TPA
+# assembled from a Haemonchus contortus (nematode) genome project.  It does
+# not group with Megavirus; it sits alone on a long branch (0.73–0.79
+# subs/site) at the base of all Megamimivirinae (2026-10-28 check).
+CONCATENATION_FAMILIES["Mimiviridae"]["manual"] = {"exclude": ["BK066332.1"]}
 
 # Pithoviridae — 7 HMM-identified markers (2026-10-27; name-based until
 # 1.6.2, when 2 genomes passed min_fraction and the family had no tree).

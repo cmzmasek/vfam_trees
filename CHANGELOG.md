@@ -8,6 +8,63 @@ The full per-commit history is in `git log`; this file summarizes only
 changes that affect outputs, configuration, CLI behaviour, or other
 user-visible surface area.
 
+## [1.6.3] — 2026-10-28
+
+Mimiviridae and Marseilleviridae change from name-based to HMM-identified
+markers. Delete their family configs written by an earlier run so the new
+presets apply.
+
+### Changed
+- **Mimiviridae and Marseilleviridae: markers identified by HMM.** Their
+  concatenation presets found the marker proteins by GenBank name, and NCBI
+  names the RNA polymerase subunits and the packaging ATPase in many ways, so
+  many genomes fell short of `min_fraction`. Both now use six markers of the
+  bundled `NCLDV` set: DNA polymerase B, RNA polymerase largest and second
+  subunits, D5-like primase-helicase, mRNA capping enzyme and topoisomerase II
+  (`relative_length_cutoff` 0.30, as for Asfarviridae; at 0.50 HMMER's split
+  of the polymerase domain loses it in more than half of the Mimiviridae
+  genomes). The major capsid protein and VLTF-3 are left out: Mimiviridae
+  genomes carry 2–5 capsid paralogs and 18 of 68 two VLTF-3-like proteins,
+  and the pipeline takes the longest hit per marker, which would mix
+  paralogs. The packaging ATPase (Pfam `Pox_A32`) is not used either; it has
+  no hit in the klosneuviruses and most marseilleviruses. Run end to end
+  (2026-10-27; Mimiviridae checked again on 2026-10-28 with the two changes
+  below), compared with the 2026-10-22 run:
+  - Marseilleviridae: 37 genomes of 20 species, trees of 30 / 26 tips
+    (before: 23 / 23 tips of 18 species); Noumeavirus and Golden
+    Marseillevirus are new. The records of *Marseillevirus marseillevirus*
+    and Golden Marseillevirus have no protein with a DNA polymerase B domain,
+    so they go in with 5 of the 6 markers.
+  - Mimiviridae: 69 genomes of 45 species, trees of 59 / 59 tips of 45
+    species (before: 42 / 41 tips of 29 species). New: the four
+    chlorarachniophyte viruses, Cotonvirus, Indivirus, *Catovirus
+    klosterense*, six moumouviruses and four megaviruses. Lost: Megavirus
+    Me1-2 (a draft genome with its markers on different contigs). All ICTV
+    genera with two or more tips are monophyletic, *Tupanvirus* among them
+    (it was not before), except that two records NCBI files as "Mimivirus
+    sp." (MT663335, PQ010613) sit inside *Megavirus*. Megamimivirinae and
+    Klosneuvirinae are monophyletic; Aliimimivirinae is too, apart from the
+    unclassified Chlorella virus XW01, which sits beside the
+    chlorarachniophyte viruses.
+  - Signal `ok` on all four trees; PhyloXML valid.
+  - Mimiviridae takes longer: all proteins of 151 species (~92,000) are
+    downloaded instead of six name searches (~2 h), and the partitioned
+    tree_100 search on ~60 genomes takes ~1.5 h; the family runs ~3.5–4 h
+    (1 h before). Marseilleviridae: 27 min.
+- **Mimiviridae: no branch-length outlier removal** (`outlier_removal.enabled:
+  false` in its preset). Most Mimiviridae genomes are near-identical
+  Megamimivirinae (median tip branch 0.005 subs/site), so the median + 20 × MAD
+  threshold fell to ~0.10 and real members of the divergent Klosneuvirinae
+  (0.2–0.5) were removed: Klosneuvirus KNV1, Catovirus CTV1, Indivirus ILV1,
+  *Catovirus klosterense* and Chlorella virus XW01. Five RefSeq genomes of
+  small groups (0.18–0.87) were over the threshold too and stayed only
+  because RefSeq genomes are protected.
+- **Mimiviridae: Megavirus haemonchus182742 left out** (`manual.exclude:
+  [BK066332.1]` in its preset). The record is a TPA assembled from a
+  *Haemonchus contortus* (nematode) genome project. With outlier removal
+  off it entered the trees, did not group with *Megavirus*, and sat alone
+  on a long branch (0.8 subs/site) at the base of Megamimivirinae.
+
 ## [1.6.2] — 2026-10-27
 
 Two families of the 2026-10-22 run that had no tree get one, and a family
