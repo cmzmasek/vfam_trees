@@ -7,7 +7,7 @@ import re
 import socket
 import time
 from pathlib import Path
-from typing import Callable, Generator, Iterable, TYPE_CHECKING
+from typing import Callable, Generator, Iterable, Sequence, TYPE_CHECKING
 
 from Bio import Entrez, SeqIO
 from Bio.Seq import Seq
@@ -1123,16 +1123,25 @@ _HMM_MAX_PROTEINS_PER_SPECIES = 6000
 
 def _build_all_proteins_query(
     taxid: int, exclude_organisms: list[str] | None, refseq_only: bool = False,
+    length_range: Sequence[int] | None = None,
 ) -> str:
     """Entrez protein query for EVERY protein of a species (no name clause).
 
-    No length clause: a ``[SLEN]`` range makes NCBI's protein search 4–6 s
-    slower per query (measured 2026-10-21), far more than the short records
-    cost to download, so ``hmm.min_protein_length`` is applied to the
-    downloaded records instead (``_fetch_all_species_proteins``)."""
+    Without *length_range* (``hmm.fetch_length_range``) there is no length
+    clause, and ``hmm.min_protein_length`` filters the downloaded records
+    instead (``_fetch_all_species_proteins``): on the *name-based* protein
+    searches a ``[SLEN]`` range cost 4–6 s per query (measured 2026-10-21),
+    far more than the short records cost to download.
+
+    On this query shape it is free — 0.46 s with the clause vs 0.49 s without
+    on *E. alphacoxsackie*, 52,183 records (measured 2026-11-05) — so a marker
+    read off a complete-genome deposit (VP1 on the polyprotein) sets the range
+    and keeps the per-species ceiling for candidates of the right length."""
     base = f"txid{taxid}[Organism:exp]"
     if refseq_only:
         base += " AND refseq[filter]"
+    if length_range:
+        base += f" AND {int(length_range[0])}:{int(length_range[1])}[SLEN]"
     base += " NOT patent[filter]"
     for term in (exclude_organisms or []):
         base += f' NOT "{term}"[Organism]'
@@ -1166,6 +1175,7 @@ def _fetch_all_species_proteins(
     species_name: str = "",
     max_records: int = _HMM_MAX_PROTEINS_PER_SPECIES,
     min_length: int | None = None,
+    length_range: Sequence[int] | None = None,
 ) -> list[SeqRecord]:
     """Fetch every protein record for a species (no marker-name filter).
 
@@ -1174,10 +1184,16 @@ def _fetch_all_species_proteins(
     GenBank flat file and returns the parsed records — the candidate pool the
     HMM identifier assigns to markers — without proteins shorter than
     *min_length* (``hmm.min_protein_length``).
+
+    *length_range* (``hmm.fetch_length_range``) restricts the search itself,
+    so the ceiling is spent on candidates of the marker's own length instead
+    of an arbitrary slice of a species with tens of thousands of fragments.
     """
     db = "protein"
     refseq_ids = _search_ids(
-        db, _build_all_proteins_query(taxid, exclude_organisms, refseq_only=True),
+        db, _build_all_proteins_query(
+            taxid, exclude_organisms, refseq_only=True, length_range=length_range,
+        ),
         max_records=max_records,
     )
     refseq_set = set(refseq_ids)
@@ -1185,7 +1201,9 @@ def _fetch_all_species_proteins(
     non_refseq_ids: list[str] = []
     if n_remaining > 0:
         all_ids = _search_ids(
-            db, _build_all_proteins_query(taxid, exclude_organisms),
+            db, _build_all_proteins_query(
+                taxid, exclude_organisms, length_range=length_range,
+            ),
             max_records=max_records,
         )
         non_refseq_ids = [i for i in all_ids if i not in refseq_set][:n_remaining]
@@ -1252,6 +1270,7 @@ def _fetch_species_genomes_hmm(
     all_proteins = _fetch_all_species_proteins(
         taxid, output_dir / ALL_PROTEINS_GB_NAME, exclude_organisms, species_name,
         min_length=getattr(identifier, "min_protein_length", None),
+        length_range=getattr(identifier, "fetch_length_range", None),
     )
     n_proteins_fetched = len(all_proteins)
     if all_proteins and hasattr(identifier, "prescan"):
@@ -1431,6 +1450,7 @@ def _fetch_species_marker_hmm(
         taxid, output_gb.parent / f"{output_gb.stem}_allprot.gb",
         exclude_organisms, species_name,
         min_length=getattr(identifier, "min_protein_length", None),
+        length_range=getattr(identifier, "fetch_length_range", None),
     )
     report["proteins"] = len(all_proteins)
     name = marker["name"]

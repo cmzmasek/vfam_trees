@@ -12,6 +12,11 @@
 # Pfam-A is licensed CC0 (public domain); redistribution is unrestricted.
 # Accessions verified against the InterPro REST API (2026-06; RdRp set 2026-10-20;
 # RT and Rep sets 2026-10-21; Mamonoviridae 2026-10-26; NCLDV 2026-10-27).
+#
+# NOT built here: the VP1 set (vfam_trees/data/hmms/VP1/VP1_entero.hmm).  Pfam
+# has no VP1-specific profile — PF00073 matches VP2, VP3 and VP1 alike — so it
+# is built from annotated enterovirus VP1 mat_peptides by
+# scripts/build_vp1_hmm.py.
 
 set -euo pipefail
 

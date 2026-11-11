@@ -181,6 +181,7 @@ class HMMIdentifier:
         self._best_hit_only = bool(hcfg.get("best_hit_only", False))
         self._best_hit_also = frozenset(hcfg.get("best_hit_also") or ())
         self._min_protein_length = hcfg.get("min_protein_length")
+        self._fetch_length_range = hcfg.get("fetch_length_range")
         self._use_ga = bool(hcfg.get("use_ga_when_available", True))
         self._ga_cutoffs: dict | None = None      # parsed once, when needed
         self._db_fingerprint: str | None = None
@@ -219,6 +220,12 @@ class HMMIdentifier:
     def min_protein_length(self) -> int | None:
         """Shortest protein kept as a candidate (``hmm.min_protein_length``)."""
         return self._min_protein_length
+
+    @property
+    def fetch_length_range(self) -> list[int] | None:
+        """Length range the all-proteins NCBI search is restricted to
+        (``hmm.fetch_length_range``), or None for no length clause."""
+        return self._fetch_length_range
 
     def best_hit_profiles(self, tokens: list[str]) -> set[str]:
         """Profiles a protein's best hit may be on for *tokens*' marker under

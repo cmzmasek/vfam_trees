@@ -641,8 +641,8 @@ GLOBAL_CONFIG_TEMPLATE_ADVANCED = """\
     archaeopteryx_html: true     # {prefix}_tree_{500,100}.html (Archaeopteryx.js page)
 
   # HMMER profile identification of marker proteins.  Off here; the RdRp,
-  # RT, Rep, Poxviridae and Adenoviridae presets turn it on with their own
-  # settings.
+  # RT, Rep, VP1, Poxviridae and Adenoviridae presets turn it on with their
+  # own settings.
   hmm:
     enabled: false
     database: null               # bundled set name (e.g. RdRp), a directory of .hmm files, or one .hmm file
@@ -653,6 +653,7 @@ GLOBAL_CONFIG_TEMPLATE_ADVANCED = """\
     best_hit_only: false         # count a protein only if a marker profile is its best hit
     best_hit_also: []            # other profiles that count as the marker's own for best_hit_only
     min_protein_length: null     # proteins shorter than this (aa) are never candidates
+    fetch_length_range: null     # [lo, hi] aa restricting the NCBI protein search itself (VP1: [1800, 3000])
     threads: null                # hmmscan --cpu; null → the run's thread count
 
   # Concatenated multi-marker mode (sequence.region: concatenated); the

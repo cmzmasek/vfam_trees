@@ -8,6 +8,87 @@ The full per-commit history is in `git log`; this file summarizes only
 changes that affect outputs, configuration, CLI behaviour, or other
 user-visible surface area.
 
+## [1.6.4] — 2026-11-11
+
+The genus **Enterovirus** gets a serotype tree: a new marker preset puts it on
+the capsid protein VP1, identified by HMM on complete-genome polyproteins.
+Nothing changes for any family.
+
+### Added
+- **VP1 marker preset for the genus Enterovirus** (`VP1_FAMILIES` in
+  `config.py`). Enterovirus serotypes are defined on VP1, so a whole-genome
+  tree does not have to group them: in the 2026-10-31 genus run 33 of the 41
+  serotypes with more than one tip grouped, and the eight that split (CVA13,
+  CVA17, CVA18, CVA4, EV-C96, E9, EV-B80, RV-B52) are recombinants, which
+  swap the non-structural region freely while the capsid is inherited as a
+  block. The preset is keyed on the genus name; the family Picornaviridae
+  stays on the RdRp.
+- **Bundled profile set `VP1`** (`VP1_entero`), the first bundled profile not
+  taken from Pfam. Pfam cannot single VP1 out: `PF00073` (Rhv) matches VP2,
+  VP3 *and* VP1 as three separate domains of the polyprotein, and Pfam assigns
+  VP1 itself to `PF00073` or to `PF22663` (Rhv_5) depending on the virus
+  (InterPro matches of UniProt P03300, P03303, Q66478, checked 2026-11-05), so
+  a Pfam token would crop the whole capsid block instead of the typing region.
+  `VP1_entero` is built from enterovirus genome deposits that annotate a VP1
+  `mat_peptide`, one per NCBI organism (242 seeds of 242 organisms, 19 RefSeq;
+  MAFFT L-INS-i with `--threadit 0`; model length 282) by the new
+  `scripts/build_vp1_hmm.py`, which can rebuild it from NCBI or from local
+  GenBank files.
+  - Specific despite the structural homology: VP2 and VP3 never pass the hit
+    rule, so only VP1 is cropped. On the 7,431 polyproteins of the 2026-10-31
+    run a passing hit was found in 7,425 (99.9 %; the six misses are partial
+    1,871-aa Enterovirus G records), model coverage median 0.98 (min 0.88),
+    domain E-value median 5e-108 against 1e-3 for the gate. On 300 held-out
+    polyproteins with an annotated VP1 the hit span sat 12 residues inside its
+    start and 8 inside its end, hence `sequence.domain_padding: 20`, which
+    keeps the whole of VP1 (~320 aa cropped).
+  - Validated against the finished genome tree on its own tips (2026-11-05,
+    scratch `entero/vp1build`): VP1 extracted from the same genomes, aligned
+    and run through IQ-TREE `-n 50` LG+G, compared on the 443 tips both trees
+    have. Serotypes grouped 34 of 39 (whole genome: 32), and — the real
+    difference — **no serotype is contradicted with support ≥ 80**, while the
+    genome tree confidently breaks two (CVA17, RV-B52, both recombinants).
+    The five that do not group are weakly separated (support 30–78), not
+    contradicted: CVA13 and CVA18 are 92–95 % identical in VP1, as close as
+    two records of one type, so no VP1 tree can separate them. The
+    phylogenetic-signal check reads **ok** (median tip-to-tip 2.66 subs/site,
+    identity 0.41, core 0.95) where both whole-genome trees read *saturated*.
+    Deep structure is weaker, as expected from one 282-column protein: the
+    ICTV species still group 9 of 13, but every separation of a species that
+    does not group has support 0, so read the species-level backbone from the
+    genome trees.
+  - Confirmed by a live genus run (2026-11-06, 1 h 24 min, 498 / 100 tips).
+    41 species carry the marker against 26 complete-genome species in the
+    nucleotide run, because the all-proteins search also reaches species with
+    no `"complete genome"[Title]` deposit; 1 was recovered by translation.
+    Nothing shorter than a polyprotein entered: over all 11,973 selected
+    records the shortest source protein is 1,801 aa. Of the 25 serotypes with
+    more than one tip in tree_500, 24 group and **none is contradicted** once
+    one NCBI organism mislabel is accounted for — `SCQ05683.1` / `SCQ05684.1`
+    carry organism *Coxsackievirus A16* but strain `CVA10_…`, and their VP1 is
+    0.90–0.95 identical to the CVA10 records against 0.645–0.66 to the genuine
+    CVA16 ones, so the tree is right and the organism field is wrong. The
+    whole-genome tree groups 32 of 40 and contradicts 2. On the 11 serotypes
+    with ≥ 2 tips in both trees: VP1 11 of 11, whole genome 10 of 11. Signal
+    **ok** for tree_100 (2.07 subs/site) and *weak* for tree_500 (3.23, which
+    carries all 41 species including the divergent animal enteroviruses),
+    against *saturated* for both nucleotide trees. The deep backbone behaves
+    as predicted but never misleads: ICTV species group 7 of 14 in VP1
+    tree_500 against 9 of 13 in the genome tree with none contradicted in
+    either, and in tree_100 the genome tree confidently breaks two species
+    (support 86, 87) where VP1 breaks none.
+- **`hmm.fetch_length_range`** (default `null`): `[lo, hi]` amino-acid range
+  restricting the all-proteins NCBI search itself, for a marker read off a
+  complete-genome deposit. The VP1 preset sets `[1800, 3000]` alongside
+  `hmm.min_protein_length: 1800`; without it the 6,000-protein per-species
+  ceiling would be spent on an arbitrary slice of a species such as
+  *Enterovirus alphacoxsackie*, which has 52,183 protein records of which
+  5,782 are of polyprotein length. A `[SLEN]` clause costs nothing on this
+  query shape (0.46 s with it vs 0.49 s without, measured 2026-11-05),
+  unlike on the name-based protein searches, where it cost 4–6 s per query
+  (1.6.0); those keep filtering after download. The key is part of the
+  per-species download-reuse key, so changing it re-downloads.
+
 ## [1.6.3] — 2026-10-28
 
 Mimiviridae and Marseilleviridae change from name-based to HMM-identified

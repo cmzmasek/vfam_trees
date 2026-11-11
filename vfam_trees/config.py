@@ -441,18 +441,67 @@ REP_FAMILIES: frozenset[str] = frozenset({
     "Pecoviridae", "Redondoviridae", "Vilyaviridae",
 })
 
+# ---------------------------------------------------------------------------
+# VP1 capsid marker (v1.6.4)
+# ---------------------------------------------------------------------------
+# Enterovirus serotypes are defined on VP1 (the ICTV / WHO typing region), so
+# neither a whole-genome nor an RdRp tree has to group them: in the
+# 2026-10-31 genus run 33 of 41 multi-tip serotypes grouped, and the splits
+# (CVA13, CVA17, CVA18, CVA4, EV-C96, E9, EV-B80, RV-B52) are enterovirus
+# recombinants, which swap the non-structural region freely while the capsid
+# is inherited as a block.  A VP1 tree is therefore the serotype view.
+#
+# Pfam cannot single VP1 out: PF00073 (Rhv) hits VP2, VP3 AND VP1 as three
+# separate domains of the polyprotein, and Pfam assigns VP1 itself to PF00073
+# or to PF22663 (Rhv_5) depending on the virus (checked on the InterPro
+# matches of UniProt P03300, P03303, Q66478, 2026-11-05), so a Pfam token
+# would crop the whole capsid block.  ``VP1_entero`` is therefore built from
+# annotated enterovirus VP1 mat_peptides (one per NCBI organism, 242
+# sequences, model length 282; ``scripts/build_vp1_hmm.py``).  Measured on
+# 7,431 polyproteins of the 2026-10-31 run (scratch ``entero/vp1build``):
+# a passing VP1 hit in 7,425 (99.9 %; the 6 misses are 1,871-aa partial
+# Enterovirus G records), hit span median 280 aa, model coverage median 0.98
+# (min 0.88), domain E-value median 5e-108 / worst 2e-99.  VP2 and VP3 never
+# pass, so no sibling domain is cropped in: on 300 held-out polyproteins with
+# an annotated VP1 the span sat 12 aa inside its start and 8 aa inside its
+# end (2 records reached 38 aa into VP3), hence padding 20 and the shared
+# E-value rule.
+VP1_HMM_TOKENS: list[str] = ["VP1_entero"]
+#: Taxa on the VP1 preset.  A genus, not a family: the preset is keyed by the
+#: name in the family list, and Picornaviridae stays on the RdRp (a
+#: family-wide VP1 tree would mix capsid types across genera).
+VP1_FAMILIES: frozenset[str] = frozenset({"Enterovirus"})
+VP1_DOMAIN_PADDING = 20
+VP1_RELATIVE_LENGTH_CUTOFF = 0.5
+# VP1 is read off the polyprotein, so only complete-genome deposits are
+# candidates: an enterovirus polyprotein is ~2,100-2,200 aa (1,800 is the
+# safety margin; 1.5 % of genomes annotate P1/P2/P3 separately and drop out).
+# This also keeps the tens of thousands of VP1-only typing fragments out —
+# the serotype references live there, but their lengths and regions vary too
+# much for one alignment (user chose complete genomes only, 2026-11-05).
+VP1_MIN_PROTEIN_LENGTH = 1800
+#: Same range in the NCBI query (``hmm.fetch_length_range``), without which
+#: the 6,000-protein ceiling would land on an arbitrary 11 % of the
+#: polyproteins of a species like *E. alphacoxsackie* (52,183 protein records,
+#: 5,782 of polyprotein length).
+VP1_FETCH_LENGTH_RANGE: tuple[int, int] = (1800, 3000)
+
 #: Every family on an HMM-identified marker preset → the marker (also the
 #: bundled profile set's name and the ``sequence.region`` it runs under).
 HMM_MARKER_FAMILIES: dict[str, str] = {
     **{f: "RdRp" for f in RDRP_FAMILIES},
     **{f: "RT" for f in RT_FAMILY_PROFILES},
     **{f: "Rep" for f in REP_FAMILIES},
+    **{f: "VP1" for f in VP1_FAMILIES},
 }
 
 
 def _hmm_marker_preset(
     marker: str, tokens: list[str], *, padding: int | None,
     best_hit_only: bool, also: list[str],
+    relative_length_cutoff: float = 0.2,
+    min_protein_length: int = RDRP_MIN_PROTEIN_LENGTH,
+    fetch_length_range: tuple[int, int] | None = None,
 ) -> dict:
     """Config overrides for one HMM-identified marker (shared hit rule)."""
     return {
@@ -468,10 +517,11 @@ def _hmm_marker_preset(
             "database": marker,
             "use_ga_when_available": False,
             "default_evalue": 1.0e-3,
-            "relative_length_cutoff": 0.2,
+            "relative_length_cutoff": relative_length_cutoff,
             "best_hit_only": best_hit_only,
             "best_hit_also": list(also),
-            "min_protein_length": RDRP_MIN_PROTEIN_LENGTH,
+            "min_protein_length": min_protein_length,
+            "fetch_length_range": list(fetch_length_range) if fetch_length_range else None,
         },
     }
 
@@ -491,7 +541,7 @@ def rdrp_preset(family: str) -> dict:
 
 
 def hmm_marker_preset(family: str) -> dict:
-    """The preset of a family in HMM_MARKER_FAMILIES (RdRp, RT or Rep)."""
+    """The preset of a family in HMM_MARKER_FAMILIES (RdRp, RT, Rep or VP1)."""
     marker = HMM_MARKER_FAMILIES[family]
     if marker == "RdRp":
         return rdrp_preset(family)
@@ -499,6 +549,16 @@ def hmm_marker_preset(family: str) -> dict:
         return _hmm_marker_preset(
             "RT", list(RT_FAMILY_PROFILES[family]), padding=RDRP_DOMAIN_PADDING,
             best_hit_only=True, also=list(RT_SIBLING_DOMAINS),
+        )
+    if marker == "VP1":
+        # One profile in the set, so best_hit_only could not tell a foreign
+        # picornavirus apart (it would best-hit VP1_entero too) — left off.
+        return _hmm_marker_preset(
+            "VP1", VP1_HMM_TOKENS, padding=VP1_DOMAIN_PADDING,
+            best_hit_only=False, also=[],
+            relative_length_cutoff=VP1_RELATIVE_LENGTH_CUTOFF,
+            min_protein_length=VP1_MIN_PROTEIN_LENGTH,
+            fetch_length_range=VP1_FETCH_LENGTH_RANGE,
         )
     return _hmm_marker_preset(
         "Rep", REP_HMM_TOKENS, padding=None, best_hit_only=False, also=[],
@@ -1273,6 +1333,7 @@ DEFAULT_FAMILY_CONFIG: dict = {
         "best_hit_only": False,
         "best_hit_also": [],
         "min_protein_length": None,
+        "fetch_length_range": None,
         "threads": None,
     },
 }
@@ -2059,6 +2120,24 @@ def _validate_hmm_block(cfg: dict, family: str) -> None:
             f"{family}: hmm.min_protein_length must be null or a positive integer."
         )
 
+    rng = raw.get("fetch_length_range")
+    if rng is not None:
+        if (
+            isinstance(rng, (str, bytes))
+            or not isinstance(rng, (list, tuple))
+            or len(rng) != 2
+            or any(
+                isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in rng
+            )
+            or rng[0] > rng[1]
+        ):
+            raise ValueError(
+                f"{family}: hmm.fetch_length_range must be null or [lo, hi] — "
+                "two positive integers (aa, lo <= hi) restricting the "
+                "all-proteins NCBI query to candidates of that length."
+            )
+        rng = [int(rng[0]), int(rng[1])]
+
     threads = raw.get("threads")
     if threads is not None and (
         isinstance(threads, bool) or not isinstance(threads, int) or threads <= 0
@@ -2114,6 +2193,7 @@ def _validate_hmm_block(cfg: dict, family: str) -> None:
         "best_hit_only": best_only,
         "best_hit_also": [a.strip() for a in also],
         "min_protein_length": min_len,
+        "fetch_length_range": rng,
         "threads": threads,
     }
 

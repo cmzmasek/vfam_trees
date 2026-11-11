@@ -2175,7 +2175,10 @@ class TestRtRepMarkers:
         assert not RDRP_FAMILIES & set(RT_FAMILY_PROFILES)
         assert not RDRP_FAMILIES & REP_FAMILIES
         assert not set(RT_FAMILY_PROFILES) & REP_FAMILIES
-        assert len(HMM_MARKER_FAMILIES) == len(RDRP_FAMILIES) + 4 + 23
+        from vfam_trees.config import VP1_FAMILIES
+        assert not set(RT_FAMILY_PROFILES) & VP1_FAMILIES
+        assert not RDRP_FAMILIES & VP1_FAMILIES and not REP_FAMILIES & VP1_FAMILIES
+        assert len(HMM_MARKER_FAMILIES) == len(RDRP_FAMILIES) + 4 + 23 + len(VP1_FAMILIES)
 
     def test_rt_preset(self):
         cfg = _merge_with_defaults({}, make_minimal_global_cfg(), "Retroviridae")
@@ -2226,6 +2229,102 @@ class TestRtRepMarkers:
         for marker, n in (("RT", 4), ("Rep", 4)):
             db = resolve_database_path(marker, cache_dir=tmp_path)
             assert len(parse_ga_cutoffs(db)) == n
+
+
+class TestVp1Marker:
+    """Genus Enterovirus on the VP1 capsid marker (serotypes are VP1-defined)."""
+
+    def test_bundled_set_matches_the_token_list(self):
+        from vfam_trees.config import VP1_HMM_TOKENS
+        assert _bundled_names("VP1") == set(VP1_HMM_TOKENS) == {"VP1_entero"}
+
+    def test_vp1_preset(self):
+        cfg = _merge_with_defaults({}, make_minimal_global_cfg(), "Enterovirus")
+        seq, hmm = cfg["sequence"], cfg["hmm"]
+        assert (seq["type"], seq["region"], seq["segment"]) == ("protein", "VP1", None)
+        assert seq["hmms"] == ["VP1_entero"] and seq["domain_padding"] == 20
+        assert hmm["enabled"] is True and hmm["database"] == "VP1"
+        assert hmm["use_ga_when_available"] is False     # the profile has no GA
+        assert hmm["relative_length_cutoff"] == 0.5
+        # One profile in the set, so a best-hit test could not spot a foreign
+        # picornavirus; VP2/VP3 do not pass the E-value rule anyway.
+        assert hmm["best_hit_only"] is False and hmm["best_hit_also"] == []
+
+    def test_only_complete_genome_deposits_are_candidates(self):
+        """VP1 is read off the polyprotein: the floor and the matching NCBI
+        length clause keep the VP1-only typing fragments out."""
+        cfg = _merge_with_defaults({}, make_minimal_global_cfg(), "Enterovirus")
+        assert cfg["hmm"]["min_protein_length"] == 1800
+        assert cfg["hmm"]["fetch_length_range"] == [1800, 3000]
+        # Every other marker preset leaves the search unrestricted.
+        for fam in ("Retroviridae", "Geminiviridae", "Togaviridae"):
+            other = _merge_with_defaults({}, make_minimal_global_cfg(), fam)
+            assert other["hmm"]["fetch_length_range"] is None, fam
+
+    def test_picornaviridae_stays_on_the_rdrp(self):
+        """The preset is keyed on the genus; the family keeps its RdRp tree."""
+        cfg = _merge_with_defaults({}, make_minimal_global_cfg(), "Picornaviridae")
+        assert cfg["sequence"]["region"] == "RdRp"
+
+    def test_opt_out(self):
+        from vfam_trees.config import hmm_marker_opt_out
+        assert hmm_marker_opt_out({"sequence": {"type": "nucleotide"}}, "VP1")
+        assert not hmm_marker_opt_out({"sequence": {"region": "VP1"}}, "VP1")
+        cfg = _merge_with_defaults(
+            {"sequence": {"type": "nucleotide", "region": "whole_genome"},
+             "hmm": {"enabled": False}},
+            MINIMAL_GLOBAL, "Enterovirus")
+        assert cfg["sequence"]["type"] == "nucleotide"
+        assert cfg["hmm"]["fetch_length_range"] is None
+
+    def test_bundled_database_resolves(self, tmp_path):
+        from vfam_trees.hmm import resolve_database_path
+        db = resolve_database_path("VP1", cache_dir=tmp_path)
+        assert "VP1_entero" in db.read_text()
+
+
+class TestFetchLengthRange:
+    """``hmm.fetch_length_range`` — the length clause of the all-proteins query."""
+
+    @pytest.mark.parametrize("value", [[1800, 3000], [100, 100], None])
+    def test_accepted(self, value):
+        cfg = {"hmm": {"enabled": True, "database": "VP1", "fetch_length_range": value}}
+        _validate_hmm_block(cfg, "Fam")
+        assert cfg["hmm"]["fetch_length_range"] == (list(value) if value else None)
+
+    @pytest.mark.parametrize("value", [
+        [3000, 1800],      # lo > hi
+        [1800],            # not a pair
+        [1800, 3000, 4],
+        [0, 3000],         # not positive
+        [-1, 10],
+        "1800:3000",       # a string, not a pair
+        1800,
+        [1800.5, 3000.0],  # not integers
+        [True, 3000],
+    ])
+    def test_rejected(self, value):
+        cfg = {"hmm": {"enabled": True, "database": "VP1", "fetch_length_range": value}}
+        with pytest.raises(ValueError, match="fetch_length_range"):
+            _validate_hmm_block(cfg, "Fam")
+
+    def test_written_to_the_generated_family_yaml(self, tmp_path):
+        """It decides which candidates are downloaded, so the per-run snapshot
+        has to record it (and the download-reuse key, which covers the whole
+        hmm block bar threads, then changes with it)."""
+        cfg, auto = load_family_config("Enterovirus", tmp_path / "c", MINIMAL_GLOBAL)
+        assert auto
+        written = yaml.safe_load((tmp_path / "c" / "Enterovirus.yaml").read_text())
+        assert written["hmm"]["fetch_length_range"] == [1800, 3000]
+        assert written["hmm"]["min_protein_length"] == 1800
+        # Reloading the snapshot keeps it (no migration rewrites on-disk files).
+        again, auto2 = load_family_config("Enterovirus", tmp_path / "c", MINIMAL_GLOBAL)
+        assert not auto2 and again["hmm"]["fetch_length_range"] == [1800, 3000]
+
+    def test_not_an_unknown_key(self):
+        from vfam_trees.config import unknown_config_keys, DEFAULT_FAMILY_CONFIG
+        cfg = {"hmm": {"fetch_length_range": [1800, 3000]}}
+        assert unknown_config_keys(cfg, DEFAULT_FAMILY_CONFIG) == []
 
 
 class TestMamonoviridaePreset:

@@ -1069,11 +1069,46 @@ class TestNoNameQuery:
         assert "[SLEN]" not in q
 
     def test_no_length_clause(self):
-        """NCBI's [SLEN] search is seconds slower per query; the floor is
-        applied to the downloaded records instead."""
+        """No clause by default: on the name-based searches [SLEN] was seconds
+        slower per query, so the floor is applied to the downloaded records."""
         from vfam_trees.fetch import _build_all_proteins_query
         for refseq_only in (False, True):
             assert "[SLEN]" not in _build_all_proteins_query(1, None, refseq_only)
+
+    def test_length_range_clause(self):
+        """hmm.fetch_length_range restricts the search itself, so the
+        per-species ceiling is spent on candidates of the marker's length."""
+        from vfam_trees.fetch import _build_all_proteins_query
+        for refseq_only in (False, True):
+            q = _build_all_proteins_query(
+                12059, ["synthetic construct"], refseq_only, length_range=[1800, 3000],
+            )
+            assert "AND 1800:3000[SLEN]" in q
+            assert q.startswith("txid12059[Organism:exp]")
+            assert "NOT patent[filter]" in q
+            assert 'NOT "synthetic construct"[Organism]' in q
+
+    def test_length_range_reaches_both_searches(self, monkeypatch, tmp_path):
+        """RefSeq and top-up search alike — otherwise the top-up would refill
+        the ceiling with records of any length."""
+        from vfam_trees import fetch as fetch_mod
+
+        queries = []
+        monkeypatch.setattr(fetch_mod, "_search_ids",
+                            lambda db, query, max_records: queries.append(query) or [])
+
+        class _Identifier:
+            is_hmm = True
+            min_protein_length = 1800
+            fetch_length_range = [1800, 3000]
+
+        fetch_mod._fetch_all_species_proteins(
+            12059, tmp_path / "all.gb", None, "Enterovirus alphacoxsackie",
+            min_length=_Identifier.min_protein_length,
+            length_range=_Identifier.fetch_length_range,
+        )
+        assert len(queries) == 2 and all("1800:3000[SLEN]" in q for q in queries)
+        assert sum("refseq[filter]" in q for q in queries) == 1
 
     def test_floor_applied_to_downloaded_records(self, monkeypatch, tmp_path):
         from Bio.Seq import Seq
