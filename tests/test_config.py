@@ -2231,12 +2231,47 @@ class TestRtRepMarkers:
             assert len(parse_ga_cutoffs(db)) == n
 
 
+#: The three ICTV rhinovirus species, which run on VP1 one species at a time
+#: (serotypes sit below species rank, see ``VP1_FAMILIES``).
+RHINOVIRUS_SPECIES = ("Enterovirus alpharhino", "Enterovirus betarhino",
+                     "Enterovirus cerhino")
+
+
 class TestVp1Marker:
-    """Genus Enterovirus on the VP1 capsid marker (serotypes are VP1-defined)."""
+    """Enterovirus taxa on the VP1 capsid marker (serotypes are VP1-defined)."""
 
     def test_bundled_set_matches_the_token_list(self):
         from vfam_trees.config import VP1_HMM_TOKENS
         assert _bundled_names("VP1") == set(VP1_HMM_TOKENS) == {"VP1_entero"}
+
+    @pytest.mark.parametrize("taxon", RHINOVIRUS_SPECIES)
+    def test_rhinovirus_species_get_the_same_preset(self, taxon):
+        """Each rhinovirus species runs on VP1 with exactly the genus settings —
+        one run per species, because the serotype taxa are below species rank."""
+        rhino = _merge_with_defaults({}, make_minimal_global_cfg(), taxon)
+        genus = _merge_with_defaults({}, make_minimal_global_cfg(), "Enterovirus")
+        assert rhino["sequence"] == genus["sequence"]
+        assert rhino["hmm"] == genus["hmm"]
+
+    @pytest.mark.parametrize("taxon", RHINOVIRUS_SPECIES)
+    def test_rhinovirus_species_keep_their_serotypes(self, taxon):
+        """Branch-length outlier removal off: a one-species VP1 tree is dense
+        clouds of near-identical records, so the MAD threshold falls below
+        ordinary between-serotype divergence and removes whole serotypes."""
+        cfg = _merge_with_defaults({}, make_minimal_global_cfg(), taxon)
+        assert cfg["outlier_removal"]["enabled"] is False
+
+    def test_the_genus_still_removes_outliers(self):
+        """The genus is diverse enough for a sane threshold, and there removal
+        drops the partial crops it should."""
+        cfg = _merge_with_defaults({}, make_minimal_global_cfg(), "Enterovirus")
+        assert cfg["outlier_removal"]["enabled"] is True
+
+    def test_rhinovirus_species_are_on_the_vp1_marker(self):
+        from vfam_trees.config import HMM_MARKER_FAMILIES, VP1_FAMILIES
+        for taxon in RHINOVIRUS_SPECIES:
+            assert taxon in VP1_FAMILIES
+            assert HMM_MARKER_FAMILIES[taxon] == "VP1"
 
     def test_vp1_preset(self):
         cfg = _merge_with_defaults({}, make_minimal_global_cfg(), "Enterovirus")

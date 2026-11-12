@@ -467,10 +467,38 @@ REP_FAMILIES: frozenset[str] = frozenset({
 # end (2 records reached 38 aa into VP3), hence padding 20 and the shared
 # E-value rule.
 VP1_HMM_TOKENS: list[str] = ["VP1_entero"]
-#: Taxa on the VP1 preset.  A genus, not a family: the preset is keyed by the
-#: name in the family list, and Picornaviridae stays on the RdRp (a
-#: family-wide VP1 tree would mix capsid types across genera).
-VP1_FAMILIES: frozenset[str] = frozenset({"Enterovirus"})
+#: Taxa on the VP1 preset.  Not families: the preset is keyed by the name in
+#: the family list, and Picornaviridae stays on the RdRp (a family-wide VP1
+#: tree would mix capsid types across genera).  The genus gives one tree over
+#: all of it; the three rhinovirus entries are ICTV *species* (NCBI rank
+#: species), because rhinovirus serotypes sit **below** species rank — the
+#: ~80 RV-A serotype taxa are no-rank children of *Enterovirus alpharhino*
+#: via the no-rank node "Rhinovirus A", so in the genus run all of RV-A is one
+#: species bucket and shares one ``clustering.max_reps`` budget (10 of 70
+#: rhinovirus organism strings reached 2 tips, 2026-11-06).  One run per
+#: species spends the whole 500-tip budget inside it.  "Rhinovirus" itself is
+#: no longer an NCBI taxon, and the no-rank "Rhinovirus A/B/C" nodes have no
+#: species-rank descendants, so neither can root a run.
+VP1_FAMILIES: frozenset[str] = frozenset({
+    "Enterovirus",
+    "Enterovirus alpharhino",   # Rhinovirus A
+    "Enterovirus betarhino",    # Rhinovirus B
+    "Enterovirus cerhino",      # Rhinovirus C
+})
+#: Branch-length outlier removal off, for the same reason as Mimiviridae: a
+#: single-species VP1 tree is mostly dense clouds of near-identical records of
+#: one serotype, so median + 20 × MAD lands far below ordinary
+#: between-serotype divergence.  Measured on the 2026-11-11 runs, with it on:
+#: RV-B threshold 0.0143 subs/site (~4 substitutions over 325 columns) removed
+#: 61 of 406 sequences and **7 whole serotypes** (B5, B17, B26, B37, B93, B99,
+#: B104), and flagged the RefSeqs of B3 and B14 at 237 × / 394 × MAD (kept
+#: only because RefSeq is protected); RV-C lost 6 serotypes (C10, C26, C30,
+#: C33, C54, C55).  The genus Enterovirus keeps removal on: its diversity
+#: makes the threshold sane, and there it dropped exactly the two oddest
+#: partial crops.
+VP1_NO_OUTLIER_REMOVAL: frozenset[str] = frozenset({
+    "Enterovirus alpharhino", "Enterovirus betarhino", "Enterovirus cerhino",
+})
 VP1_DOMAIN_PADDING = 20
 VP1_RELATIVE_LENGTH_CUTOFF = 0.5
 # VP1 is read off the polyprotein, so only complete-genome deposits are
@@ -553,13 +581,16 @@ def hmm_marker_preset(family: str) -> dict:
     if marker == "VP1":
         # One profile in the set, so best_hit_only could not tell a foreign
         # picornavirus apart (it would best-hit VP1_entero too) — left off.
-        return _hmm_marker_preset(
+        preset = _hmm_marker_preset(
             "VP1", VP1_HMM_TOKENS, padding=VP1_DOMAIN_PADDING,
             best_hit_only=False, also=[],
             relative_length_cutoff=VP1_RELATIVE_LENGTH_CUTOFF,
             min_protein_length=VP1_MIN_PROTEIN_LENGTH,
             fetch_length_range=VP1_FETCH_LENGTH_RANGE,
         )
+        if family in VP1_NO_OUTLIER_REMOVAL:
+            preset["outlier_removal"] = {"enabled": False}
+        return preset
     return _hmm_marker_preset(
         "Rep", REP_HMM_TOKENS, padding=None, best_hit_only=False, also=[],
     )

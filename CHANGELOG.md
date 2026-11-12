@@ -8,6 +8,75 @@ The full per-commit history is in `git log`; this file summarizes only
 changes that affect outputs, configuration, CLI behaviour, or other
 user-visible surface area.
 
+## [1.6.5] — 2026-11-11
+
+Rhinovirus serotype trees: the three ICTV rhinovirus species can now be run
+one at a time on VP1. No behaviour changes for any other taxon.
+
+### Added
+- **The three rhinovirus species on the VP1 marker** (`VP1_FAMILIES` gains
+  *Enterovirus alpharhino* (RV-A), *Enterovirus betarhino* (RV-B) and
+  *Enterovirus cerhino* (RV-C), with exactly the genus Enterovirus settings).
+  They are ICTV species, not families, because rhinovirus serotypes sit
+  **below** species rank in NCBI taxonomy: the ~80 RV-A serotype taxa are
+  no-rank children of *Enterovirus alpharhino* under the no-rank node
+  "Rhinovirus A". A genus-wide run therefore treats all of RV-A as one
+  species bucket sharing a single `clustering.max_reps` budget, and only 10
+  of the 70 rhinovirus organism strings in the 2026-11-06 genus run reached
+  two tips. One run per species spends the whole 500-tip budget inside that
+  species; with a single species the per-species cap, not `targets.max_500`,
+  bounds the tree, so set `clustering.max_reps_500` to the target.
+  "Rhinovirus" is no longer an NCBI taxon and the no-rank "Rhinovirus A/B/C"
+  nodes have no species-rank descendants, so neither can root a run — a
+  single combined rhinovirus tree is not reachable through the taxonomy.
+  - The bundled `VP1_entero` profile needed no change: checked per species
+    over the cached polyproteins of the genus run, a passing hit was found in
+    99.4 % of the 1,924 RV-A polyproteins, 97.9 % of 480 for RV-B and 98.7 %
+    of 1,006 for RV-C, with model coverage median 0.99 and domain E-values
+    down to 1e-41. The hit span runs from 0.26 to 0.39 of the polyprotein in
+    all three, which is the VP1 window — VP2 starts at ~0.03 and VP3 at
+    ~0.15 — so the crop lands on VP1 and not on a homologous capsid domain.
+  - Restricted to polyprotein length, each species is small enough to fetch
+    whole, so the 6,000-protein ceiling never bites: 1,928 records of
+    1,800–3,000 aa for RV-A, 481 for RV-B, 1,014 for RV-C.
+  - **Branch-length outlier removal is off for the three species**
+    (`VP1_NO_OUTLIER_REMOVAL`), for the same reason as Mimiviridae in 1.6.3: a
+    single-species VP1 tree is mostly dense clouds of near-identical records
+    of one serotype, so `median + 20 × MAD` lands far below ordinary
+    between-serotype divergence. Measured with removal on (2026-11-11): the
+    RV-B threshold came out at 0.0143 subs/site — about four substitutions
+    over 325 columns — and removed 61 of 406 sequences including **seven whole
+    serotypes** (B5, B17, B26, B37, B93, B99, B104), while flagging the
+    RefSeqs of B3 and B14 at 237 × and 394 × MAD (kept only because RefSeq is
+    protected); RV-C lost six serotypes (C10, C26, C30, C33, C54, C55). The
+    genus Enterovirus keeps removal on: its diversity gives a sane threshold,
+    and there it dropped exactly the two oddest partial crops.
+  - Confirmed by three live runs (2026-11-11): 1 h 30 min for all three
+    species with removal off, against 4 h 44 min with it on, since every
+    removal round rebuilds the alignment and the tree. Each run discovers
+    exactly one species, none of them missing the marker; 1,751 / 409 / 891
+    sequences passed QC and the crops are 289–334 aa, so no fragment entered.
+    tree_500 has 301 tips for RV-A, 406 for RV-B and 217 for RV-C, tree_100
+    100 / 91 / 98, nothing removed as a branch-length outlier, and the
+    phylogenetic-signal check reads **ok** on all six (median tip-to-tip
+    0.90–2.18 subs/site, identity 0.65–0.77, core 0.98–0.99, no branch at the
+    cap) where the genus tree_500 reads *weak* at identity 0.41 — a single
+    species is a far cleaner alignment. All six PhyloXML files validate.
+    Serotypes in tree_500, with the type parsed from the organism name and a
+    bare "Rhinovirus C" left unlabelled: RV-B groups 20 of its 23 multi-tip
+    serotypes and RV-C 17 of 18 with **none contradicted**, RV-A 45 of 56 with
+    five contradicted (RV-A25, A29, A44, A67, A80, separated at support
+    83–92). In tree_100: RV-A 10 of 12, RV-B 16 of 18, RV-C 10 of 10.
+  - The run with removal on scored *better* for RV-A (46 of 56, three
+    contradicted) only because it had deleted the records that create the
+    conflict: the two tips it dropped are exactly the two added back, one of
+    them the third RV-A29 record, which does not group with the other two.
+    RV-B52 and RV-B70 likewise group cleanly only while thinned; with all 15
+    and 19 records they are unresolved (separating support 0), not
+    contradicted. The filter is self-reinforcing as well — dropping the
+    divergent tips shrank the RV-B threshold from 0.0143 to 0.0061 subs/site
+    over three rounds, so each round removed more than the last.
+
 ## [1.6.4] — 2026-11-11
 
 The genus **Enterovirus** gets a serotype tree: a new marker preset puts it on
